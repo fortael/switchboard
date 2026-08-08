@@ -241,6 +241,16 @@
 
             <div class="settings-field">
               <div class="settings-field-info">
+                <span class="settings-label">Tray Icon</span>
+                <div class="settings-description">Show a tray icon with the sessions waiting for you and the limits of every account. While it is on, closing the window hides it there and sessions keep running — quit from the tray menu.</div>
+              </div>
+              <div class="settings-field-control">
+                <SbSwitch v-model="form.showTray" />
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <div class="settings-field-info">
                 <span class="settings-label">Show Avatars</span>
                 <div class="settings-description">Show project initials avatars on session groups and grid cards</div>
               </div>
@@ -377,6 +387,7 @@ const form = reactive({
   uiFont: 'default',
   uiScale: 100,
   terminalFontSize: 12,
+  showTray: true,
   commitMessagePrompt: '',
   gitlabToken: '',
 });
@@ -432,6 +443,7 @@ async function loadSettings() {
     form.uiFont = current.uiFont ?? 'default';
     form.uiScale = window._normalizeUiScale?.(current.uiScale ?? 100) ?? 100;
     form.terminalFontSize = window._normalizeTerminalFontSize?.(current.terminalFontSize ?? 12) ?? 12;
+    form.showTray = current.showTray !== false;
     savedUiScale = form.uiScale;
     form.commitMessagePrompt = current.commitMessagePrompt || COMMIT_MSG_PROMPT_DEFAULT;
     form.gitlabToken = current.gitlabToken || '';
@@ -493,6 +505,7 @@ async function save() {
       uiFont: form.uiFont || 'default',
       uiScale: window._normalizeUiScale?.(form.uiScale) ?? 100,
       terminalFontSize: window._normalizeTerminalFontSize?.(form.terminalFontSize) ?? 12,
+      showTray: form.showTray,
       commitMessagePrompt: form.commitMessagePrompt === COMMIT_MSG_PROMPT_DEFAULT ? '' : (form.commitMessagePrompt || ''),
       gitlabToken: form.gitlabToken || '',
     };
@@ -512,6 +525,9 @@ async function save() {
     window._applyUiScale?.(settings.uiScale);
     savedUiScale = settings.uiScale;
     window._applyTerminalFontSize?.(settings.terminalFontSize);
+    // The tray lives in the main process; it reports through the status bar if the
+    // desktop has nowhere to put an icon, which outlives this panel closing.
+    window.api.setTrayEnabled(settings.showTray).catch(() => {});
     if (typeof refreshSidebar === 'function') refreshSidebar();
 
     if (settings.mcpEmulation !== originalMcpEmulation) {

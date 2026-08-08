@@ -236,16 +236,27 @@ function parseProjectArg(argv) {
   return null;
 }
 
+// Send to the renderer, waiting for the page when it has not finished loading yet —
+// a message sent before that has no listener on the other side and is simply lost.
+function sendToRenderer(channel, ...args) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const contents = mainWindow.webContents;
+  const send = () => { try { contents.send(channel, ...args); } catch {} };
+  if (contents.isLoading()) contents.once('did-finish-load', send);
+  else send();
+}
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+    // The window may be hidden in the tray rather than merely minimised, or gone
+    // altogether while the app lives on, and a second launch is the clearest possible
+    // request to see it — so this must not be conditional on a window existing.
+    showMainWindow();
     const projectPath = parseProjectArg(argv);
-    if (projectPath) mainWindow.webContents.send('launch-project-session', projectPath);
+    if (projectPath) sendToRenderer('launch-project-session', projectPath);
   });
 }
 
@@ -462,6 +473,20 @@ function createWindow() {
     },
   });
 
+  // Closing hides the window while a tray icon exists — sessions keep running and
+  // the app is reached from the tray. Conditional on the tray actually existing:
+  // on a desktop with no status-notifier host there would be nothing left to click,
+  // and the window would be gone for good.
+  mainWindow.on('close', (event) => {
+    if (isQuitting || !trayIcon.isTrayActive()) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
+  // The alert for the session on screen is cleared by the renderer; coming back to
+  // the window is the other half of that, since the user is now looking at it.
+  mainWindow.on('focus', () => clearSessionAttention(viewedSessionId));
+
   // Set position after creation to prevent macOS from clamping size
   if (restorePosition) {
     const restored = { ...restorePosition, width: bounds.width, height: bounds.height };
@@ -570,6 +595,135 @@ function createWindow() {
 ipcMain.handle('set-ui-scale-minimum', (_event, factor) => {
   uiScaleMinimumFactor = clampUiScaleFactor(factor);
   return applyWindowMinimum(uiScaleMinimumFactor);
+});
+
+// --- Tray ---------------------------------------------------------------------
+const trayIcon = require('./tray');
+
+// Which session the renderer is showing, so an alert about the session the user is
+// already watching does not light the tray up.
+let viewedSessionId = null;
+
+// Same classification the renderer applies to an OSC 9 message (public/app.js), for
+// the four shapes the CLI emits: attention, plan approval, tool permission, and
+// entering plan mode.
+const ATTENTION_MESSAGE = /attention|approval|permission|needs your|wants to enter/i;
+
+let isQuitting = false;
+
+function trayEnabledSetting() {
+  const value = getSetting('global')?.showTray;
+  return value === undefined || value === null ? true : !!value;
+}
+
+// True only while the user can actually see the session in question.
+function isWatchingSession(sessionId) {
+  return sessionId === viewedSessionId
+    && !!mainWindow && !mainWindow.isDestroyed()
+    && mainWindow.isVisible() && mainWindow.isFocused();
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+}
+
+function traySnapshot() {
+  const attention = [];
+  const busy = [];
+  // A re-keyed session replaces its old entry in activeSessions, so every session
+  // appears exactly once here, under the id the renderer also knows it by.
+  for (const [key, session] of activeSessions) {
+    if (session.exited) continue;
+    const sessionId = session.realSessionId || key;
+    const entry = { sessionId, projectPath: session.projectPath, sessionSlug: session.sessionSlug };
+    if (session._attention) attention.push(entry);
+    else if (session._cliBusy) busy.push(entry);
+  }
+  return { attention, busy, accounts: getAccounts(), usage: accountsUsageSnapshot() };
+}
+
+function refreshTray() {
+  if (!trayIcon.isTrayActive()) return;
+  const state = traySnapshot();
+  trayIcon.updateTray(state);
+  // macOS and Unity; a no-op on Windows, where the equivalent is an overlay icon.
+  try { app.setBadgeCount(state.attention.length); } catch {}
+}
+
+// A session the CLI has asked something of is marked on the session object itself
+// rather than in a set of ids: a fork or plan-accept re-keys the session under a new
+// id, and a mark carried by the object survives that on its own. The mark is kept
+// here rather than in the renderer, which keeps its own set for the sidebar, because
+// the tray has to be right exactly when the window is hidden and the renderer is not
+// being looked at.
+function noteSessionNotification(session, sessionId, message) {
+  if (!ATTENTION_MESSAGE.test(message) || isWatchingSession(sessionId)) return;
+  session._attention = true;
+  refreshTray();
+}
+
+function clearSessionAttention(sessionId) {
+  if (!sessionId) return;
+  // Either id resolves: activeSessions is keyed by the temporary id until a fork or
+  // plan-accept re-keys it, and by the real one afterwards.
+  const session = activeSessions.get(sessionId);
+  if (!session?._attention) return;
+  session._attention = false;
+  refreshTray();
+}
+
+function startTray() {
+  const created = trayIcon.createTray({
+    onShow: showMainWindow,
+    onQuit: () => { isQuitting = true; app.quit(); },
+    onFocusSession: (sessionId) => {
+      showMainWindow();
+      clearSessionAttention(sessionId);
+      sendToRenderer('focus-session', sessionId);
+    },
+  });
+  if (created) {
+    refreshTray();
+    startUsagePolling();
+  } else {
+    log.warn('[tray] no tray icon could be created; the window will keep closing to quit');
+    // Deferred while the page is still loading: the tray is started during
+    // whenReady, before the renderer has a listener for this.
+    sendToRenderer(
+      'status-update',
+      'No tray icon available on this desktop — closing the window still quits',
+      'warn',
+    );
+  }
+  return created;
+}
+
+function stopTray() {
+  trayIcon.destroyTray();
+  stopUsagePolling();
+  try { app.setBadgeCount(0); } catch {}
+}
+
+// The renderer reports which session it is showing; that is also the moment its own
+// attention marker is cleared, so the two stay in step.
+ipcMain.on('session-viewed', (_event, sessionId) => {
+  viewedSessionId = sessionId || null;
+  clearSessionAttention(sessionId);
+});
+
+ipcMain.handle('set-tray-enabled', (_event, enabled) => {
+  if (enabled) {
+    if (!trayIcon.isTrayActive()) startTray();
+  } else {
+    stopTray();
+  }
+  return trayIcon.isTrayActive();
 });
 
 function buildMenu() {
@@ -1792,9 +1946,34 @@ ipcMain.handle('set-active-account-id', (_event, accountId) => {
   return { ok: true };
 });
 
-ipcMain.handle('get-accounts-usage', async () => {
+// --- Account usage (limits) ---
+// One fetch loop for the whole app. Every account costs a network call, the API
+// answers 429 with a retry-after, and both the tray and the renderer want the same
+// numbers — so they share this result rather than each asking for their own.
+const USAGE_POLL_MS = 5 * 60 * 1000;
+// How stale a result the renderer will accept before a request refreshes it.
+const USAGE_FRESH_MS = 2 * 60 * 1000;
+// A 429 does not have to carry a usable retry-after, and without a floor of its own
+// the poll would keep asking a limited API every interval.
+const USAGE_RATE_LIMIT_MIN_MS = 60 * 1000;
+
+let usageByAccount = {};
+let usageFetchedAt = 0;
+let usageInFlight = null;
+let usagePollTimer = null;
+// Set from a 429's retry-after: no fetch is attempted before this moment.
+let usageBlockedUntil = 0;
+
+function accountsUsageSnapshot() {
+  return usageByAccount;
+}
+
+async function fetchAccountsUsage() {
   const accounts = getAccounts();
   const results = {};
+  let rateLimited = false;
+  let retryAfterSeconds = 0;
+
   await Promise.all(accounts.map(async (account) => {
     const cacheKey = 'usage:' + account.id;
     try {
@@ -1803,6 +1982,10 @@ ipcMain.handle('get-accounts-usage', async () => {
         setSetting(cacheKey, usage);
         results[account.id] = usage;
       } else {
+        if (usage?._rateLimited) {
+          rateLimited = true;
+          retryAfterSeconds = Math.max(retryAfterSeconds, usage.retryAfterSeconds || 0);
+        }
         const cached = getSetting(cacheKey);
         results[account.id] = cached ? { ...cached, _cached: true } : (usage || {});
       }
@@ -1811,7 +1994,67 @@ ipcMain.handle('get-accounts-usage', async () => {
       results[account.id] = cached ? { ...cached, _cached: true } : {};
     }
   }));
+
+  usageByAccount = results;
+  usageFetchedAt = Date.now();
+  // A rate limit applies to the token, not to one call, so hold off every account.
+  if (rateLimited) {
+    const holdMs = Math.max(retryAfterSeconds * 1000 || 0, USAGE_RATE_LIMIT_MIN_MS);
+    usageBlockedUntil = Date.now() + holdMs;
+    log.warn(`[usage] rate limited; not fetching again for ${Math.round(holdMs / 1000)}s`);
+  }
   return results;
+}
+
+// Never runs two fetches at once: a slow request would otherwise pile up behind the
+// poll interval and the renderer's own request.
+function refreshAccountsUsage() {
+  if (usageInFlight) return usageInFlight;
+  if (Date.now() < usageBlockedUntil) return Promise.resolve(usageByAccount);
+
+  usageInFlight = fetchAccountsUsage()
+    .catch((err) => {
+      log.error('[usage] refresh failed:', err?.message || String(err));
+      return usageByAccount;
+    })
+    .finally(() => { usageInFlight = null; });
+
+  usageInFlight.then(() => refreshTray()).catch(() => {});
+  return usageInFlight;
+}
+
+let resumeWatchInstalled = false;
+
+function startUsagePolling() {
+  if (usagePollTimer) return;
+  refreshAccountsUsage();
+  usagePollTimer = setInterval(() => refreshAccountsUsage(), USAGE_POLL_MS);
+  // Numbers from before a suspend are worthless, and the interval does not fire
+  // while the machine is asleep. Installed once: the tray can be switched off and
+  // on again, and a listener per switch would stack up.
+  if (!resumeWatchInstalled) {
+    try {
+      const { powerMonitor } = require('electron');
+      powerMonitor.on('resume', () => refreshAccountsUsage());
+      resumeWatchInstalled = true;
+    } catch {}
+  }
+}
+
+function stopUsagePolling() {
+  if (!usagePollTimer) return;
+  clearInterval(usagePollTimer);
+  usagePollTimer = null;
+}
+
+ipcMain.handle('get-accounts-usage', async () => {
+  // The last result only counts as fresh while it still covers every account: an
+  // account added since then has no figures in it, and the renderer asks precisely
+  // because it has just added one.
+  const ids = getAccounts().map((account) => account.id);
+  const covers = ids.length > 0 && ids.every((id) => id in usageByAccount);
+  if (covers && Date.now() - usageFetchedAt < USAGE_FRESH_MS) return usageByAccount;
+  return refreshAccountsUsage();
 });
 
 // --- Scheduled tasks ---
@@ -2213,6 +2456,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('cli-busy-state', currentId, true);
             }
+            refreshTray();
           } else if (isIdle && session._cliBusy) {
             session._cliBusy = false;
             session._oscIdle = true;
@@ -2220,6 +2464,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('cli-busy-state', currentId, false);
             }
+            refreshTray();
           }
         }
       }
@@ -2239,13 +2484,20 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('cli-busy-state', currentId, true);
             }
+            refreshTray();
           }
         } else {
           // Regular notification (attention, permission, etc.)
           log.info(`[OSC 9] session=${currentId} message="${payload}"`);
+          // Classified once, here, and the verdict travels with the message: the
+          // renderer used to run its own copy of this test, and two copies of the
+          // rule drift apart in the one direction that matters — the sidebar marking
+          // a session the tray does not.
+          const wantsUser = ATTENTION_MESSAGE.test(payload);
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('terminal-notification', currentId, payload);
+            mainWindow.webContents.send('terminal-notification', currentId, payload, wantsUser);
           }
+          noteSessionNotification(session, currentId, payload);
         }
       }
     }
@@ -2301,6 +2553,10 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     activeSessions.delete(realId);
     // Clean up the original key too in case transition detection hasn't run yet
     activeSessions.delete(sessionId);
+    // An exited session cannot be waiting for anything, and traySnapshot skips it
+    // on both counts now — it is gone from the map and marked exited.
+    session._attention = false;
+    refreshTray();
   });
 
   if (sessionOptions?.forkFrom) {
@@ -2586,16 +2842,28 @@ app.whenReady().then(() => {
     setInterval(() => autoUpdater.checkForUpdates().catch(e => log.error('[updater] check failed:', e?.message || String(e))), 4 * 60 * 60 * 1000);
   }
 
+  if (trayEnabledSetting()) startTray();
+
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    // A hidden window is still a window, so getAllWindows() cannot decide this.
+    showMainWindow();
   });
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // With a tray icon the app deliberately outlives its window on every platform;
+  // quitting is the tray's Quit item.
+  if (process.platform !== 'darwin' && !trayIcon.isTrayActive()) app.quit();
 });
 
+// A quit started by autoUpdater.quitAndInstall() closes the windows first and only
+// emits before-quit afterwards, so without this the close handler would hide the
+// window and the update would never be installed.
+app.on('before-quit-for-update', () => { isQuitting = true; });
+
 app.on('before-quit', () => {
+  isQuitting = true;
+  stopTray();
   // Shut down all MCP servers
   shutdownAllMcp();
 

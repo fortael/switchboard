@@ -100,6 +100,9 @@ function clearNotifications(sessionId) {
   clearUnread(sessionId);
   attentionSessions.delete(sessionId);
   window.vueSidebar?.clearNotifications(sessionId);
+  // showSession is the only caller, so this is also the moment to tell the main
+  // process which session is on screen — it keeps the tray's own set of alerts.
+  window.api.sessionViewed?.(sessionId);
 }
 // Terminal themes, utils (cleanDisplayName, formatDate, escapeHtml, shellEscape)
 // are defined in terminal-themes.js and utils.js (loaded before app.js).
@@ -253,14 +256,12 @@ window.api.onProcessExited((sessionId, exitCode) => {
 });
 
 // --- Terminal notifications (iTerm2 OSC 9 — "needs attention") ---
-window.api.onTerminalNotification((sessionId, message) => {
-  // Only mark as needing attention for "attention" messages, not "waiting for input"
-  // Matches all four CLI notification types:
-  // 1. "Claude Code needs your attention"         → attention
-  // 2. "Claude Code needs your approval for the plan" → approval, needs your
-  // 3. "Claude needs your permission to use {tool}"   → permission, needs your
-  // 4. "Claude Code wants to enter plan mode"         → wants to enter
-  if (/attention|approval|permission|needs your|wants to enter/i.test(message) && sessionId !== activeSessionId) {
+window.api.onTerminalNotification((sessionId, message, needsAttention) => {
+  // Whether the CLI is asking for something is decided in the main process, which
+  // needs the same verdict for the tray — one rule, in one place. The local test is
+  // only a fallback for a message that arrived without one.
+  const wantsUser = needsAttention ?? /attention|approval|permission|needs your|wants to enter/i.test(message);
+  if (wantsUser && sessionId !== activeSessionId) {
     attentionSessions.add(sessionId);
     window.vueSidebar?.addAttention(sessionId);
   } else if (/waiting for your input/i.test(message)) {
@@ -278,6 +279,17 @@ window.api.onTerminalNotification((sessionId, message) => {
 // --- CLI busy state (OSC 0 title spinner detection) ---
 window.api.onCliBusyState((sessionId, busy) => {
   setActivity(sessionId, busy);
+});
+
+// --- Session picked from the tray menu ---
+// Same path as a click in the sidebar: it leaves whatever panel is open, switches to
+// the sessions tab and reattaches a session whose tab was closed while it kept
+// running — showSession alone would leave an empty terminal area for that one. A
+// session too new to be in the project cache is not reachable that way, so it falls
+// back to showing the entry that is already open for it.
+window.api.onFocusSession?.((sessionId) => {
+  if (sessionMap.has(sessionId)) window.__sb?.openSessionById(sessionId);
+  else if (openSessions.has(sessionId) && typeof showSession === 'function') showSession(sessionId);
 });
 
 // --- Single entry point for all sidebar renders ---
@@ -1581,6 +1593,10 @@ window.__sb = {
     searchMatchProjectPaths = null;
     window.vueSidebar?.setSearch(null, null);
     saveUiState({ sidebarTab: tabName });
+    // Every other tab hides the terminal area, so no session is on screen any more
+    // and an alert for the one that was has to reach the tray. Coming back reports
+    // itself: the sessions branch below shows the session again.
+    if (tabName !== 'sessions') window.api.sessionViewed?.(null);
 
     if (tabName === 'sessions') {
       saveUiState({ panel: 'terminal', sidebarTab: tabName });

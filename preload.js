@@ -41,6 +41,18 @@ contextBridge.exposeInMainWorld('api', {
   // same zoom factor as setUiZoom, not a percentage — one unit across the bridge.
   setUiScaleMinimum: (factor) => ipcRenderer.invoke('set-ui-scale-minimum', factor),
 
+  // Tray. The tray lives in the main process, so switching it on or off is a request
+  // rather than a stored value the renderer applies itself. Resolves to whether a
+  // tray icon actually exists afterwards, which a desktop without a tray host can
+  // refuse.
+  setTrayEnabled: (enabled) => ipcRenderer.invoke('set-tray-enabled', enabled),
+  // Which session the user is looking at, so the tray does not report an alert for a
+  // session already on screen.
+  sessionViewed: (sessionId) => ipcRenderer.send('session-viewed', sessionId),
+  onFocusSession: (callback) => {
+    ipcRenderer.on('focus-session', (_event, sessionId) => callback(sessionId));
+  },
+
   // Multi-account
   getAccounts: () => ipcRenderer.invoke('get-accounts'),
   saveAccounts: (accounts) => ipcRenderer.invoke('save-accounts', accounts),
@@ -98,7 +110,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('process-exited', (_event, sessionId, exitCode) => callback(sessionId, exitCode));
   },
   onTerminalNotification: (callback) => {
-    ipcRenderer.on('terminal-notification', (_event, sessionId, message) => callback(sessionId, message));
+    // needsAttention is the main process's verdict on the message: whether the CLI is
+    // asking the user for something rather than just reporting.
+    ipcRenderer.on('terminal-notification', (_event, sessionId, message, needsAttention) => {
+      callback(sessionId, message, needsAttention);
+    });
   },
   onCliBusyState: (callback) => {
     ipcRenderer.on('cli-busy-state', (_event, sessionId, busy) => callback(sessionId, busy));

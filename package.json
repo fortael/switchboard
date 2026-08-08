@@ -22,7 +22,8 @@
     "build:win": "npm run bundle:codemirror && npm run bundle:vue && electron-builder --win",
     "build:linux": "npm run bundle:codemirror && npm run bundle:vue && electron-builder --linux",
     "release": "npm run bundle:codemirror && npm run bundle:vue && electron-builder --publish always",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "generate-tray-icons": "node scripts/generate-tray-icons.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
