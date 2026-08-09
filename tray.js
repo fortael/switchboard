@@ -64,17 +64,25 @@ function usageLine(account, usage) {
 }
 
 // The worst number across every account, which is what belongs in a tooltip that
-// has to summarise all of them in one line.
+// has to summarise all of them in one line. `reporting` counts the accounts that
+// actually contributed a number rather than all of them: an account whose fetch
+// failed, or that has not been read yet, must not be claimed as part of a
+// maximum it had no say in — that reads as "the other account is missing" when
+// the truth is "the other account has no data".
 function peakUsage(accounts, usageByAccount) {
   let session = null;
   let week = null;
+  let reporting = 0;
   for (const account of accounts) {
     const usage = usageByAccount[account.id];
     if (!usage) continue;
-    if (typeof usage.session === 'number') session = Math.max(session ?? 0, usage.session);
-    if (typeof usage.weekAll === 'number') week = Math.max(week ?? 0, usage.weekAll);
+    const hasSession = typeof usage.session === 'number';
+    const hasWeek = typeof usage.weekAll === 'number';
+    if (hasSession) session = Math.max(session ?? 0, usage.session);
+    if (hasWeek) week = Math.max(week ?? 0, usage.weekAll);
+    if (hasSession || hasWeek) reporting += 1;
   }
-  return { session, week };
+  return { session, week, reporting };
 }
 
 function statusLine(attentionCount, busyCount) {
@@ -103,7 +111,7 @@ function presentTray(state = {}) {
     const parts = [];
     if (peak.session !== null) parts.push(`5h ${peak.session}%`);
     if (peak.week !== null) parts.push(`week ${peak.week}%`);
-    const scope = accounts.length > 1 ? ` (highest of ${accounts.length} accounts)` : '';
+    const scope = peak.reporting > 1 ? ` (highest of ${peak.reporting} accounts)` : '';
     tooltip.push(`Limits: ${parts.join(' · ')}${scope}`);
   }
 

@@ -115,7 +115,7 @@ test('a reset time is only worth the space once the window is loaded', () => {
 test('the tooltip reports the worst window across accounts', () => {
   const accounts = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
   const usage = { a: { session: 12, weekAll: 80 }, b: { session: 91, weekAll: 30 } };
-  assert.deepEqual(peakUsage(accounts, usage), { session: 91, week: 80 });
+  assert.deepEqual(peakUsage(accounts, usage), { session: 91, week: 80, reporting: 2 });
 
   const view = presentTray({ accounts, usage });
   assert.match(view.tooltip, /Limits: 5h 91% · week 80% \(highest of 2 accounts\)/);
@@ -127,6 +127,28 @@ test('the tooltip reports the worst window across accounts', () => {
 test('one account needs no "highest of" qualifier', () => {
   const view = presentTray({ accounts: [{ id: 'a', name: 'A' }], usage: { a: { session: 5 } } });
   assert.match(view.tooltip, /Limits: 5h 5%$/);
+});
+
+// The figure in the tooltip is a maximum over the accounts that answered. Naming
+// a count larger than that reads as "the other account's number is missing", and
+// sends people looking for a bug in the wrong place — the second account has no
+// data, which the menu says in as many words.
+test('the qualifier counts the accounts that answered, not the ones configured', () => {
+  const accounts = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
+
+  const oneAnswered = presentTray({ accounts, usage: { a: { session: 9, weekAll: 10 } } });
+  assert.match(oneAnswered.tooltip, /Limits: 5h 9% · week 10%$/);
+  assert.equal(peakUsage(accounts, { a: { session: 9 } }).reporting, 1);
+
+  // A failed or rate-limited fetch is an answer with no number in it
+  const failed = { a: { session: 9, weekAll: 10 }, b: { _error: true } };
+  assert.match(presentTray({ accounts, usage: failed }).tooltip, /week 10%$/);
+  const limited = { a: { session: 9, weekAll: 10 }, b: { _rateLimited: true } };
+  assert.match(presentTray({ accounts, usage: limited }).tooltip, /week 10%$/);
+
+  // and both answering brings the qualifier back
+  const both = { a: { session: 9, weekAll: 10 }, b: { session: 40, weekAll: 3 } };
+  assert.match(presentTray({ accounts, usage: both }).tooltip, /highest of 2 accounts/);
 });
 
 test('accounts with no usage at all leave the tooltip to the session state', () => {
