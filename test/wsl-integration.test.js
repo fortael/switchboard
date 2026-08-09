@@ -42,7 +42,10 @@ const SECOND_CONFIG = '/home/delirus/.claude-work';
 // "not there" case needs a name that interception knows to refuse.
 const MISSING_CONFIG = '/home/delirus/.claude-absent';
 
-const calls = { readdirSync: [], existsSync: [], readFileSync: [], statSync: [], spawn: [] };
+const calls = {
+  readdirSync: [], existsSync: [], readFileSync: [], statSync: [], spawn: [],
+  deleteCachedFolder: [],
+};
 const settings = new Map([
   ['accounts', [
     { id: 'default', name: 'Default', configDir: realPath.join(HOME, '.claude') },
@@ -94,6 +97,9 @@ const stubs = {
     getSetting: (k) => settings.get(k),
     setSetting: (k, v) => settings.set(k, v),
     deleteSetting: (k) => settings.delete(k),
+    // Recorded rather than ignored: the session cache is keyed by account, and
+    // which account a write names is exactly what the account tests are about.
+    deleteCachedFolder: (folder, accountId) => calls.deleteCachedFolder.push({ folder, accountId }),
     searchFtsRecreated: false,
   }),
   ws: { WebSocketServer: function () { return permissive(); } },
@@ -189,6 +195,23 @@ test('a folder picked as UNC is stored POSIX and encodes the folder Claude creat
   const result = await handlers.get('add-project')({}, PROJECT_UNC);
   assert.equal(result.projectPath, PROJECT_POSIX);
   assert.equal(result.folder, '-home-delirus-work-proj');
+});
+
+test('hiding a project clears the cache of the account it belongs to', async () => {
+  calls.deleteCachedFolder.length = 0;
+  const result = await handlers.get('remove-project')({}, PROJECT_POSIX);
+  assert.equal(result.ok, true);
+
+  // deleteCachedFolder defaults its account argument to 'default', so omitting
+  // it deleted a row belonging to another account and left this one answering
+  // searches for a project the user had just hidden.
+  assert.deepEqual(calls.deleteCachedFolder, [
+    { folder: '-home-delirus-work-proj', accountId: 'wsl-test' },
+  ]);
+
+  // Undo: the path is now on the hidden list, which every later read honours
+  const global = settings.get('global');
+  settings.set('global', { ...global, hiddenProjects: [] });
 });
 
 test('a folder from another distribution is refused with the account to switch to', async () => {

@@ -895,9 +895,13 @@ ipcMain.handle('remove-project', (_event, projectPath) => {
     global.hiddenProjects = hidden;
     setSetting('global', global);
 
-    // Clean up DB cache and search index for this folder
+    // Clean up DB cache and search index for this folder. The cache is keyed by
+    // account, and deleteCachedFolder defaults its second argument to 'default'
+    // — so leaving it off deleted another account's row and kept the one being
+    // hidden, which then still answered searches. The search index itself has no
+    // account column, so it is folder-wide by construction.
     const folder = encodeProjectPath(projectPath);
-    deleteCachedFolder(folder);
+    deleteCachedFolder(folder, getActiveAccount().id);
     deleteSearchFolder(folder);
     deleteSetting('project:' + projectPath);
 
