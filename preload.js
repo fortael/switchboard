@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('create-wsl-account', distro, name, claudePosix),
   renameAccount: (id, name) => ipcRenderer.invoke('rename-account', id, name),
   deleteAccount: (id) => ipcRenderer.invoke('delete-account', id),
+  restoreDefaultAccount: () => ipcRenderer.invoke('restore-default-account'),
   getActiveAccountId: () => ipcRenderer.invoke('get-active-account-id'),
   setActiveAccountId: (id) => ipcRenderer.invoke('set-active-account-id', id),
   getAccountsUsage: () => ipcRenderer.invoke('get-accounts-usage'),

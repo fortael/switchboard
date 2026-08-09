@@ -58,7 +58,7 @@ const {
   discoverShellProfiles, getShellProfiles, resolveShell, isWindows, isWslShell,
   windowsToWslPath, shellArgs,
   wslToWindowsPath, isPosixAbsolutePath, probeWslClaudeHome, probeWslClaudeDir,
-  discoverWslClaudeHomes, listWslDistros, defaultClaudePosix, wslExecArgs,
+  discoverWslClaudeHomes, defaultClaudePosix, wslExecArgs,
   withWslEnv, wslDistroFromUncPath, projectJoin,
 } = require('./shell-profiles');
 const { startScheduler } = require('./schedule-runner');
@@ -123,19 +123,21 @@ function withWslClaudePosix(account) {
   return { ...account, wslClaudePosix: defaultClaudePosix(account.wslHome) };
 }
 
+// Nothing stored at all is a fresh install, which starts on the local Claude
+// home. A stored list is taken exactly as it stands — the default account is
+// deletable like any other, and re-adding it here would quietly undo that.
 function getAccounts() {
   const stored = getSetting('accounts');
   if (!Array.isArray(stored) || stored.length === 0) return [DEFAULT_ACCOUNT];
-  const normalized = stored.map(withWslClaudePosix);
-  // Always ensure default account is present
-  if (!normalized.find(a => a.id === 'default')) return [DEFAULT_ACCOUNT, ...normalized];
-  return normalized;
+  return stored.map(withWslClaudePosix);
 }
 
+// The first account is the fallback rather than the default one, which may have
+// been removed. getAccounts() never answers empty, so this always resolves.
 function getActiveAccount() {
-  const global = getSetting('global') || {};
-  const activeId = global.activeAccountId || 'default';
-  return getAccounts().find(a => a.id === activeId) || DEFAULT_ACCOUNT;
+  const accounts = getAccounts();
+  const activeId = (getSetting('global') || {}).activeAccountId || 'default';
+  return accounts.find(a => a.id === activeId) || accounts[0];
 }
 
 function getProjectsDir(account) {
@@ -1549,13 +1551,21 @@ ipcMain.handle('refresh-stats', async () => {
     FORCE_COLOR: '3',
     // No ITERM_SESSION_ID: without it Claude CLI won't try to reach iTerm2 via AppleScript,
     // which avoids the macOS "would like to access data from other apps" permission prompt.
-    // For a WSL account the Windows configDir is meaningless inside the
-    // distribution, so what crosses is the POSIX directory — and only for an
-    // account that is not the distribution's default Claude home.
-    ...(statsDistro
-      ? (statsWslConfigEnv ? { CLAUDE_CONFIG_DIR: statsWslConfigEnv } : {})
-      : (configDir !== DEFAULT_CLAUDE_DIR ? { CLAUDE_CONFIG_DIR: configDir } : {})),
   };
+  // For a WSL account the Windows configDir is meaningless inside the
+  // distribution, so what crosses is the POSIX directory — and only for an
+  // account that is not the distribution's default Claude home.
+  //
+  // Deleted rather than merely left unset: cleanPtyEnv is a copy of the app's own
+  // environment, so a CLAUDE_CONFIG_DIR the user happened to export before
+  // launching would otherwise survive here and outrank the active account. For a
+  // WSL session it is worse than wrong — WSLENV names it below, so a Windows path
+  // would cross into a distribution that cannot resolve it at all.
+  delete ptyEnv.CLAUDE_CONFIG_DIR;
+  const statsConfigEnv = statsDistro
+    ? statsWslConfigEnv
+    : (configDir !== DEFAULT_CLAUDE_DIR ? configDir : null);
+  if (statsConfigEnv) ptyEnv.CLAUDE_CONFIG_DIR = statsConfigEnv;
   if (statsInWsl) {
     Object.assign(ptyEnv, withWslEnv(ptyEnv, [
       'CLAUDE_CONFIG_DIR',
@@ -1666,7 +1676,7 @@ ipcMain.handle('refresh-stats', async () => {
 
 // --- IPC: get-usage (lightweight, API-only, no PTY) ---
 ipcMain.handle('get-usage', async () => {
-  const cacheKey = 'usage:' + ((getSetting('global') || {}).activeAccountId || 'default');
+  const cacheKey = 'usage:' + getActiveAccount().id;
   try {
     const usage = await fetchAndTransformUsage(activeConfigDir()) || {};
     if (!usage._error && !usage._rateLimited && Object.keys(usage).length) {
@@ -1684,7 +1694,7 @@ ipcMain.handle('get-usage', async () => {
 
 // --- IPC: get-cached-usage (DB-only, no Keychain/API access) ---
 ipcMain.handle('get-cached-usage', () => {
-  const cacheKey = 'usage:' + ((getSetting('global') || {}).activeAccountId || 'default');
+  const cacheKey = 'usage:' + getActiveAccount().id;
   const cached = getSetting(cacheKey);
   return cached ? { ...cached, _cached: true } : {};
 });
@@ -1894,10 +1904,13 @@ ipcMain.handle('delete-setting', (_event, key) => {
 ipcMain.handle('get-accounts', () => getAccounts());
 
 ipcMain.handle('save-accounts', (_event, accounts) => {
-  const withDefault = accounts.find(a => a.id === 'default')
-    ? accounts
-    : [DEFAULT_ACCOUNT, ...accounts];
-  setSetting('accounts', withDefault);
+  // The default account is no longer forced back into the list — an install
+  // running everything inside WSL is allowed not to have one. What is not
+  // allowed is an empty list, which would leave the app with nothing to show.
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    return { ok: false, error: 'At least one account is required' };
+  }
+  setSetting('accounts', accounts);
   return { ok: true };
 });
 
@@ -1921,9 +1934,17 @@ ipcMain.handle('discover-wsl-claude-homes', async () => {
 
 // Installed distributions, so a config directory discovery cannot see — one
 // outside $HOME, or one Claude has not written a projects/ into yet — can still
-// be named by hand.
+// be named by hand. Read off the cached shell profiles rather than by calling
+// listWslDistros() again: that is a *synchronous* `wsl.exe --list` with a five
+// second timeout, and the renderer asks for this alongside
+// discover-wsl-claude-homes, which runs the same exec of its own. Two blocking
+// child processes on the main process freeze every terminal in the window.
 ipcMain.handle('list-wsl-distros', () => {
-  try { return listWslDistros(); } catch { return []; }
+  try {
+    return getShellProfiles()
+      .filter(p => p.id.startsWith('wsl:'))
+      .map(p => p.id.slice('wsl:'.length));
+  } catch { return []; }
 });
 
 // The account already attached to a config directory inside a distribution, if
@@ -1989,20 +2010,54 @@ ipcMain.handle('rename-account', (_event, id, name) => {
   return { ok: true };
 });
 
+// Any account can go, including the default one — an install that only ever
+// uses Claude inside WSL has no reason to keep a Windows home it never opens.
+// The one thing that cannot happen is having nothing to look at, so the last
+// account stays. Only the settings row is removed; no Claude directory on disk
+// is touched, and re-attaching the same directory brings the sessions back.
 ipcMain.handle('delete-account', (_event, id) => {
-  if (id === 'default') return { ok: false };
-  const updated = getAccounts().filter(a => a.id !== id);
-  setSetting('accounts', updated);
-  return { ok: true };
+  // Read before the list shrinks, and through getActiveAccount() rather than off
+  // the stored id: that id can name an account that is not there, in which case
+  // the account actually in effect is the first survivor — and that is the id the
+  // renderer is holding, so it is the one the answer has to be comparable with.
+  const activeId = getActiveAccount().id;
+  const remaining = getAccounts().filter(a => a.id !== id);
+  if (!remaining.length) {
+    return { ok: false, error: 'The last account cannot be removed' };
+  }
+  setSetting('accounts', remaining);
+
+  // Deleting the account on screen would otherwise leave every per-account
+  // directory pointing at one that no longer exists.
+  if (activeId === id) {
+    activateAccount(remaining[0].id);
+    return { ok: true, activeAccountId: remaining[0].id };
+  }
+  return { ok: true, activeAccountId: activeId };
+});
+
+// Put the local Claude home back after it has been deleted. Without this the
+// removal is a one-way door: create-account makes a fresh empty config under
+// ~/.wootonpad rather than re-attaching ~/.claude.
+ipcMain.handle('restore-default-account', () => {
+  const existing = getAccounts();
+  const already = existing.find(a => a.id === 'default');
+  if (already) return already;
+  setSetting('accounts', [DEFAULT_ACCOUNT, ...existing]);
+  return DEFAULT_ACCOUNT;
 });
 
 ipcMain.handle('get-homedir', () => os.homedir());
 
-ipcMain.handle('get-active-account-id', () => {
-  return (getSetting('global') || {}).activeAccountId || 'default';
-});
+// Reports the account actually in effect rather than the stored id, which can
+// name an account that is no longer there — getActiveAccount() resolves that to
+// the first survivor and the renderer has to agree with it.
+ipcMain.handle('get-active-account-id', () => getActiveAccount().id);
 
-ipcMain.handle('set-active-account-id', (_event, accountId) => {
+// Point everything that holds a per-account directory at `accountId`. Shared
+// with delete-account, which has to do exactly this when the account being
+// removed is the one on screen.
+function activateAccount(accountId) {
   const global = getSetting('global') || {};
   global.activeAccountId = accountId;
   setSetting('global', global);
@@ -2016,6 +2071,10 @@ ipcMain.handle('set-active-account-id', (_event, accountId) => {
   });
   restartProjectsWatcher();
   populateCacheViaWorker();
+}
+
+ipcMain.handle('set-active-account-id', (_event, accountId) => {
+  activateAccount(accountId);
   return { ok: true };
 });
 
@@ -2463,6 +2522,13 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       // would point Claude at a path it cannot resolve. What crosses instead is
       // the POSIX directory, and only when it is not the ~/.claude the
       // distribution would have picked on its own.
+      //
+      // Deleted rather than merely left unset: cleanPtyEnv is a copy of the app's
+      // own environment, so a CLAUDE_CONFIG_DIR the user happened to export before
+      // launching would otherwise survive here and outrank the active account. For
+      // a WSL session it is worse than wrong — WSLENV names it below, so a Windows
+      // path would cross into a distribution that cannot resolve it at all.
+      delete ptyEnv.CLAUDE_CONFIG_DIR;
       const wslConfigEnv = accountWslConfigEnv(activeAccount);
       if (wslConfigEnv) {
         ptyEnv.CLAUDE_CONFIG_DIR = wslConfigEnv;

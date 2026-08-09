@@ -21,10 +21,14 @@ Object.defineProperty(process, 'platform', { value: 'win32' });
 const HOME = fs.mkdtempSync(realPath.join(os.tmpdir(), 'wootonpad-wsl-'));
 os.homedir = () => HOME;
 
-// The simulated host must not inherit the Claude environment of whoever runs the
-// suite: main.js snapshots process.env at load to build the PTY environment, and
-// what that environment carries is one of the things asserted below.
-delete process.env.CLAUDE_CONFIG_DIR;
+// main.js snapshots process.env at load to build the PTY environment, and what
+// that environment carries is one of the things asserted below — so it is pinned
+// rather than inherited from whoever runs the suite. Pinned to a value on
+// purpose: this is the Windows CLAUDE_CONFIG_DIR a user may well have exported
+// before launching the app, and no session may pass it on. Inside a distribution
+// it does not resolve at all, and WSLENV now names CLAUDE_CONFIG_DIR, so nothing
+// but the delete in the handlers keeps it on the Windows side.
+process.env.CLAUDE_CONFIG_DIR = 'C:\\Users\\someone\\.claude-inherited';
 
 const DISTRO = 'Ubuntu';
 const PROJECT_POSIX = '/home/delirus/work/proj';
@@ -211,6 +215,8 @@ test('a Claude session for a WSL account is spawned inside the distribution', as
   // wsl.exe itself is a Windows process, so its own cwd must stay a Windows path
   assert.equal(realPath.win32.isAbsolute(spawned.opts.cwd) || spawned.opts.cwd === HOME, true);
   // Setting this would point Claude at a path it cannot resolve inside the distro
+  // — including the one the app itself was launched with, which reaches the
+  // handler through the snapshot of process.env and has to be dropped there.
   assert.equal(spawned.opts.env.CLAUDE_CONFIG_DIR, undefined);
 });
 
@@ -255,7 +261,7 @@ test('a second account in the same distribution is attachable, and only once', a
 test('a directory that is not there is refused rather than attached', async () => {
   const before = (await handlers.get('get-accounts')({})).length;
   const missing = await handlers.get('create-wsl-account')({}, DISTRO, null, MISSING_CONFIG);
-  assert.match(missing.error, new RegExp(MISSING_CONFIG));
+  assert.ok(missing.error.includes(MISSING_CONFIG), missing.error);
   assert.equal((await handlers.get('get-accounts')({})).length, before, 'nothing was written for it');
 
   // A path the distribution could not resolve either is refused without asking it
@@ -278,6 +284,78 @@ test('the second account tells the CLI which config directory to read', async ()
     // and wsl.exe drops anything WSLENV does not name
     assert.match(spawned.opts.env.WSLENV, /CLAUDE_CONFIG_DIR/);
   });
+});
+
+// --- Removing the local Claude home ---------------------------------------
+// An install that only runs Claude inside WSL has no use for a Windows home it
+// never opens, so the default account is deletable like any other. The one
+// invariant is that the app always has an account to look at.
+
+// Each of these empties the account list on its way, so each puts it back — the
+// suite's later tests read whatever is left behind.
+async function withAccountsRestored(fn) {
+  const accounts = settings.get('accounts');
+  // A copy, not the reference: activateAccount() writes the active id into the
+  // very object getSetting() hands it, so keeping the reference would restore
+  // whatever the last deletion left behind and quietly change which account the
+  // suite's later tests run under.
+  const global = { ...settings.get('global') };
+  try {
+    await fn();
+  } finally {
+    settings.set('accounts', accounts);
+    settings.set('global', global);
+  }
+}
+
+test('the local Claude home can be removed once WSL holds an account', async () => {
+  await withAccountsRestored(async () => {
+    const before = await handlers.get('get-accounts')({});
+    assert.ok(before.some(a => a.id === 'default'), 'it is there to begin with');
+
+    const result = await handlers.get('delete-account')({}, 'default');
+    assert.equal(result.ok, true);
+    const after = await handlers.get('get-accounts')({});
+    assert.equal(after.some(a => a.id === 'default'), false, 'and it is not put back');
+    assert.equal(after.length, before.length - 1);
+  });
+});
+
+test('the last account stays, whichever one it is', async () => {
+  await withAccountsRestored(async () => {
+    const all = await handlers.get('get-accounts')({});
+    const survivor = all[all.length - 1];
+    for (const account of all.slice(0, -1)) {
+      assert.equal((await handlers.get('delete-account')({}, account.id)).ok, true);
+    }
+    const refused = await handlers.get('delete-account')({}, survivor.id);
+    assert.equal(refused.ok, false);
+    assert.match(refused.error, /last account/);
+    assert.deepEqual((await handlers.get('get-accounts')({})).map(a => a.id), [survivor.id]);
+
+    // Deleting the account on screen has to move the app somewhere real, and the
+    // id the renderer is told must be the one every account read resolves to
+    assert.equal(await handlers.get('get-active-account-id')({}), survivor.id);
+  });
+});
+
+test('the local home can be attached again after being removed', async () => {
+  await withAccountsRestored(async () => {
+    await handlers.get('delete-account')({}, 'default');
+    const restored = await handlers.get('restore-default-account')({});
+    assert.equal(restored.id, 'default');
+    assert.equal(restored.configDir, realPath.join(HOME, '.claude'));
+    // and asking twice does not produce a twin
+    await handlers.get('restore-default-account')({});
+    const back = (await handlers.get('get-accounts')({})).filter(a => a.id === 'default');
+    assert.equal(back.length, 1);
+  });
+});
+
+test('an empty account list is refused rather than saved', async () => {
+  const result = await handlers.get('save-accounts')({}, []);
+  assert.equal(result.ok, false);
+  assert.ok((await handlers.get('get-accounts')({})).length > 0);
 });
 
 // Swap the active account for the duration of one test. The IPC that does this

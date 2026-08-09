@@ -327,6 +327,7 @@ const accountsCallbacks = {
   openAccountHomeSession: (acc) => window.__sb?.openAccountHomeSession?.(acc),
   renameAccount: (id, name) => window.__sb?.renameAccount?.(id, name),
   deleteAccount: (id) => window.__sb?.deleteAccount?.(id),
+  restoreDefaultAccount: () => window.__sb?.restoreDefaultAccount?.(),
   createAccount: (name) => window.__sb?.createAccount?.(name),
   discoverWslClaudeHomes: () => window.__sb?.discoverWslClaudeHomes?.(),
   listWslDistros: () => window.__sb?.listWslDistros?.(),

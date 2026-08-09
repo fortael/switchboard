@@ -1054,11 +1054,19 @@ async function switchAccount(id) {
 
   await window.api.setActiveAccountId(id);
 
+  reloadForActiveAccount();
+  // accountSwitching stays true — cleared in onProjectsChanged once new data arrives
+}
+
+// The view half of an account change, without the IPC that causes one. Deleting
+// the account on screen also moves the app to another, and the main process has
+// already done that by the time the renderer is told — going through
+// switchAccount() there would re-run the whole re-init a second time.
+function reloadForActiveAccount() {
   window.vueStats?.invalidate();
   const activeTab = window.vueStore?.activeTab || 'sessions';
   if (activeTab === 'stats') window.vueStats?.load();
   if (activeTab === 'projects') loadProjects().then(() => renderProjectsPanel());
-  // accountSwitching stays true — cleared in onProjectsChanged once new data arrives
 }
 
 // makeGroup is defined in utils.js (loaded first)
@@ -1813,11 +1821,45 @@ window.__sb = {
   },
 
   deleteAccount: async (id) => {
-    if (activeAccountId === id) await switchAccount('default');
+    // Removing the account on screen moves the app to another one, and the main
+    // process re-points the caches inside the handler — so the projects-changed
+    // push it causes can reach the renderer before this reply does. The flags go
+    // up first for the same reason switchAccount raises them before its IPC:
+    // onProjectsChanged has to recognise the arrival as the end of a switch.
+    const moving = activeAccountId === id;
+    if (moving) {
+      pendingAccountSwitch = true;
+      if (window.vueStore) window.vueStore.accountSwitching = true;
+    }
+
+    const result = await window.api.deleteAccount(id);
+    if (!result?.ok) {
+      if (moving) {
+        pendingAccountSwitch = false;
+        if (window.vueStore) window.vueStore.accountSwitching = false;
+      }
+      alert(result?.error || 'Could not remove the account');
+      return result;
+    }
+
     accounts = accounts.filter(a => a.id !== id);
-    await window.api.deleteAccount(id);
+    // Which account it lands on is the main process's call, not a guess here.
+    const moved = result.activeAccountId !== activeAccountId;
+    if (moved) activeAccountId = result.activeAccountId;
     updateAccountDropdown();
     renderAccountsPanel();
+    if (moved) reloadForActiveAccount();
+    return result;
+  },
+
+  restoreDefaultAccount: async () => {
+    const restored = await window.api.restoreDefaultAccount();
+    if (!restored || accounts.some(a => a.id === restored.id)) return restored;
+    accounts = [restored, ...accounts];
+    await refreshAccountUsage();
+    updateAccountDropdown();
+    renderAccountsPanel();
+    return restored;
   },
 
   createAccount: async (name) => {

@@ -717,7 +717,8 @@ body { display: flex; flex-direction: column; }
   border: 1px solid var(--border-subtle);
 }
 
-.accounts-add-form input {
+.accounts-add-form input,
+.accounts-add-form select {
   background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.1);
   border-radius: 5px;
@@ -728,7 +729,8 @@ body { display: flex; flex-direction: column; }
   font-family: inherit;
 }
 
-.accounts-add-form input:focus {
+.accounts-add-form input:focus,
+.accounts-add-form select:focus {
   border-color: rgba(128,136,255,0.4);
 }
 
@@ -784,6 +786,16 @@ body { display: flex; flex-direction: column; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Offer to re-attach the local Claude home once it has been removed. It also
+   carries .accounts-add-form for the card framing, which lays its children out
+   in a column — hence the explicit direction, or the button lands underneath. */
+.accounts-restore-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
 }
 
 /* Naming a config directory by hand, for the ones discovery cannot see. */

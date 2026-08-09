@@ -41,8 +41,12 @@
                   data-tooltip="Open Claude session in home directory"
                   @click.stop="onOpenClaude(acc)"
                 >Open Claude</button>
+<!-- Every account can go, the default one included: an install that
+                     only runs Claude inside WSL has no use for a Windows home it
+                     never opens. The last one stays — the app has to be looking
+                     at something. -->
                 <button
-                  v-if="acc.id !== 'default'"
+                  v-if="accounts.length > 1"
                   class="account-row-del"
                   data-tooltip="Remove account"
                   @click.stop="onDelete(acc)"
@@ -90,6 +94,16 @@
           </div>
         </div>
 
+        <!-- Only after the local home has been removed. "Add account" above
+             makes a fresh empty config under ~/.wootonpad instead of attaching
+             ~/.claude, so without this the removal would be a one-way door. -->
+        <div v-if="!hasDefaultAccount" class="accounts-add-form accounts-restore-row">
+          <span class="accounts-wsl-path">~/.claude (local Claude home)</span>
+          <button class="btn-green" :disabled="restoring" @click="restoreDefault">
+            {{ restoring ? 'Restoring…' : 'Restore' }}
+          </button>
+        </div>
+
         <div v-if="wslDistros.length" class="accounts-add-form accounts-wsl-section">
           <p class="accounts-add-desc">
             Claude also runs inside WSL. Attach an account to browse the sessions it
@@ -97,15 +111,15 @@
             several accounts — one per Claude config directory — and each is attached
             on its own.
           </p>
-          <div v-for="home in wslHomes" :key="home.claudePosix" class="accounts-wsl-row">
+          <div v-for="home in wslHomes" :key="homeKey(home)" class="accounts-wsl-row">
             <span class="accounts-wsl-name">{{ home.distro }}</span>
             <span class="accounts-wsl-path">{{ home.claudePosix }}</span>
             <button
               class="btn-green"
-              :disabled="addingWsl === home.claudePosix || hasWslAccount(home)"
+              :disabled="addingWsl === homeKey(home) || hasWslAccount(home)"
               @click="addWslAccount(home)"
             >
-              {{ hasWslAccount(home) ? 'Added' : (addingWsl === home.claudePosix ? 'Adding…' : 'Attach') }}
+              {{ hasWslAccount(home) ? 'Added' : (addingWsl === homeKey(home) ? 'Adding…' : 'Attach') }}
             </button>
           </div>
 
@@ -137,7 +151,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 
 const props = defineProps({
   callbacks: { type: Object, required: true },
@@ -151,6 +165,7 @@ const editName = ref('');
 let activeEditInput = null;
 const newName = ref('');
 const adding = ref(false);
+const restoring = ref(false);
 const addOpen = ref(false);
 // Claude config directories reachable inside WSL, one row each — a distribution
 // with two accounts contributes two. Empty off Windows.
@@ -214,9 +229,25 @@ function onOpenClaude(acc) {
   props.callbacks.openAccountHomeSession?.(acc);
 }
 
+const hasDefaultAccount = computed(() => accounts.value.some(a => a.id === 'default'));
+
 async function onDelete(acc) {
-  if (!confirm(`Remove account "${acc.name}"?`)) return;
+  // Worth saying out loud for the local home: what is removed is the app's link
+  // to a config directory, never the directory itself.
+  const note = acc.id === 'default'
+    ? '\n\nThe ~/.claude directory itself is left alone and can be attached again.'
+    : '';
+  if (!confirm(`Remove account "${acc.name}"?${note}`)) return;
   props.callbacks.deleteAccount?.(acc.id);
+}
+
+async function restoreDefault() {
+  restoring.value = true;
+  try {
+    await props.callbacks.restoreDefaultAccount?.();
+  } finally {
+    restoring.value = false;
+  }
 }
 
 async function addAccount() {
@@ -226,6 +257,13 @@ async function addAccount() {
   const newAcc = await props.callbacks.createAccount?.(name);
   adding.value = false;
   if (newAcc) newName.value = '';
+}
+
+// What tells one discovered row from another. Not the config directory alone:
+// two distributions with the same user both offer /home/<user>/.claude, which
+// would collide as a v-for key and light up "Adding…" on both rows at once.
+function homeKey(home) {
+  return `${home.distro}:${home.claudePosix}`;
 }
 
 // An account belongs to a config directory, not to a distribution — the same
@@ -248,7 +286,7 @@ async function attachWsl(distro, claudePosix, busyKey) {
 }
 
 function addWslAccount(home) {
-  return attachWsl(home.distro, home.claudePosix, home.claudePosix);
+  return attachWsl(home.distro, home.claudePosix, homeKey(home));
 }
 
 async function addManualWslAccount() {

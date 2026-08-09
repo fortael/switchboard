@@ -227,23 +227,30 @@ function defaultClaudePosix(home) {
   return home + '/.claude';
 }
 
+// The account fields for `dir` inside `distro`, using the first UNC prefix whose
+// Windows view `accepts` recognises. That predicate is the only thing that
+// separates a discovered directory from a hand-named one, so it is what the two
+// callers below pass in rather than each repeating the prefix walk.
+function wslDirEntry(distro, home, dir, accepts) {
+  for (const prefix of WSL_UNC_PREFIXES) {
+    const configDir = wslToWindowsPath(dir, distro, prefix);
+    if (!accepts(configDir)) continue;
+    return {
+      distro, home, claudePosix: dir, configDir, uncPrefix: prefix,
+      isDefault: dir === defaultClaudePosix(home),
+    };
+  }
+  return null;
+}
+
 // Turn a config directory inside a distribution into the account fields,
 // choosing the UNC prefix that actually resolves. `claudePosix` defaults to the
 // distribution's own ~/.claude; pass another to describe a second account living
 // in the same distribution. Returns null when the directory holds no Claude home.
 function wslClaudeHomeFrom(distro, home, claudePosix = null) {
   if (!home || !home.startsWith('/')) return null;
-  const dir = claudePosix || defaultClaudePosix(home);
-  for (const prefix of WSL_UNC_PREFIXES) {
-    const configDir = wslToWindowsPath(dir, distro, prefix);
-    if (fs.existsSync(path.join(configDir, 'projects'))) {
-      return {
-        distro, home, claudePosix: dir, configDir, uncPrefix: prefix,
-        isDefault: dir === defaultClaudePosix(home),
-      };
-    }
-  }
-  return null;
+  return wslDirEntry(distro, home, claudePosix || defaultClaudePosix(home),
+    (configDir) => fs.existsSync(path.join(configDir, 'projects')));
 }
 
 // Run a script inside a distribution and hand back its output, or null if it
@@ -295,16 +302,7 @@ async function probeWslClaudeDir(distro, claudePosix) {
   if (!dir.startsWith('/')) return null;
   const home = await wslCapture(distro, 'printf %s "$HOME"');
   if (!home || !home.startsWith('/')) return null;
-  for (const prefix of WSL_UNC_PREFIXES) {
-    const configDir = wslToWindowsPath(dir, distro, prefix);
-    if (fs.existsSync(configDir)) {
-      return {
-        distro, home, claudePosix: dir, configDir, uncPrefix: prefix,
-        isDefault: dir === defaultClaudePosix(home),
-      };
-    }
-  }
-  return null;
+  return wslDirEntry(distro, home, dir, (configDir) => fs.existsSync(configDir));
 }
 
 // Every Claude account across every distribution, for the "add account" UI.
