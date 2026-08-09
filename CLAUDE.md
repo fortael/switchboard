@@ -143,7 +143,6 @@ a key listed there becomes overridable per project, which is wrong for something
 that applies to the whole window. `accountsInView()` in `main.js` is the one
 place that answers "which accounts" — `session-cache.js` takes it through
 `init()` rather than rebuilding it; nothing else should branch on the setting.
-See `docs/adr/0001-merged-account-view.md`.
 
 **The setting is a hard boundary, not a preference.** With it off the app must
 behave exactly as it did before the merged view existed: nothing may consult,
@@ -181,6 +180,21 @@ Session cache rows carry `accountId`; `cache_meta` and `search_map` do not, and
 are shared by folder name. That is why the worker path clears search entries per
 session rather than per folder — two accounts holding the same project produce
 the same folder name, and a folder-wide delete drops the other account's rows.
+
+### A terminal names its account
+
+A plain terminal carries `CLAUDE_CONFIG_DIR` for the account it was launched
+under, so the CLI run by hand in it — and anything around it that reads the
+variable — lands where the tab says rather than on whatever Claude home the shell
+would resolve alone. `accountShellConfigDir()` gives the value: POSIX for a WSL
+account, never the UNC `configDir`. Two things this needs and neither is
+optional — any inherited value is deleted first, and `withWslEnv()` names the
+variable, without which `wsl.exe` drops it at the boundary and the whole thing is
+a no-op exactly where it matters.
+
+It is a default, not a guarantee: rc files are sourced after the environment is
+handed over, so an `export` there outranks it, as does a wrapper reached through
+an alias — a developer who wrote either made a choice more specific than ours.
 
 ### Session identity and fork detection
 

@@ -240,6 +240,20 @@ function accountWslConfigEnv(account) {
   return claudePosix === defaultClaudePosix(account.wslHome) ? null : claudePosix;
 }
 
+// The config directory to name in a plain terminal's environment, in the form a
+// shell inside that terminal can resolve: the POSIX directory for a WSL account,
+// whose `configDir` is a UNC path meaning nothing inside the distribution.
+//
+// Deliberately unlike accountWslConfigEnv() above, which answers null when the
+// directory is the one the CLI would resolve unaided. That is right when the CLI
+// is being launched — there is nothing to tell it — and wrong here: what a shell
+// needs is a *defined* value, and suppressing the default would leave the most
+// common account inheriting whatever the environment happened to carry.
+function accountShellConfigDir(account) {
+  if (accountWslDistro(account)) return account.wslClaudePosix || null;
+  return account.configDir || null;
+}
+
 // Translate a canonical project path into one a Windows fs call can open.
 // Identity on any account without a distribution, and on paths that are
 // already Windows-shaped — so it is safe to wrap every fs call with it.
@@ -2615,19 +2629,39 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       // Plain terminal: interactive login shell, no claude command
       // Inject a shell function to override `claude` with a helpful message
       const claudeShim = 'claude() { echo "\\033[33mTo start a Claude session, use the + button in the sidebar.\\033[0m"; return 1; }; export -f claude 2>/dev/null;';
+      const plainEnv = {
+        ...cleanPtyEnv,
+        TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'iTerm.app', TERM_PROGRAM_VERSION: '3.6.6', FORCE_COLOR: '3', ITERM_SESSION_ID: '1',
+        CLAUDECODE: '1',
+        // ZDOTDIR trick won't work reliably; instead inject via ENV (sh/bash) or precmd
+        ENV: claudeShim,
+        BASH_ENV: claudeShim,
+      };
+      // A terminal names the account it was launched under, so the CLI run by
+      // hand in it — and everything around it that reads the variable — lands
+      // where the tab says rather than on whatever Claude home the shell would
+      // have resolved on its own.
+      //
+      // Deleted before it is set, for the reason the Claude branch below deletes
+      // it: cleanPtyEnv is a copy of the app's own environment, so a
+      // CLAUDE_CONFIG_DIR exported before launching would otherwise survive here
+      // — a Windows path that resolves to nothing inside a distribution, and
+      // another account's directory outside one. An account that cannot name a
+      // directory leaves it unset rather than inheriting that.
+      delete plainEnv.CLAUDE_CONFIG_DIR;
+      const shellConfigDir = accountShellConfigDir(activeAccount);
+      if (shellConfigDir) plainEnv.CLAUDE_CONFIG_DIR = shellConfigDir;
+      // wsl.exe hands the distribution nothing but WSLENV-listed names, so
+      // without this the assignment above is dropped at the boundary — which is
+      // where it matters most, a WSL account's tools being the ones that cannot
+      // resolve the directory any other way.
+      if (isWsl) Object.assign(plainEnv, withWslEnv(plainEnv, ['CLAUDE_CONFIG_DIR']));
       ptyProcess = pty.spawn(shell, shellArgs(shell, undefined, shellExtraArgs), {
         name: 'xterm-256color',
         cols: 120,
         rows: 30,
         cwd: isWsl ? os.homedir() : projectPath,
-        env: {
-          ...cleanPtyEnv,
-          TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'iTerm.app', TERM_PROGRAM_VERSION: '3.6.6', FORCE_COLOR: '3', ITERM_SESSION_ID: '1',
-          CLAUDECODE: '1',
-          // ZDOTDIR trick won't work reliably; instead inject via ENV (sh/bash) or precmd
-          ENV: claudeShim,
-          BASH_ENV: claudeShim,
-        },
+        env: plainEnv,
       });
       // For zsh, ENV/BASH_ENV don't apply — write the function after shell starts
       setTimeout(() => {

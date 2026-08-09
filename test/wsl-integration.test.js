@@ -414,3 +414,46 @@ test('IDE emulation publishes the contract the CLI parses, and the port crosses'
   assert.deepEqual(lock.workspaceFolders, [PROJECT_UNC]);
   assert.ok(lock.authToken);
 });
+
+// --- The account a plain terminal runs under -------------------------------
+// A terminal is where the CLI gets run by hand, and where the tooling around it
+// runs — including another Claude launcher of the developer's own, which selects
+// an account by exec'ing a wrapper with its own CLAUDE_CONFIG_DIR. Without the
+// account named in the terminal's environment every one of those resolves the
+// distribution's default ~/.claude, whichever account's tab is open.
+
+test('a plain terminal names its account, in the form the distribution resolves', async () => {
+  calls.spawn.length = 0;
+  const result = await handlers.get('open-terminal')({}, 'term-1', PROJECT_POSIX, true, { type: 'terminal' });
+  assert.equal(result.ok, true);
+
+  const [spawned] = calls.spawn;
+  assert.equal(spawned.file, 'wsl.exe');
+  // The POSIX directory, never the UNC view the same account also carries — and
+  // named even though it is the one the CLI would have resolved unaided, because
+  // what a shell needs is a value that is defined.
+  assert.equal(spawned.opts.env.CLAUDE_CONFIG_DIR, `${WSL_HOME}/.claude`);
+  // wsl.exe hands the distribution nothing WSLENV does not name, so without this
+  // the assignment above never crosses the boundary at all.
+  assert.match(spawned.opts.env.WSLENV, /CLAUDE_CONFIG_DIR/);
+});
+
+test('the app\'s own inherited config directory does not reach a plain terminal', async () => {
+  calls.spawn.length = 0;
+  await handlers.get('open-terminal')({}, 'term-2', PROJECT_POSIX, true, { type: 'terminal' });
+  // A Windows path a user exported before launching the app reaches the handler
+  // through the snapshot of process.env; inside a distribution it resolves to
+  // nothing, and outside one it is another account's directory.
+  assert.notEqual(calls.spawn[0].opts.env.CLAUDE_CONFIG_DIR, 'C:\\Users\\someone\\.claude-inherited');
+});
+
+test('a second account in the same distribution gets its own directory in a terminal', async () => {
+  const second = (await handlers.get('get-accounts')({}))
+    .find(a => a.wslClaudePosix === SECOND_CONFIG);
+  await withActiveAccount(second.id, async () => {
+    calls.spawn.length = 0;
+    const result = await handlers.get('open-terminal')({}, 'term-3', PROJECT_POSIX, true, { type: 'terminal' });
+    assert.equal(result.ok, true);
+    assert.equal(calls.spawn[0].opts.env.CLAUDE_CONFIG_DIR, SECOND_CONFIG);
+  });
+});
