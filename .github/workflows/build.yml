@@ -4,7 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # This filter matches the PR's target branch, not its source. DEV-windows is
+    # listed so that PRs merging into the Windows integration branch are tested
+    # too, instead of only being checked once it is merged into main.
+    branches: [main, DEV-windows]
 
 jobs:
   test:
