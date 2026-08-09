@@ -70,6 +70,19 @@ test('a long session label is cut in the middle so both ends survive', () => {
   assert.ok(long.includes('…'));
 });
 
+// A Windows-owned project arrives with backslashes, and the label has to be the
+// folder rather than the whole path — the integration suite caught this only once it
+// ran on a Windows runner, where its own temp directory is a native path.
+test('a Windows project path is reduced to its folder like any other', () => {
+  assert.equal(sessionLabel({ projectPath: 'C:\\Users\\dev\\work\\api' }), 'api');
+  assert.equal(sessionLabel({ projectPath: 'C:\\Users\\dev\\work\\api\\' }), 'api');
+  assert.equal(sessionLabel({ projectPath: '/home/u/work/api' }), 'api');
+  assert.equal(
+    sessionLabel({ projectPath: 'C:\\work\\api', sessionSlug: 'fix-login' }),
+    'api — fix-login',
+  );
+});
+
 test('a session with neither project nor title still gets a label', () => {
   assert.equal(sessionLabel({ sessionId: 'abc' }), 'abc');
   assert.equal(sessionLabel({}), 'session');

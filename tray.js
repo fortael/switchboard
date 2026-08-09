@@ -28,8 +28,11 @@ function truncateMiddle(text, max = SESSION_LABEL_MAX) {
 }
 
 function sessionLabel(session) {
+  // Both separators, on every platform. A projectPath is POSIX when it came from a
+  // Unix host or a WSL-backed account, and native when Windows owns the project, so
+  // splitting on '/' alone hands the whole `C:\...\proj` string back as the label.
   const project = session.projectPath
-    ? session.projectPath.split('/').filter(Boolean).pop()
+    ? session.projectPath.split(/[\\/]/).filter(Boolean).pop()
     : null;
   const title = session.title || session.sessionSlug || null;
   if (project && title) return truncateMiddle(`${project} — ${title}`);
