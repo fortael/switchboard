@@ -98,7 +98,9 @@ function parseLaunchUrl(url) {
   let account = null;
   for (const pair of query.split('&')) {
     const eq = pair.indexOf('=');
-    if (eq !== -1 && pair.slice(0, eq) === 'account') account = parseAccountHint(pair.slice(eq + 1));
+    // The first usable value wins, so a second pair — a template that appends one
+    // of its own from an unset variable — cannot wipe a hint that was already read.
+    if (eq !== -1 && pair.slice(0, eq) === 'account') account = account || parseAccountHint(pair.slice(eq + 1));
   }
   return { projectPath: path, continueSession, account };
 }

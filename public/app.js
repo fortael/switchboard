@@ -927,8 +927,14 @@ window.api.onLaunchProjectSession(async (projectPath, continueSession, accountId
   // back. Following it here also refreshes the list, which until now belonged to
   // the account that was active before.
   if (accountNamed && accountId) {
-    noteLaunchedAccount({ accountId });
-    if (continueSession) await loadProjects();
+    // One reload, not two: noteLaunchedAccount starts its own whenever the
+    // account really moved, and awaiting a second getProjects here would only
+    // race it. A reload that fails leaves a stale list, which is what this
+    // handler had before — it must not take the launch down with it.
+    const reloading = noteLaunchedAccount({ accountId });
+    if (continueSession) {
+      try { await (reloading || loadProjects()); } catch {}
+    }
   }
   if (continueSession) {
     // The merged view groups the same directory across accounts into one entry, so
@@ -1094,20 +1100,23 @@ function defaultAccountIdForProject(project) {
 }
 
 // A launch activates the account it runs under in the main process, so the
-// renderer's idea of which one is active has to follow it back.
+// renderer's idea of which one is active has to follow it back. Returns the
+// reload it started, or null when it started none — a caller that has to read the
+// new list waits for that one rather than racing a second getProjects against it.
 function noteLaunchedAccount(result) {
-  if (!result?.accountId || result.accountId === activeAccountId) return;
+  if (!result?.accountId || result.accountId === activeAccountId) return null;
   activeAccountId = result.accountId;
   updateAccountDropdown();
   renderAccountsPanel();
-  reloadForActiveAccount();
+  const reloading = reloadForActiveAccount();
   // The merged list is the same whichever account is active, so it stays as it
   // is. The standard one is that account's own — and the launch has just moved
   // the app to another, which is how the accounts panel opens a Claude session
   // in an account without switching to it first.
   if (!mergedAccountView && (window.vueStore?.activeTab || 'sessions') === 'sessions') {
-    loadProjects({ resort: true });
+    return loadProjects({ resort: true });
   }
+  return reloading;
 }
 
 function closeAccountDropdown() {
@@ -1156,14 +1165,17 @@ async function switchAccount(id) {
 // the account on screen also moves the app to another, and the main process has
 // already done that by the time the renderer is told — going through
 // switchAccount() there would re-run the whole re-init a second time.
+// Returns the project reload it started, or null when the tab on screen needs
+// none, so a caller that has to read the refreshed list can wait for it.
 function reloadForActiveAccount() {
   window.vueStats?.invalidate();
   const activeTab = window.vueStore?.activeTab || 'sessions';
   if (activeTab === 'stats') window.vueStats?.load();
-  if (activeTab === 'projects') loadProjects().then(() => renderProjectsPanel());
+  if (activeTab === 'projects') return loadProjects().then(() => renderProjectsPanel());
   // The merged list is not reloaded by the account change itself, but an account
   // leaving or joining the view does change it — and nothing else will ask.
-  else if (mergedAccountView && activeTab === 'sessions') loadProjects();
+  if (mergedAccountView && activeTab === 'sessions') return loadProjects();
+  return null;
 }
 
 // makeGroup is defined in utils.js (loaded first)

@@ -470,6 +470,15 @@ function sameConfigDir(a, b) {
   return norm(a) === norm(b);
 }
 
+// Two names for the same distribution. Matched the way `wsl.exe -d` matches it —
+// case-insensitively — for the same reason the config directory is: a name
+// interpolated from $WSL_DISTRO_NAME arrives in its stored spelling, but one
+// typed into a launcher by hand does not have to, and a miss here silently sends
+// the launch to whichever account was already selected.
+function sameDistro(a, b) {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
 // The account a launch names by its config directory, or null when it names none
 // this app holds. Identity is the directory rather than the distribution — one
 // distribution can hold several Claude accounts, told apart only by which
@@ -482,7 +491,7 @@ function sameConfigDir(a, b) {
 function accountFromLaunchHint(hint) {
   if (!hint || (!hint.configDir && !hint.distro)) return null;
   const accounts = getAccounts() || [];
-  const inDistro = (a) => !hint.distro || a.wslDistro === hint.distro;
+  const inDistro = (a) => !hint.distro || sameDistro(a.wslDistro, hint.distro);
   if (hint.configDir) {
     // The POSIX directory is what identifies a WSL account; `configDir` is its
     // Windows view, and matching that too is what lets a launcher on the Windows
@@ -495,7 +504,7 @@ function accountFromLaunchHint(hint) {
   // is unset — and unset means the home Claude resolves unaided, so the
   // distribution's default account is the answer rather than whichever sibling
   // happens to be stored first.
-  const ofDistro = accounts.filter(a => a.wslDistro === hint.distro);
+  const ofDistro = accounts.filter(a => sameDistro(a.wslDistro, hint.distro));
   const isDefaultHome = (a) => a.wslHome && a.wslClaudePosix === defaultClaudePosix(a.wslHome);
   return ofDistro.find(isDefaultHome) || ofDistro[0] || null;
 }
@@ -512,12 +521,28 @@ function accountFromLaunchHint(hint) {
 function activateLaunchAccount(hint) {
   try {
     const account = accountFromLaunchHint(hint);
-    if (!account) return null;
+    if (!account) {
+      // A hint that resolves to nothing is not the same as no hint at all: the
+      // launch is about to open on whichever account was already selected, and
+      // without a line here that looks like the feature simply not working.
+      if (hint) {
+        log.warn(`[account] external launch named an account this app does not hold: ${hint.distro || ''}${hint.distro && hint.configDir ? ':' : ''}${hint.configDir || ''}`);
+      }
+      return null;
+    }
     if (account.id !== getActiveAccount().id) {
       log.info(`[account] external launch names "${account.name || account.id}" — activating it`);
-      activateAccount(account.id);
+      try {
+        activateAccount(account.id);
+      } catch (err) {
+        // The active id is written before the watchers and the rescan follow it,
+        // so a throw further down still leaves the app on this account. Which
+        // account it is really on is read back below rather than assumed either
+        // way — the renderer is told to move only if the main process did.
+        log.warn(`[account] external launch named an account that could not be fully activated: ${err?.message}`);
+      }
     }
-    return account;
+    return getActiveAccount().id === account.id ? account : null;
   } catch (err) {
     log.warn(`[account] external launch named an account that could not be activated: ${err?.message}`);
     return null;

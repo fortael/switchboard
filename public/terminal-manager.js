@@ -140,11 +140,39 @@ function isAtBottom(terminal) {
   return buf.viewportY >= buf.baseY;
 }
 
-// Fit terminal to container, subtracting 1 row to avoid partial-row clipping.
+// How many rows actually fit, which is not always what FitAddon proposes. The
+// proposal is `floor(available / cellHeight)`, and that holds only while a row is
+// drawn at exactly that height — the WebGL renderer rounds a cell up to whole
+// device pixels, so at a fractional device pixel ratio (Windows display scaling,
+// or this app's own interface zoom) the rendered screen comes out taller than the
+// box that was measured. The container's `overflow: hidden` then takes the
+// difference out of the last row, which is where a CLI keeps its status bar: at
+// some window sizes and not others, the bottom line is sliced in half.
+//
+// Measured rather than predicted: the rounding belongs to whichever renderer is
+// active, and the rendered screen is the only honest witness to it. It only ever
+// reduces the proposal — a renderer that rounds the other way must not be able to
+// grow the terminal past the space FitAddon measured — and any missing piece of
+// DOM leaves the proposal untouched.
+function fittedRows(entry, proposedRows) {
+  const screen = entry.terminal.element && entry.terminal.element.querySelector('.xterm-screen');
+  const box = entry.terminal.element && entry.terminal.element.parentElement;
+  if (!screen || !box || !entry.terminal.rows) return proposedRows;
+  const renderedRow = screen.getBoundingClientRect().height / entry.terminal.rows;
+  if (!(renderedRow > 0)) return proposedRows;
+  const style = window.getComputedStyle(box);
+  const available = box.clientHeight
+    - (parseFloat(style.paddingTop) || 0)
+    - (parseFloat(style.paddingBottom) || 0);
+  if (!(available > 0)) return proposedRows;
+  return Math.max(2, Math.min(proposedRows, Math.floor(available / renderedRow)));
+}
+
+// Fit terminal to container, without letting the last row fall off the bottom.
 function safeFit(entry) {
   const dims = entry.fitAddon.proposeDimensions();
   if (dims && dims.rows > 1) {
-    entry.terminal.resize(dims.cols, dims.rows);
+    entry.terminal.resize(dims.cols, fittedRows(entry, dims.rows));
   } else {
     entry.fitAddon.fit();
   }

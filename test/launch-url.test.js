@@ -145,6 +145,17 @@ test('a URL naming no account carries none', () => {
   assert.equal(parseLaunchUrl('wootonpad:///home/u/p?account=:').account, null);
 });
 
+test('a second, empty account pair cannot wipe the first', () => {
+  assert.deepEqual(
+    parseLaunchUrl('wootonpad:///home/u/p?account=Ubuntu:/home/u/.claude-work&account=').account,
+    { distro: 'Ubuntu', configDir: '/home/u/.claude-work' }
+  );
+  assert.deepEqual(
+    parseLaunchUrl('wootonpad:///home/u/p?account=&account=Ubuntu').account,
+    { distro: 'Ubuntu', configDir: null }
+  );
+});
+
 test('--account is the flag form of the same hint', () => {
   assert.deepEqual(
     parseLaunchArgv(['app', '--project', '/home/u/p', '--account', 'Ubuntu:/home/u/.claude-work']),
