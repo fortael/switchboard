@@ -153,6 +153,11 @@ off rather than trusting each caller to have left it out. When adding anything
 here, ask what it does with the setting off — the answer has to be "what it did
 before".
 
+The one thing the rule does not forbid is *switching* to another account, which
+the dropdown has always done in either view. An external launch naming an account
+is that same move, made from outside; it is why the switch happens before
+`launch-project-session` rather than being handed to `open-terminal` as a field.
+
 Three consequences worth knowing before touching this code:
 
 1. **The active account no longer means "what is on screen"** — in the merged
@@ -170,7 +175,15 @@ Three consequences worth knowing before touching this code:
    is not on. An external launch (`wootonpad://`, `--project`) names only a path,
    so `launch-project-session` carries the `accountForPath()` answer alongside
    it — resolved in the main process because such a launch routinely arrives
-   before the renderer has a project list to look in.
+   before the renderer has a project list to look in. It may also name an account
+   outright, as `?account=<distro>:<config dir>`; that is a request to *switch*,
+   so it activates the account rather than passing it down as a field, which
+   `open-terminal` would drop outside the merged view. Environment variables are
+   why it has to be in the URL at all: nothing in a distribution's environment
+   reaches a Windows app. `launch-project-session` says *whether* the account was
+   named, not only which it is: a named one has just been switched to, so the
+   renderer's list is still the previous account's and a session resumed out of it
+   would name a `.jsonl` that does not exist in the home the shell will run in.
 3. **The account is resolved from the path, not from the selection.**
    `hostPath()` and `projectExecFile()` go through `accountForPath()`, so a
    project of a WSL account is read and its git run inside that distribution

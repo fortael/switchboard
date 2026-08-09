@@ -920,7 +920,16 @@ loadProjects().then(async () => {
   } catch {}
 });
 
-window.api.onLaunchProjectSession((projectPath, continueSession, accountId) => {
+window.api.onLaunchProjectSession(async (projectPath, continueSession, accountId, accountNamed) => {
+  // A launch that names its own account has already moved the main process to it,
+  // and nothing else tells the renderer — an already-open session is shown without
+  // an open-terminal round trip, and the reply is what usually carries a switch
+  // back. Following it here also refreshes the list, which until now belonged to
+  // the account that was active before.
+  if (accountNamed && accountId) {
+    noteLaunchedAccount({ accountId });
+    if (continueSession) await loadProjects();
+  }
   if (continueSession) {
     // The merged view groups the same directory across accounts into one entry, so
     // its sessions are not all the launcher's: prefer one belonging to the account
@@ -929,7 +938,11 @@ window.api.onLaunchProjectSession((projectPath, continueSession, accountId) => {
     // makes the preference a no-op there.
     const proj = cachedAllProjects.find(p => p.projectPath === projectPath);
     const live = proj?.sessions?.filter(s => !s.archived) || [];
-    const last = (accountId && live.find(s => s.accountId === accountId)) || live[0];
+    // No such fallback when the launch named its account: another account's
+    // .jsonl does not exist in the Claude home this session would resume in, so
+    // there is nothing to resume and a new session is the honest answer.
+    const ofAccount = accountId ? live.find(s => s.accountId === accountId) : null;
+    const last = ofAccount || (accountNamed ? null : live[0]);
     if (last) {
       if (window.vueStore?.activeTab !== 'sessions') window.vueApp?.setTab('sessions');
       setActiveSession(last.sessionId);

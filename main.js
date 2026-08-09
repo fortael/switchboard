@@ -411,7 +411,7 @@ if (!gotSingleInstanceLock) {
     // that argv here. parseLaunchArgv understands both forms, so the scheme works
     // on Windows and Linux without a second implementation.
     const request = parseLaunchArgv(argv);
-    if (request) dispatchProjectOpen(request.projectPath, request.continueSession);
+    if (request) dispatchProjectOpen(request.projectPath, request.continueSession, request.account);
   });
 }
 
@@ -458,35 +458,109 @@ function launchAccountId(filePath) {
   }
 }
 
+// Two config directories naming the same place. The POSIX form is compared as it
+// stands, but a Windows one is not: the filesystem is case-insensitive and takes
+// either separator, and a directory typed by hand into a launcher agrees with the
+// stored form on neither by luck.
+function sameConfigDir(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (process.platform !== 'win32') return false;
+  const norm = (s) => s.replace(/[\\/]+/g, '\\').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+// The account a launch names by its config directory, or null when it names none
+// this app holds. Identity is the directory rather than the distribution — one
+// distribution can hold several Claude accounts, told apart only by which
+// directory they read — so a bare distribution matches only as a last resort,
+// meaning "whichever account of that distribution I have".
+//
+// A named distribution narrows every match rather than only the first: an account
+// of another distribution is not the one that was asked for, whatever directory
+// it happens to read.
+function accountFromLaunchHint(hint) {
+  if (!hint || (!hint.configDir && !hint.distro)) return null;
+  const accounts = getAccounts() || [];
+  const inDistro = (a) => !hint.distro || a.wslDistro === hint.distro;
+  if (hint.configDir) {
+    // The POSIX directory is what identifies a WSL account; `configDir` is its
+    // Windows view, and matching that too is what lets a launcher on the Windows
+    // side name an account by the directory the app itself shows for it.
+    return accounts.find(a => a.wslClaudePosix === hint.configDir && inDistro(a))
+      || accounts.find(a => sameConfigDir(a.configDir, hint.configDir) && inDistro(a))
+      || null;
+  }
+  // A distribution on its own is what a template produces when CLAUDE_CONFIG_DIR
+  // is unset — and unset means the home Claude resolves unaided, so the
+  // distribution's default account is the answer rather than whichever sibling
+  // happens to be stored first.
+  const ofDistro = accounts.filter(a => a.wslDistro === hint.distro);
+  const isDefaultHome = (a) => a.wslHome && a.wslClaudePosix === defaultClaudePosix(a.wslHome);
+  return ofDistro.find(isDefaultHome) || ofDistro[0] || null;
+}
+
+// Naming an account in a launch is a request to switch to it — the same move the
+// account dropdown makes, and the reason it is done here rather than left to
+// `open-terminal`: that handler ignores a named account outside the merged view
+// by design, so a launch that only carried the field would silently open on
+// whatever account was already selected, which is exactly the bug this fixes.
+// Activating first means the app really is on that account, in either view.
+// Nothing here may take the launch down with it: an account that cannot be
+// resolved or switched to still leaves a perfectly good project to open, and the
+// launch then behaves as it did before it named one.
+function activateLaunchAccount(hint) {
+  try {
+    const account = accountFromLaunchHint(hint);
+    if (!account) return null;
+    if (account.id !== getActiveAccount().id) {
+      log.info(`[account] external launch names "${account.name || account.id}" — activating it`);
+      activateAccount(account.id);
+    }
+    return account;
+  } catch (err) {
+    log.warn(`[account] external launch named an account that could not be activated: ${err?.message}`);
+    return null;
+  }
+}
+
 // The single place an external launch reaches the renderer. The path is
 // canonicalised first: it arrives from outside the app and a launcher on the
 // Windows side names a project inside a distribution by its \\wsl.localhost\…
 // view, while the app keys, stores and hashes the POSIX form Claude recorded.
 // Skipping this would resolve the wrong account and encode a project folder that
 // matches nothing on disk. The account is read after the translation, for the
-// same reason.
-function sendLaunchProjectSession(rawPath, continueSession) {
+// same reason — and an account the launch named itself outranks the one inferred
+// from the path, because it is the launcher's own answer rather than our guess.
+function sendLaunchProjectSession(rawPath, continueSession, accountHint) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  const named = activateLaunchAccount(accountHint);
   const filePath = canonicalProjectPath(rawPath);
+  // Whether the account was named is sent alongside it, and is not the same
+  // question as which account it is. A named one has just been activated here, so
+  // the renderer's project list is still the account that was active before —
+  // stale in exactly the way that matters, since a session read out of it belongs
+  // to a Claude home this launch is no longer pointed at.
   mainWindow.webContents.send(
-    'launch-project-session', filePath, continueSession, launchAccountId(filePath),
+    'launch-project-session', filePath, continueSession,
+    named?.id || launchAccountId(filePath), !!named,
   );
 }
 
-function dispatchProjectOpen(filePath, continueSession) {
+function dispatchProjectOpen(filePath, continueSession, account) {
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
-    sendLaunchProjectSession(filePath, continueSession);
+    sendLaunchProjectSession(filePath, continueSession, account);
   } else {
-    pendingOpenPaths.push({ filePath, continueSession });
+    pendingOpenPaths.push({ filePath, continueSession, account });
   }
 }
 
 app.on('open-url', (event, url) => {
   event.preventDefault();
   const request = parseLaunchUrl(url);
-  if (request) dispatchProjectOpen(request.projectPath, request.continueSession);
+  if (request) dispatchProjectOpen(request.projectPath, request.continueSession, request.account);
 });
 
 // The window floor the app shipped with, i.e. the smallest frame the layout was
@@ -708,9 +782,9 @@ function createWindow() {
     // thing hours later.
     const startup = startupLaunchConsumed ? null : parseLaunchArgv(process.argv);
     startupLaunchConsumed = true;
-    if (startup) sendLaunchProjectSession(startup.projectPath, startup.continueSession);
-    for (const { filePath, continueSession } of pendingOpenPaths.splice(0)) {
-      sendLaunchProjectSession(filePath, continueSession);
+    if (startup) sendLaunchProjectSession(startup.projectPath, startup.continueSession, startup.account);
+    for (const { filePath, continueSession, account } of pendingOpenPaths.splice(0)) {
+      sendLaunchProjectSession(filePath, continueSession, account);
     }
 
     mainWindow.webContents.executeJavaScript(`

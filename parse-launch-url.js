@@ -38,23 +38,81 @@ function stripTrailingSeparators(p) {
   return p;
 }
 
-// Parse a wootonpad:// URL into { projectPath, continueSession }, or null when it
-// carries no path. Never throws: the string comes from outside the app — a shell,
-// a registry entry, another program's idea of escaping — and a malformed one has
-// to be ignored rather than take the process down.
+function safeDecode(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    // A stray '%' is not an escape sequence; the raw text is still usable.
+    return text;
+  }
+}
+
+// The `?account=` value: which Claude account to open the project under. An
+// account's identity is the config directory it reads, so that is what travels —
+// environment variables do not cross from a WSL distribution to a Windows app,
+// which is the whole reason this is in the URL at all. The distribution may
+// precede it, because one POSIX directory means different homes in different
+// distributions:
+//
+//     ?account=Ubuntu:/home/you/.claude-work
+//     ?account=/home/you/.claude-work        (any distribution)
+//     ?account=Ubuntu                        (that distribution's own home)
+//
+// A drive-lettered path is a whole value, never a distribution followed by a
+// directory — `C:\Users\you\.claude` has a colon of its own.
+// `decode` is false for a command-line argument, which carries no escapes and
+// whose literal '%20' would be corrupted by decoding it — the same rule
+// `--project` follows.
+function parseAccountHint(raw, decode = true) {
+  const value = raw ? (decode ? safeDecode(raw) : raw) : '';
+  if (!value) return null;
+  const cut = value.indexOf(':');
+  if (cut === -1 || value.startsWith('/') || value.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(value)) {
+    return /[\\/]/.test(value)
+      ? { distro: null, configDir: stripTrailingSeparators(value) }
+      : { distro: value, configDir: null };
+  }
+  // A template that interpolated two unset variables produces a bare ':', which
+  // names nothing — the same answer as no value at all, rather than a hint object
+  // with both halves empty that every reader would then have to guard against.
+  const distro = value.slice(0, cut) || null;
+  const configDir = stripTrailingSeparators(value.slice(cut + 1)) || null;
+  return distro || configDir ? { distro, configDir } : null;
+}
+
+// Parse a wootonpad:// URL into { projectPath, continueSession, account }, or null
+// when it carries no path. Never throws: the string comes from outside the app — a
+// shell, a registry entry, another program's idea of escaping — and a malformed
+// one has to be ignored rather than take the process down.
 function parseLaunchUrl(url) {
   if (!isLaunchUrl(url)) return null;
   let rest = url.slice(SCHEME.length);
   const continueSession = rest.startsWith(CONTINUE_MARKER);
   if (continueSession) rest = rest.slice(CONTINUE_MARKER.length);
-  try {
-    rest = decodeURIComponent(rest);
-  } catch {
-    // A stray '%' is not an escape sequence; the raw text is still a usable path.
+  // Split before decoding, or a percent-encoded '?' inside the path would become
+  // a separator and cut the path in half.
+  const cut = rest.indexOf('?');
+  const query = cut === -1 ? '' : rest.slice(cut + 1);
+  const path = stripTrailingSeparators(safeDecode(cut === -1 ? rest : rest.slice(0, cut)));
+  if (!path) return null;
+  let account = null;
+  for (const pair of query.split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq !== -1 && pair.slice(0, eq) === 'account') account = parseAccountHint(pair.slice(eq + 1));
   }
-  rest = stripTrailingSeparators(rest);
-  if (!rest) return null;
-  return { projectPath: rest, continueSession };
+  return { projectPath: path, continueSession, account };
+}
+
+// `--account <config dir>` is the flag form of the URL's `?account=`, so a
+// launcher that cannot build a URL can still name the account. Read out of the
+// argv on its own rather than inside the `--project` branch: it qualifies the
+// launch, not one of the two ways of spelling the path, and a launcher passing a
+// URL alongside it means it just as much.
+function accountFromArgv(argv) {
+  const at = argv.indexOf('--account');
+  // Percent-decoding is deliberately *not* applied, for the same reason
+  // `--project` is not: a command-line argument carries no escapes.
+  return at !== -1 && argv[at + 1] ? parseAccountHint(argv[at + 1], false) : null;
 }
 
 // The same request as it arrives on the command line. `--project` wins over a URL:
@@ -71,11 +129,12 @@ function parseLaunchArgv(argv) {
     // not escaped, and decoding one would corrupt a path containing a literal
     // '%20'.
     const projectPath = stripTrailingSeparators(argv[idx + 1]);
-    if (projectPath) return { projectPath, continueSession: false };
+    if (projectPath) return { projectPath, continueSession: false, account: accountFromArgv(argv) };
   }
   for (const arg of argv) {
     const parsed = parseLaunchUrl(arg);
-    if (parsed) return parsed;
+    // The URL's own `?account=` wins: it travelled with the path it qualifies.
+    if (parsed) return { ...parsed, account: parsed.account || accountFromArgv(argv) };
   }
   return null;
 }
