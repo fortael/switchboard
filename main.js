@@ -63,6 +63,7 @@ const {
 } = require('./shell-profiles');
 const { startScheduler } = require('./schedule-runner');
 const { encodeProjectPath } = require('./encode-project-path');
+const { parseLaunchUrl, parseLaunchArgv, LAUNCH_PROTOCOL } = require('./parse-launch-url');
 
 
 
@@ -386,13 +387,6 @@ function computeStatsFromDb(accountId) {
 const activeSessions = new Map();
 let mainWindow = null;
 
-// --- Single-instance: parse --project <path> from argv ---
-function parseProjectArg(argv) {
-  const idx = argv.indexOf('--project');
-  if (idx !== -1 && argv[idx + 1]) return argv[idx + 1];
-  return null;
-}
-
 // Send to the renderer, waiting for the page when it has not finished loading yet —
 // a message sent before that has no listener on the other side and is simply lost.
 function sendToRenderer(channel, ...args) {
@@ -412,8 +406,12 @@ if (!gotSingleInstanceLock) {
     // altogether while the app lives on, and a second launch is the clearest possible
     // request to see it — so this must not be conditional on a window existing.
     showMainWindow();
-    const projectPath = parseProjectArg(argv);
-    if (projectPath) sendToRenderer('launch-project-session', projectPath);
+    // Everywhere except macOS this is also how a wootonpad:// URL arrives: the OS
+    // starts a second instance with the URL as an argument, and the lock forwards
+    // that argv here. parseLaunchArgv understands both forms, so the scheme works
+    // on Windows and Linux without a second implementation.
+    const request = parseLaunchArgv(argv);
+    if (request) dispatchProjectOpen(request.projectPath, request.continueSession);
   });
 }
 
@@ -421,6 +419,8 @@ if (!gotSingleInstanceLock) {
 // macOS routes wootonpad:// URLs to the running app via Apple Events — no
 // server, no polling, zero overhead. The OS resolves the handler from its
 // Launch Services registry and delivers the URL whether the app is open or not.
+// Elsewhere the URL is an argument rather than an event; see `second-instance`
+// above and the startup argv read after did-finish-load.
 //
 // New session:      open wootonpad://{dir}
 // Continue latest:  open wootonpad://+{dir}
@@ -429,18 +429,55 @@ if (!gotSingleInstanceLock) {
 // did-finish-load.
 const pendingOpenPaths = [];
 
+// The startup argv is one request, but `did-finish-load` fires again on every
+// reload — the dev reloader's, and a window re-created from the tray after the
+// last one was closed. Re-reading process.argv there would launch the same
+// project once more each time, so the read is consumed after the first window
+// has had it.
+let startupLaunchConsumed = false;
+
 // In dev, Electron is the "default app" so we pass the script path explicitly.
 if (process.defaultApp && process.argv.length >= 2) {
-  app.setAsDefaultProtocolClient('wootonpad', process.execPath, [path.resolve(process.argv[1])]);
+  app.setAsDefaultProtocolClient(LAUNCH_PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
 } else {
-  app.setAsDefaultProtocolClient('wootonpad');
+  app.setAsDefaultProtocolClient(LAUNCH_PROTOCOL);
+}
+
+// Which account an externally launched project belongs to. Resolved here rather
+// than in the renderer because a launch by URL routinely arrives before the
+// renderer has a project list to look in — a cold start *is* the interesting
+// case — while the main process reads the ownership straight out of the
+// database. With the merged view off `accountForPath` returns the active account
+// whatever the path, which is the boundary that setting draws and not something
+// this feature may cross.
+function launchAccountId(filePath) {
+  try {
+    return accountForPath(filePath)?.id || null;
+  } catch {
+    return null;
+  }
+}
+
+// The single place an external launch reaches the renderer. The path is
+// canonicalised first: it arrives from outside the app and a launcher on the
+// Windows side names a project inside a distribution by its \\wsl.localhost\…
+// view, while the app keys, stores and hashes the POSIX form Claude recorded.
+// Skipping this would resolve the wrong account and encode a project folder that
+// matches nothing on disk. The account is read after the translation, for the
+// same reason.
+function sendLaunchProjectSession(rawPath, continueSession) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const filePath = canonicalProjectPath(rawPath);
+  mainWindow.webContents.send(
+    'launch-project-session', filePath, continueSession, launchAccountId(filePath),
+  );
 }
 
 function dispatchProjectOpen(filePath, continueSession) {
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
-    mainWindow.webContents.send('launch-project-session', filePath, continueSession);
+    sendLaunchProjectSession(filePath, continueSession);
   } else {
     pendingOpenPaths.push({ filePath, continueSession });
   }
@@ -448,12 +485,8 @@ function dispatchProjectOpen(filePath, continueSession) {
 
 app.on('open-url', (event, url) => {
   event.preventDefault();
-  // wootonpad://+/path/to/project  →  continue last session
-  // wootonpad:///path/to/project   →  new session
-  const continueSession = url.startsWith('wootonpad://+');
-  const prefix = continueSession ? 'wootonpad://+' : 'wootonpad://';
-  const filePath = decodeURIComponent(url.slice(prefix.length));
-  if (filePath) dispatchProjectOpen(filePath, continueSession);
+  const request = parseLaunchUrl(url);
+  if (request) dispatchProjectOpen(request.projectPath, request.continueSession);
 });
 
 // The window floor the app shipped with, i.e. the smallest frame the layout was
@@ -669,10 +702,15 @@ function createWindow() {
   // window.open() then sets location.href) routes through our IPC instead of
   // creating a child BrowserWindow.
   mainWindow.webContents.on('did-finish-load', () => {
-    const startupProject = parseProjectArg(process.argv);
-    if (startupProject) mainWindow.webContents.send('launch-project-session', startupProject);
+    // A launch by URL with the app not yet running lands here too: outside macOS
+    // the OS passes the URL as an argument of the very first process. Read once —
+    // this event repeats on every reload, and process.argv still says the same
+    // thing hours later.
+    const startup = startupLaunchConsumed ? null : parseLaunchArgv(process.argv);
+    startupLaunchConsumed = true;
+    if (startup) sendLaunchProjectSession(startup.projectPath, startup.continueSession);
     for (const { filePath, continueSession } of pendingOpenPaths.splice(0)) {
-      mainWindow.webContents.send('launch-project-session', filePath, continueSession);
+      sendLaunchProjectSession(filePath, continueSession);
     }
 
     mainWindow.webContents.executeJavaScript(`

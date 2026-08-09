@@ -167,7 +167,10 @@ Three consequences worth knowing before touching this code:
    wins. The reply always carries the account actually in effect, never the one
    that was asked for: the renderer follows it, and a declined request that
    reported itself as granted would move the UI to an account the main process
-   is not on.
+   is not on. An external launch (`wootonpad://`, `--project`) names only a path,
+   so `launch-project-session` carries the `accountForPath()` answer alongside
+   it — resolved in the main process because such a launch routinely arrives
+   before the renderer has a project list to look in.
 3. **The account is resolved from the path, not from the selection.**
    `hostPath()` and `projectExecFile()` go through `accountForPath()`, so a
    project of a WSL account is read and its git run inside that distribution

@@ -95,7 +95,23 @@ open wootonpad:///path/to/project
 open wootonpad://+/path/to/project
 ```
 
-When WootonPad is already running, `open wootonpad://...` delivers the URL directly to the running instance via macOS Apple Events — no server, no polling. When it isn't running, macOS launches the app and passes the URL on startup.
+On macOS the URL reaches a running WootonPad through Apple Events — no server, no polling; when the app isn't running, macOS launches it and passes the URL on startup. On Windows and Linux the OS passes the URL as a command-line argument instead, either to the first process or to a second instance whose arguments are forwarded to the one already running. Both roads end in the same place, so the links above behave identically on every platform.
+
+The path in the URL is the one Claude itself records. For a project inside a WSL distribution that is the POSIX path — `/home/you/work/app`, not its `\\wsl.localhost\...` view — and WootonPad opens it under the account that owns it rather than under whichever account is currently selected.
+
+`open` is macOS; the equivalent elsewhere is `start ""` on Windows and `xdg-open` on Linux. From inside WSL, `wslview` hands the link to Windows:
+
+```bash
+wslview wootonpad://+/home/you/work/app
+```
+
+That makes WootonPad usable as the "open in Claude" target of a tool running in the distribution — for example as Silverware's `terminal_template`:
+
+```toml
+terminal_template = "wslview wootonpad://+{dir}"
+```
+
+Note that `explorer.exe` also opens the link but exits non-zero even on success, which a caller checking the exit code will read as failure.
 
 ---
 

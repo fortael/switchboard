@@ -122,6 +122,14 @@
       "notarize": true
     },
     "win": {
+      "protocols": [
+        {
+          "name": "WootonPad",
+          "schemes": [
+            "wootonpad"
+          ]
+        }
+      ],
       "target": [
         {
           "target": "nsis",
@@ -133,6 +141,14 @@
       ]
     },
     "linux": {
+      "protocols": [
+        {
+          "name": "WootonPad",
+          "schemes": [
+            "wootonpad"
+          ]
+        }
+      ],
       "target": [
         "AppImage",
         "deb"

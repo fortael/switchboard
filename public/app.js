@@ -920,10 +920,16 @@ loadProjects().then(async () => {
   } catch {}
 });
 
-window.api.onLaunchProjectSession((projectPath, continueSession) => {
+window.api.onLaunchProjectSession((projectPath, continueSession, accountId) => {
   if (continueSession) {
-    const proj = cachedProjects.find(p => p.projectPath === projectPath);
-    const last = proj?.sessions?.find(s => !s.archived);
+    // The merged view groups the same directory across accounts into one entry, so
+    // its sessions are not all the launcher's: prefer one belonging to the account
+    // the path resolved to before falling back to the most recent of any. Outside
+    // the merged view every cached session is the active account's already, which
+    // makes the preference a no-op there.
+    const proj = cachedAllProjects.find(p => p.projectPath === projectPath);
+    const live = proj?.sessions?.filter(s => !s.archived) || [];
+    const last = (accountId && live.find(s => s.accountId === accountId)) || live[0];
     if (last) {
       if (window.vueStore?.activeTab !== 'sessions') window.vueApp?.setTab('sessions');
       setActiveSession(last.sessionId);
@@ -931,7 +937,15 @@ window.api.onLaunchProjectSession((projectPath, continueSession) => {
       return;
     }
   }
-  launchNewSession({ projectPath });
+  // An external launcher names a path and nothing else, so the account is the
+  // one that owns the path — sent along by the main process, which can resolve it
+  // from the database before this list exists. Launching on the active account
+  // instead would mean the wrong Claude home, and for a WSL account the wrong
+  // side of the boundary entirely. The cached entry is the fallback for a launch
+  // that carries no account, and a project the app has never seen has no owner to
+  // find and lands on the active account exactly as it did before.
+  const known = cachedAllProjects.find(p => p.projectPath === projectPath);
+  launchNewSession(known || { projectPath }, accountId ? { accountId } : undefined);
 });
 
 // Live-reload sidebar when filesystem changes are detected
