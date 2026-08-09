@@ -258,6 +258,16 @@
                 <SbSwitch v-model="form.showAvatars" />
               </div>
             </div>
+
+            <div class="settings-field">
+              <div class="settings-field-info">
+                <span class="settings-label">All Accounts In One List</span>
+                <div class="settings-description">Show the projects of every account together, each marked with the account it belongs to, instead of only the account currently selected. A session always runs under its own account — opening one switches to it.</div>
+              </div>
+              <div class="settings-field-control">
+                <SbSwitch v-model="form.mergedAccountView" />
+              </div>
+            </div>
           </div>
 
           <!-- ── Git ───────────────────────────────────────────── -->
@@ -383,6 +393,7 @@ const form = reactive({
   mcpEmulation: true,
   shellProfile: 'auto',
   showAvatars: true,
+  mergedAccountView: false,
   monoFont: 'default',
   uiFont: 'default',
   uiScale: 100,
@@ -439,6 +450,7 @@ async function loadSettings() {
     form.mcpEmulation = current.mcpEmulation !== false;
     form.shellProfile = current.shellProfile ?? 'auto';
     form.showAvatars = current.showAvatars !== false;
+    form.mergedAccountView = current.mergedAccountView === true;
     form.monoFont = current.monoFont ?? 'default';
     form.uiFont = current.uiFont ?? 'default';
     form.uiScale = window._normalizeUiScale?.(current.uiScale ?? 100) ?? 100;
@@ -501,6 +513,7 @@ async function save() {
       mcpEmulation: form.mcpEmulation,
       shellProfile: form.shellProfile || 'auto',
       showAvatars: form.showAvatars,
+      mergedAccountView: form.mergedAccountView,
       monoFont: form.monoFont || 'default',
       uiFont: form.uiFont || 'default',
       uiScale: window._normalizeUiScale?.(form.uiScale) ?? 100,
@@ -518,6 +531,9 @@ async function save() {
     window._setSessionMaxAge?.(settings.sessionMaxAgeDays);
     window._applyTerminalTheme?.(settings.terminalTheme);
     window._setShowAvatars?.(settings.showAvatars);
+    // Reloads the project list: the main process has already switched which
+    // accounts it reads, and the sidebar has to ask again to see it.
+    window._setMergedAccountView?.(settings.mergedAccountView);
     if (window.TERMINAL_FONTS?.[settings.monoFont]) {
       window._applyTerminalFont?.(window.TERMINAL_FONTS[settings.monoFont].family);
     }

@@ -9,15 +9,24 @@ const { encodeProjectPath } = require('./encode-project-path');
 /**
  * Session cache module.
  * Call init(ctx) once with the shared context object.
+ *
+ * Accounts are resolved per call rather than pinned at init: in the merged view
+ * every account's sessions are read at once, and the account an incremental
+ * refresh belongs to is the one whose watcher saw the change — not whichever
+ * account happens to be active at that moment.
  */
-let PROJECTS_DIR, accountId, activeSessions, getMainWindow, log;
+let getActiveAccount, getProjectsDir, accountsInView;
+let activeSessions, getMainWindow, log;
 let deleteCachedFolder, getCachedByFolder, upsertCachedSessions, deleteCachedSession;
-let deleteSearchFolder, deleteSearchSession, upsertSearchEntries;
+let deleteSearchSession, upsertSearchEntries;
 let setFolderMeta, getAllFolderMeta, getAllMeta, getAllCached, getSetting, getMeta, setName, getAllProjectGitCounts;
 
 function init(ctx) {
-  PROJECTS_DIR = ctx.PROJECTS_DIR;
-  accountId = ctx.accountId || 'default';
+  getActiveAccount = ctx.getActiveAccount;
+  getProjectsDir = ctx.getProjectsDir;
+  // Injected rather than rebuilt from getAccounts()/the setting: "which accounts
+  // are on screen" has to have one answer, and it already lives in main.js.
+  accountsInView = ctx.accountsInView;
   activeSessions = ctx.activeSessions;
   getMainWindow = ctx.getMainWindow;
   log = ctx.log;
@@ -26,7 +35,6 @@ function init(ctx) {
   getCachedByFolder = ctx.db.getCachedByFolder;
   upsertCachedSessions = ctx.db.upsertCachedSessions;
   deleteCachedSession = ctx.db.deleteCachedSession;
-  deleteSearchFolder = ctx.db.deleteSearchFolder;
   deleteSearchSession = ctx.db.deleteSearchSession;
   upsertSearchEntries = ctx.db.upsertSearchEntries;
   setFolderMeta = ctx.db.setFolderMeta;
@@ -42,8 +50,8 @@ function init(ctx) {
 // readSessionFile is imported from read-session-file.js (shared with worker)
 
 /** Read one folder from filesystem by scanning .jsonl files directly */
-function readFolderFromFilesystem(folder) {
-  const folderPath = path.join(PROJECTS_DIR, folder);
+function readFolderFromFilesystem(folder, account = getActiveAccount()) {
+  const folderPath = path.join(getProjectsDir(account), folder);
   const projectPath = deriveProjectPath(folderPath, folder);
   if (!projectPath) return { projectPath: null, sessions: [] };
   const sessions = [];
@@ -60,8 +68,9 @@ function readFolderFromFilesystem(folder) {
 }
 
 /** Refresh a single folder incrementally: only re-read changed/new .jsonl files */
-function refreshFolder(folder) {
-  const folderPath = path.join(PROJECTS_DIR, folder);
+function refreshFolder(folder, account = getActiveAccount()) {
+  const accountId = account.id;
+  const folderPath = path.join(getProjectsDir(account), folder);
   if (!fs.existsSync(folderPath)) {
     deleteCachedFolder(folder, accountId);
     return;
@@ -157,14 +166,14 @@ function refreshFolder(folder) {
 }
 
 /** Populate entire cache from filesystem (cold start) */
-function populateCacheFromFilesystem() {
+function populateCacheFromFilesystem(account = getActiveAccount()) {
   try {
-    const folders = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
+    const folders = fs.readdirSync(getProjectsDir(account), { withFileTypes: true })
       .filter(d => d.isDirectory() && d.name !== '.git')
       .map(d => d.name);
 
     for (const folder of folders) {
-      refreshFolder(folder);
+      refreshFolder(folder, account);
     }
   } catch (err) {
     console.error('Error populating cache:', err);
@@ -173,8 +182,9 @@ function populateCacheFromFilesystem() {
 
 /** Build projects response from cached data */
 function buildProjectsFromCache(showArchived) {
+  const accounts = accountsInView();
   const metaMap = getAllMeta();
-  const cachedRows = getAllCached(accountId);
+  const cachedRows = accounts.flatMap(a => getAllCached(a.id));
   const global = getSetting('global') || {};
   const hiddenProjects = new Set(global.hiddenProjects || []);
   const gitCounts = getAllProjectGitCounts?.() || new Map();
@@ -183,10 +193,17 @@ function buildProjectsFromCache(showArchived) {
   // directories can resolve to the same projectPath (Claude Code's folder-name encoding
   // scheme has changed over time, leaving legacy stragglers around), so we merge them into
   // a single sidebar group to avoid duplicate-id collisions in the morphdom render.
+  // The merged view groups across accounts for the same reason: the project is the same
+  // directory whoever opened it, and everything keyed per project — settings, git cache,
+  // avatar, the hidden list — is keyed by that path alone. Which accounts contributed
+  // travels alongside, in `accountIds`.
   // Only insert a project entry once we have a session that survives the archive filter —
   // otherwise folders whose sessions are all archived would appear in the sidebar as
   // undismissable phantom entries.
   const projectMap = new Map();
+  const noteAccount = (proj, id) => {
+    if (id && !proj.accountIds.includes(id)) proj.accountIds.push(id);
+  };
   for (const row of cachedRows) {
     if (!row.projectPath) continue;
     if (hiddenProjects.has(row.projectPath)) continue;
@@ -211,10 +228,13 @@ function buildProjectsFromCache(showArchived) {
       projectMap.set(row.projectPath, {
         folder: encodeProjectPath(row.projectPath),
         projectPath: row.projectPath,
+        accountIds: [],
         sessions: [],
       });
     }
-    projectMap.get(row.projectPath).sessions.push(s);
+    const proj = projectMap.get(row.projectPath);
+    noteAccount(proj, s.accountId);
+    proj.sessions.push(s);
   }
 
   // Include empty project directories (no sessions yet). Resolve folder→projectPath
@@ -222,41 +242,54 @@ function buildProjectsFromCache(showArchived) {
   // disk for every directory on every render. Fall back to deriveProjectPath only
   // for folders the indexer hasn't seen yet, and backfill cache_meta so subsequent
   // renders are pure DB reads.
-  try {
-    const folderMeta = getAllFolderMeta();
-    const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
-      .filter(d => d.isDirectory() && d.name !== '.git');
-    for (const d of dirs) {
-      let projectPath = folderMeta.get(d.name)?.projectPath;
-      if (!projectPath) {
-        projectPath = deriveProjectPath(path.join(PROJECTS_DIR, d.name), d.name);
-        if (projectPath) setFolderMeta(d.name, projectPath, 0);
+  const folderMeta = getAllFolderMeta();
+  for (const account of accounts) {
+    try {
+      const projectsDir = getProjectsDir(account);
+      const dirs = fs.readdirSync(projectsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && d.name !== '.git');
+      for (const d of dirs) {
+        let projectPath = folderMeta.get(d.name)?.projectPath;
+        if (!projectPath) {
+          projectPath = deriveProjectPath(path.join(projectsDir, d.name), d.name);
+          if (projectPath) setFolderMeta(d.name, projectPath, 0);
+        }
+        if (!projectPath) continue;
+        if (hiddenProjects.has(projectPath)) continue;
+        if (!projectMap.has(projectPath)) {
+          projectMap.set(projectPath, {
+            folder: encodeProjectPath(projectPath),
+            projectPath,
+            accountIds: [],
+            sessions: [],
+          });
+        }
+        noteAccount(projectMap.get(projectPath), account.id);
       }
-      if (!projectPath) continue;
-      if (hiddenProjects.has(projectPath)) continue;
-      if (!projectMap.has(projectPath)) {
-        projectMap.set(projectPath, {
-          folder: encodeProjectPath(projectPath),
-          projectPath,
-          sessions: [],
-        });
-      }
-    }
-  } catch {}
+    } catch {}
+  }
 
-  // Inject active plain terminal sessions so they participate in sorting
+  // Inject active plain terminal sessions so they participate in sorting. A
+  // terminal belongs to the account it was launched under, which is not
+  // necessarily the active one by the time this runs — and it is listed whatever
+  // that account is. This is live state, not cache: a terminal filtered out
+  // because the app has moved off its account is a running shell with no way
+  // back to it once its tab is closed.
   for (const [sessionId, session] of activeSessions) {
     if (session.exited || !session.isPlainTerminal) continue;
     if (!session.projectPath) continue;
     if (hiddenProjects.has(session.projectPath)) continue;
+    const sessionAccountId = session.accountId || 'default';
     if (!projectMap.has(session.projectPath)) {
       projectMap.set(session.projectPath, {
         folder: encodeProjectPath(session.projectPath),
         projectPath: session.projectPath,
+        accountIds: [],
         sessions: [],
       });
     }
     const proj = projectMap.get(session.projectPath);
+    noteAccount(proj, sessionAccountId);
     if (!proj.sessions.some(s => s.sessionId === sessionId)) {
       proj.sessions.push({
         sessionId, summary: 'Terminal', firstPrompt: '', projectPath: session.projectPath,
@@ -264,6 +297,7 @@ function buildProjectsFromCache(showArchived) {
         modified: new Date(session._openedAt).toISOString(),
         created: new Date(session._openedAt).toISOString(),
         type: 'terminal',
+        accountId: sessionAccountId,
       });
     }
   }
@@ -308,15 +342,21 @@ function sendStatus(text, type) {
 }
 
 // --- Worker-based cache population (non-blocking) ---
-let populatingCache = false;
+// One scan per account at a time: the merged view can ask for several accounts
+// at once, and a single flag would let the second request through while the
+// first is still writing.
+const populatingAccounts = new Set();
 
-function populateCacheViaWorker() {
-  if (populatingCache) return;
-  populatingCache = true;
+// `onDone(ok)` reports whether the scan actually indexed anything, so a caller
+// that only scans an account once per run can drop the mark when it failed.
+function populateCacheViaWorker(account = getActiveAccount(), onDone = () => {}) {
+  const accountId = account.id;
+  if (populatingAccounts.has(accountId)) return;
+  populatingAccounts.add(accountId);
   sendStatus('Scanning projects\u2026', 'active');
 
   const worker = new Worker(path.join(__dirname, 'workers', 'scan-projects.js'), {
-    workerData: { projectsDir: PROJECTS_DIR, accountId },
+    workerData: { projectsDir: getProjectsDir(account), accountId },
   });
 
   worker.on('message', (msg) => {
@@ -329,7 +369,8 @@ function populateCacheViaWorker() {
     if (!msg.ok) {
       console.error('Worker scan error:', msg.error);
       sendStatus('Scan failed: ' + msg.error, 'error');
-      populatingCache = false;
+      populatingAccounts.delete(accountId);
+      onDone(false);
       return;
     }
 
@@ -339,8 +380,14 @@ function populateCacheViaWorker() {
     const currentAccountId = msg.accountId || accountId;
     let sessionCount = 0;
     for (const { folder, projectPath, sessions, indexMtimeMs } of msg.results) {
+      // Search rows are keyed by folder alone, and two accounts holding the same
+      // project produce the same folder name \u2014 so clearing the folder here would
+      // drop the other account's sessions from the index until it happens to be
+      // rescanned. Clear exactly the sessions this account had instead, read
+      // before deleteCachedFolder takes them away.
+      const previousIds = getCachedByFolder(folder, currentAccountId).map(r => r.sessionId);
       deleteCachedFolder(folder, currentAccountId);
-      deleteSearchFolder(folder);
+      for (const id of previousIds) deleteSearchSession(id);
       if (sessions.length > 0) {
         sessionCount += sessions.length;
         upsertCachedSessions(sessions, currentAccountId);
@@ -362,7 +409,8 @@ function populateCacheViaWorker() {
       setFolderMeta(folder, projectPath, indexMtimeMs);
     }
 
-    populatingCache = false;
+    populatingAccounts.delete(accountId);
+    onDone(true);
     sendStatus(`Indexed ${sessionCount} sessions across ${msg.results.length} projects`, 'done');
     // Clear status after a few seconds
     setTimeout(() => sendStatus(''), 5000);
@@ -372,7 +420,8 @@ function populateCacheViaWorker() {
   worker.on('error', (err) => {
     console.error('Worker error:', err);
     sendStatus('Worker error: ' + err.message, 'error');
-    populatingCache = false;
+    populatingAccounts.delete(accountId);
+    onDone(false);
   });
 
   // If the worker exits abnormally (SIGSEGV, OOM, uncaught exception) without
@@ -380,8 +429,9 @@ function populateCacheViaWorker() {
   // Reset the flag here to prevent a permanent lockout where the session list
   // stays empty because populateCacheViaWorker() returns immediately.
   worker.on('exit', (code) => {
-    if (populatingCache) {
-      populatingCache = false;
+    if (populatingAccounts.has(accountId)) {
+      populatingAccounts.delete(accountId);
+      onDone(false);
       if (code !== 0) {
         sendStatus('Scan worker exited unexpectedly', 'error');
       }

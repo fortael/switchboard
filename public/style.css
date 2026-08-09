@@ -4658,6 +4658,39 @@ body { display: flex; flex-direction: column; }
   background: rgba(224,80,112,0.1);
 }
 
+/* Account badges in the sidebar — only rendered in the merged view, where one
+   list holds the projects of every account. The account currently in use is
+   muted; the others are tinted, so what is *not* the active account stands out. */
+.session-account-badge {
+  font-size: 9px;
+  color: #6a7090;
+  background: rgba(255,255,255,0.06);
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-right: 5px;
+  white-space: nowrap;
+}
+
+.session-account-badge.foreign {
+  color: #8088ff;
+  background: rgba(128,136,255,0.12);
+}
+
+.project-account-badges {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  margin-left: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.project-account-badges .session-account-badge {
+  margin-right: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Account badge in terminal header */
 .terminal-account-badge {
   font-size: 10px;

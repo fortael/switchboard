@@ -19,6 +19,17 @@
     <div v-if="newSessionProject" class="new-session-overlay" @mousedown.self="closeNewSession">
       <div class="new-session-dialog">
         <h3>New Session — {{ shortPath(newSessionProject.projectPath) }}</h3>
+        <div v-if="showAccountPicker" class="settings-field">
+          <div class="settings-field-info">
+            <span class="settings-label">Account</span>
+            <div class="settings-description">Claude account this session runs under</div>
+          </div>
+          <div class="settings-field-control">
+            <select class="settings-input" v-model="nsAccountId" style="width:180px">
+              <option v-for="acc in store.accounts" :key="acc.id" :value="acc.id">{{ acc.name || acc.id }}</option>
+            </select>
+          </div>
+        </div>
         <div class="settings-field">
           <div class="settings-label">Permission Mode</div>
           <div class="permission-grid">
@@ -167,6 +178,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import SbSwitch from './SbSwitch.vue';
+import { store } from '../store.js';
 
 const PERM_MODES = [
   { value: null, label: 'Default', desc: 'Prompt for all actions' },
@@ -249,13 +261,19 @@ const nsWorktreeName = ref('');
 const nsChrome = ref(false);
 const nsPreLaunch = ref('');
 const nsAddDirs = ref('');
+const nsAccountId = ref(null);
 let nsEffective = null;
 let nsOnStart = null;
 
-function openNewSession(project, effective, onStart) {
+// Only worth asking when the projects of several accounts share one list. In the
+// standard view the account is the one on screen and there is nothing to pick.
+const showAccountPicker = computed(() => store.mergedAccountView && store.accounts.length > 1);
+
+function openNewSession(project, effective, onStart, defaultAccountId) {
   newSessionProject.value = project;
   nsEffective = effective;
   nsOnStart = onStart;
+  nsAccountId.value = defaultAccountId || store.activeAccountId;
   nsMode.value = effective.permissionMode || null;
   nsDanger.value = !!effective.dangerouslySkipPermissions;
   nsWorktree.value = !!effective.worktree;
@@ -273,6 +291,7 @@ function onNsWorktreeInput() { if (nsWorktreeName.value.trim()) nsWorktree.value
 
 function startNewSession() {
   const options = {};
+  if (nsAccountId.value) options.accountId = nsAccountId.value;
   if (nsDanger.value) {
     options.dangerouslySkipPermissions = true;
   } else if (nsMode.value) {

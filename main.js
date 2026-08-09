@@ -94,7 +94,8 @@ if (app.isPackaged || process.env.FORCE_UPDATER) {
 }
 const {
   getMeta, getAllMeta, toggleStar, setName, setArchived,
-  isCachePopulated, getAllCached, getCachedByFolder, getCachedFolder, getCachedSession, upsertCachedSessions,
+  isCachePopulated, getAllCached, getCachedByFolder, getCachedSession, upsertCachedSessions,
+  getProjectAccountIds,
   deleteCachedSession, deleteCachedFolder,
   getFolderMeta, getAllFolderMeta, setFolderMeta,
   getProjectGitCache, setProjectGitCache, getAllProjectGitCounts,
@@ -138,6 +139,58 @@ function getActiveAccount() {
   const accounts = getAccounts();
   const activeId = (getSetting('global') || {}).activeAccountId || 'default';
   return accounts.find(a => a.id === activeId) || accounts[0];
+}
+
+function accountById(id) {
+  if (!id) return null;
+  return getAccounts().find(a => a.id === id) || null;
+}
+
+// The merged view puts every account's projects into one list, and the active
+// account stops deciding what is on screen — it only says where a launch that
+// names no account of its own goes. Kept in the global settings row rather than
+// SETTING_DEFAULTS: anything listed there becomes overridable per project, which
+// is wrong for something that applies to the whole window.
+function mergedAccountView() {
+  return !!(getSetting('global') || {}).mergedAccountView;
+}
+
+// The accounts whose projects belong on screen right now.
+function accountsInView() {
+  return mergedAccountView() ? getAccounts() : [getActiveAccount()];
+}
+
+// An account holding no sessions at all never turns isCachePopulated() true, so
+// "scan it because its cache is empty" is a condition that answers yes forever:
+// get-projects would spawn a worker on every call, and the scan's own
+// projects-changed notification would bring the next call straight back. One
+// automatic scan per account per run instead — anything that has to force
+// another (an account switch, which has real catch-up to do) calls
+// populateCacheViaWorker directly and records it here.
+// A scan that failed is not a scan: the mark is dropped again so the next
+// get-projects retries, which is what happened before this guard existed.
+const autoScannedAccounts = new Set();
+
+function scanAccountOnce(account) {
+  if (autoScannedAccounts.has(account.id)) return;
+  autoScannedAccounts.add(account.id);
+  populateCacheViaWorker(account, (ok) => {
+    if (!ok) autoScannedAccounts.delete(account.id);
+  });
+}
+
+// The account list itself changed — one was added, attached or removed. Only the
+// merged view has work to do: the standard one watches and reads whichever
+// account is active, and that has not moved. Declared here next to the rest of
+// the account helpers; everything it calls is defined further down and resolved
+// by the time any IPC handler can run.
+function accountsChanged() {
+  invalidateProjectAccounts();
+  if (!mergedAccountView()) return;
+  restartProjectsWatcher();
+  for (const account of accountsInView()) {
+    if (!isCachePopulated(account.id)) scanAccountOnce(account);
+  }
 }
 
 function getProjectsDir(account) {
@@ -195,12 +248,74 @@ function accountHostPath(account, p) {
   return wslToWindowsPath(p, account.wslDistro, account.wslUncPrefix);
 }
 
-// Request-scoped: the account is read per call, which is right for anything
-// driven by the UI. Work that outlives the current selection — a running
-// session pushing diffs at us — must bind accountHostPath to its own account
-// instead, or an account switch would retarget it mid-session.
+// projectPath → owning accounts, cached: accountForPath() sits under every fs
+// call in the app, and it must not turn each one into a query. Short-lived
+// rather than event-driven — the map only changes when a project appears in an
+// account for the first time, and being a few seconds late costs nothing.
+const PROJECT_ACCOUNTS_TTL_MS = 5000;
+let projectAccountsCache = null;
+let projectAccountsCachedAt = 0;
+
+function invalidateProjectAccounts() {
+  projectAccountsCache = null;
+}
+
+function projectAccounts() {
+  if (projectAccountsCache && Date.now() - projectAccountsCachedAt < PROJECT_ACCOUNTS_TTL_MS) {
+    return projectAccountsCache;
+  }
+  projectAccountsCache = getProjectAccountIds() || new Map();
+  projectAccountsCachedAt = Date.now();
+  return projectAccountsCache;
+}
+
+// A path lies inside a project when it is that project or below it. Compared as
+// stored: both forms come out of the same .jsonl the project was recorded from.
+// A Windows-shaped project path is matched case-insensitively — the filesystem
+// is, and a path arriving from the CLI over MCP need not agree on case with the
+// one Claude recorded.
+function isPathInside(p, projectPath) {
+  const windows = projectPath.includes('\\') && !projectPath.startsWith('/');
+  const a = windows ? p.toLowerCase() : p;
+  const b = windows ? projectPath.toLowerCase() : projectPath;
+  if (a === b) return true;
+  const sep = windows ? '\\' : '/';
+  return a.startsWith(b.endsWith(sep) ? b : b + sep);
+}
+
+// The account a path belongs to. Only asked in the merged view: with a single
+// account's projects on screen the active account is the answer by construction,
+// and a stale row about a project two accounts share must not be able to
+// redirect a call away from the account the user is actually on. Paths outside
+// every known project — config directories, plans, temporary files — belong to
+// the active account too.
+function accountForPath(p) {
+  const active = getActiveAccount();
+  if (!mergedAccountView() || typeof p !== 'string' || !p) return active;
+
+  let ownerIds = null;
+  let matchedLength = 0;
+  for (const [projectPath, ids] of projectAccounts()) {
+    if (projectPath.length <= matchedLength) continue;
+    if (!isPathInside(p, projectPath)) continue;
+    ownerIds = ids;
+    matchedLength = projectPath.length;
+  }
+  if (!ownerIds || ownerIds.includes(active.id)) return active;
+  for (const id of ownerIds) {
+    const owner = accountById(id);
+    if (owner) return owner;
+  }
+  return active;
+}
+
+// Request-scoped: the account is resolved from the path itself, which is what
+// the merged view needs — a project of another account still has to be read
+// through that account's distribution. Work that outlives the current selection
+// — a running session pushing diffs at us — must bind accountHostPath to its own
+// account instead, or an account switch would retarget it mid-session.
 function hostPath(p) {
-  return accountHostPath(getActiveAccount(), p);
+  return accountHostPath(accountForPath(p), p);
 }
 
 // A Windows folder picker returns \\wsl.localhost\<distro>\… for a directory
@@ -215,9 +330,12 @@ function canonicalProjectPath(p) {
 // `cwd` and any caller-supplied `env` are dropped when redirecting: both hold
 // Windows-side values that mean nothing inside the distribution, which resolves
 // the working directory via --cd and the command via the distro's own PATH.
+// The distribution comes from the account that owns `cwd`, not from the active
+// one: in the merged view a project of another account is on screen alongside
+// the current one, and its git lives in that account's distribution.
 // Returns [file, args, options] for execFile/execFileSync.
 function projectExecFile(argv, cwd, options = {}) {
-  const distro = activeWslDistro();
+  const distro = accountWslDistro(accountForPath(cwd));
   if (!distro || !isPosixAbsolutePath(cwd)) {
     return [argv[0], argv.slice(1), { ...options, cwd }];
   }
@@ -801,16 +919,16 @@ const { deriveProjectPath } = require('./derive-project-path');
 const sessionCache = require('./session-cache');
 
 function initSessionCache() {
-  const account = getActiveAccount();
   sessionCache.init({
-    PROJECTS_DIR: getProjectsDir(account),
-    accountId: account.id,
+    getActiveAccount,
+    getProjectsDir,
+    accountsInView,
     activeSessions,
     getMainWindow: () => mainWindow,
     log,
     db: {
       deleteCachedFolder, getCachedByFolder, upsertCachedSessions, deleteCachedSession,
-      deleteSearchFolder, deleteSearchSession, upsertSearchEntries,
+      deleteSearchSession, upsertSearchEntries,
       setFolderMeta, getAllFolderMeta, getAllMeta, getAllCached, getSetting, getMeta, setName, getAllProjectGitCounts,
     },
   });
@@ -873,8 +991,12 @@ ipcMain.handle('add-project', (_event, rawProjectPath) => {
       fs.writeFileSync(seedFile, line + '\n');
     }
 
-    // Immediately index the new folder so it's in cache before frontend renders
-    refreshFolder(folder);
+    // Immediately index the new folder so it's in cache before frontend renders.
+    // Every account in view, not just the active one: this call is also the
+    // un-hide path, and hiding cleared the folder for all of them. An account
+    // that does not have the folder re-deletes nothing and costs one stat.
+    for (const account of accountsInView()) refreshFolder(folder, account);
+    invalidateProjectAccounts();
     notifyRendererProjectsChanged();
     // Kick off du -sk once on add; subsequent refreshes use the long random TTL
     cacheProjectSize(projectPath);
@@ -898,12 +1020,16 @@ ipcMain.handle('remove-project', (_event, projectPath) => {
     // Clean up DB cache and search index for this folder. The cache is keyed by
     // account, and deleteCachedFolder defaults its second argument to 'default'
     // — so leaving it off deleted another account's row and kept the one being
-    // hidden, which then still answered searches. The search index itself has no
-    // account column, so it is folder-wide by construction.
+    // hidden, which then still answered searches. Every account in view is
+    // cleared rather than only the active one: the hidden list is global, so a
+    // project hidden in the merged view is hidden for all of them, and the one
+    // being hidden need not belong to the account currently selected. The search
+    // index itself has no account column, so it is folder-wide by construction.
     const folder = encodeProjectPath(projectPath);
-    deleteCachedFolder(folder, getActiveAccount().id);
+    for (const account of accountsInView()) deleteCachedFolder(folder, account.id);
     deleteSearchFolder(folder);
     deleteSetting('project:' + projectPath);
+    invalidateProjectAccounts();
 
     notifyRendererProjectsChanged();
     return { ok: true };
@@ -1424,11 +1550,22 @@ ipcMain.handle('unwatch-file', (_event, filePath) => {
 
 ipcMain.handle('get-projects', (_event, showArchived) => {
   try {
-    const needsPopulate = !isCachePopulated(getActiveAccount().id) || !isSearchIndexPopulated();
+    // An empty search index means every account has to be re-read whatever its
+    // session cache says — the index is global and is rebuilt by the same scan.
+    const accounts = accountsInView();
+    const unpopulated = accounts.filter(account => !isCachePopulated(account.id));
+    const needsSearchIndex = !isSearchIndexPopulated();
 
-    if (needsPopulate) {
-      populateCacheViaWorker();
-      return [];
+    if (unpopulated.length || needsSearchIndex) {
+      for (const account of (needsSearchIndex ? accounts : unpopulated)) {
+        scanAccountOnce(account);
+      }
+      // Outside the merged view this answers empty whenever anything needs a
+      // scan, which is what it has always done. Inside it, only a cold start has
+      // nothing to show: when one account of several is still being scanned, the
+      // accounts already indexed stay on screen rather than blanking the sidebar
+      // until it finishes.
+      if (!mergedAccountView() || unpopulated.length === accounts.length) return [];
     }
 
     return buildProjectsFromCache(showArchived);
@@ -1894,7 +2031,18 @@ ipcMain.handle('get-setting', (_event, key) => {
 });
 
 ipcMain.handle('set-setting', (_event, key, value) => {
+  // Turning the merged view on or off changes which accounts are read and
+  // watched, and nothing else tells the main process that it happened.
+  const wasMerged = key === 'global' ? mergedAccountView() : null;
   setSetting(key, value);
+  if (key === 'global' && mergedAccountView() !== wasMerged) {
+    invalidateProjectAccounts();
+    restartProjectsWatcher();
+    for (const account of accountsInView()) {
+      if (!isCachePopulated(account.id)) scanAccountOnce(account);
+    }
+    notifyRendererProjectsChanged();
+  }
   return { ok: true };
 });
 
@@ -1915,6 +2063,9 @@ ipcMain.handle('save-accounts', (_event, accounts) => {
     return { ok: false, error: 'At least one account is required' };
   }
   setSetting('accounts', accounts);
+  // This call can add or remove accounts wholesale, so the merged view's watchers
+  // and caches have to follow it exactly as they follow create/delete.
+  accountsChanged();
   return { ok: true };
 });
 
@@ -1926,6 +2077,7 @@ ipcMain.handle('create-account', (_event, name) => {
   const account = { id, name, configDir };
   const existing = getAccounts();
   setSetting('accounts', [...existing, account]);
+  accountsChanged();
   return account;
 });
 
@@ -2005,6 +2157,7 @@ ipcMain.handle('create-wsl-account', async (_event, distro, name, claudePosix) =
     wslClaudePosix: probe.claudePosix,
   };
   setSetting('accounts', [...getAccounts(), account]);
+  accountsChanged();
   return account;
 });
 
@@ -2032,11 +2185,13 @@ ipcMain.handle('delete-account', (_event, id) => {
   setSetting('accounts', remaining);
 
   // Deleting the account on screen would otherwise leave every per-account
-  // directory pointing at one that no longer exists.
+  // directory pointing at one that no longer exists. activateAccount() restarts
+  // the watchers itself, which is what drops the deleted account's own.
   if (activeId === id) {
     activateAccount(remaining[0].id);
     return { ok: true, activeAccountId: remaining[0].id };
   }
+  accountsChanged();
   return { ok: true, activeAccountId: activeId };
 });
 
@@ -2048,6 +2203,7 @@ ipcMain.handle('restore-default-account', () => {
   const already = existing.find(a => a.id === 'default');
   if (already) return already;
   setSetting('accounts', [DEFAULT_ACCOUNT, ...existing]);
+  accountsChanged();
   return DEFAULT_ACCOUNT;
 });
 
@@ -2065,16 +2221,27 @@ function activateAccount(accountId) {
   const global = getSetting('global') || {};
   global.activeAccountId = accountId;
   setSetting('global', global);
+  invalidateProjectAccounts();
 
-  // Re-init session cache for new account and trigger re-scan. Fork/plan-accept
-  // detection holds its own copy of the projects directory, so it has to be
-  // re-pointed too — otherwise it keeps watching the previous account's folder.
-  initSessionCache();
+  // The session cache resolves its account per call, so there is nothing to
+  // re-point there. Fork/plan-accept detection holds its own copy of the
+  // projects directory, so it has to follow the switch — otherwise it keeps
+  // watching the previous account's folder. The watchers are restarted for the
+  // same reason: which of them may run transition detection has just changed.
   require('./session-transitions').init({
     PROJECTS_DIR: activeProjectsDir(), activeSessions, getMainWindow: () => mainWindow, log, rekeyMcpServer,
   });
   restartProjectsWatcher();
-  populateCacheViaWorker();
+
+  // Outside the merged view the account being switched to went unwatched for as
+  // long as it was not active, so its cache has to catch up. In it, every
+  // account is watched and indexed continuously and the rescan would only
+  // repeat work already done.
+  if (!mergedAccountView() || !isCachePopulated(accountId)) {
+    const account = accountById(accountId) || getActiveAccount();
+    autoScannedAccounts.add(account.id);
+    populateCacheViaWorker(account);
+  }
 }
 
 ipcMain.handle('set-active-account-id', (_event, accountId) => {
@@ -2249,7 +2416,7 @@ ipcMain.handle('get-active-terminals', () => {
   const terminals = [];
   for (const [sessionId, session] of activeSessions) {
     if (!session.exited && session.isPlainTerminal) {
-      terminals.push({ sessionId, projectPath: session.projectPath });
+      terminals.push({ sessionId, projectPath: session.projectPath, accountId: session.accountId });
     }
   }
   return terminals;
@@ -2281,9 +2448,15 @@ ipcMain.handle('rename-session', (_event, sessionId, name) => {
 
 // --- IPC: archive-session ---
 ipcMain.handle('read-session-jsonl', (_event, sessionId) => {
-  const folder = getCachedFolder(sessionId);
-  if (!folder) return { error: 'Session not found in cache' };
-  const jsonlPath = path.join(activeProjectsDir(), folder, sessionId + '.jsonl');
+  const cached = getCachedSession(sessionId);
+  if (!cached?.folder) return { error: 'Session not found in cache' };
+  const folder = cached.folder;
+  // The file lives in the projects directory of the account that recorded it,
+  // which in the merged view is not necessarily the active one. Outside it the
+  // active account is the only one the sidebar can offer a session from, and
+  // reading anywhere else is behaviour this view never had.
+  const account = (mergedAccountView() && accountById(cached.accountId)) || getActiveAccount();
+  const jsonlPath = path.join(getProjectsDir(account), folder, sessionId + '.jsonl');
   try {
     const content = fs.readFileSync(jsonlPath, 'utf-8');
     const entries = [];
@@ -2307,6 +2480,35 @@ ipcMain.handle('archive-session', (_event, sessionId, archived) => {
 ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, sessionOptions) => {
   if (!mainWindow) return { ok: false, error: 'no window' };
 
+  // The account a session runs under travels with the launch. The merged view
+  // shows every account's projects side by side, so which account is on screen
+  // says nothing about where this session belongs — the caller names it, for a
+  // new session from the dialog and for a resume from the session's own record.
+  // It is activated rather than merely bound to the spawn: everything the
+  // session touches afterwards — fork detection, the diffs arriving over MCP,
+  // the file panel reading its files — resolves through the active account, and
+  // those have to agree with the shell that is running.
+  //
+  // Reattaching counts as a launch for exactly the same reason, and it is the
+  // running session's own account that decides — not whatever the caller passed
+  // — which is also why this sits above the reattach branch: the reply carries
+  // the account back to the renderer, and it would otherwise report a switch
+  // that never happened.
+  //
+  // Outside the merged view the named account is ignored entirely. The list on
+  // screen is one account's own, so every launch is already that account's, and
+  // honouring the field would let a stale record in the renderer move the whole
+  // app somewhere the user never asked to go. The renderer still sends it — it
+  // is this handler, not each caller, that decides whether it counts.
+  const running = activeSessions.get(sessionId);
+  const requestedAccount = mergedAccountView()
+    ? accountById(running?.accountId || sessionOptions?.accountId)
+    : null;
+  if (requestedAccount && requestedAccount.id !== getActiveAccount().id) {
+    log.info(`[account] launch in "${requestedAccount.name || requestedAccount.id}" — activating it for session ${sessionId}`);
+    activateAccount(requestedAccount.id);
+  }
+
   // Reattach to existing session
   if (activeSessions.has(sessionId)) {
     const session = activeSessions.get(sessionId);
@@ -2329,7 +2531,10 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       mainWindow.webContents.send('terminal-data', sessionId, '\x1b[?25l');
     }
 
-    return { ok: true, reattached: true, mcpActive: !!session.mcpServer };
+    // The account actually in effect, not the one the session was started under:
+    // the two differ whenever the activation above was declined, and the renderer
+    // uses this to follow a switch that really happened.
+    return { ok: true, reattached: true, mcpActive: !!session.mcpServer, accountId: getActiveAccount().id };
   }
 
   // Spawn new PTY
@@ -2580,6 +2785,9 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     projectPath, firstResize: true,
     projectFolder, knownJsonlFiles, sessionSlug,
     isPlainTerminal, forkFrom: sessionOptions?.forkFrom || null,
+    // The account this session runs under. It outlives the active selection: a
+    // plain terminal is listed from here, and an account switch must not move it.
+    accountId: activeAccount.id,
     mcpServer, _openedAt: Date.now(),
   };
   activeSessions.set(sessionId, session);
@@ -2713,7 +2921,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     log.info(`[fork-spawn] tempId=${sessionId} forkFrom=${sessionOptions.forkFrom} folder=${projectFolder} knownFiles=${knownJsonlFiles.size}`);
   }
 
-  return { ok: true, reattached: false, mcpActive: !!mcpServer };
+  return { ok: true, reattached: false, mcpActive: !!mcpServer, accountId: activeAccount.id };
 });
 
 // --- IPC: terminal-input (fire-and-forget) ---
@@ -2770,8 +2978,18 @@ sessionTransitions.init({ PROJECTS_DIR: activeProjectsDir(), activeSessions, get
 const { detectSessionTransitions } = sessionTransitions;
 
 // --- fs.watch on projects directory ---
-let projectsWatcher = null;
-let projectsPoller = null;
+// One watcher per account on screen. In the standard view that is a single
+// entry, exactly as before; the merged view has to hear about every account,
+// because a session it does not watch is a session the sidebar shows stale.
+let projectsWatchers = [];
+let projectsPollers = [];
+// The directories actually being watched, and a cancel for each watcher's
+// pending debounce. Both exist so a restart that would rebuild the very same set
+// can be skipped: tearing a poller down resets its mtime baseline, and every
+// change made across the gap is lost with it. In the merged view every account
+// is watched whoever is active, so an account switch asks for exactly this set.
+let watchedDirs = [];
+let watcherCancels = [];
 
 // How often the polling fallback sweeps the projects directory. Only used when
 // a recursive fs.watch cannot be trusted — see startProjectsWatcher.
@@ -2826,11 +3044,25 @@ function startProjectsPolling(watchDir, queueFolder) {
 }
 
 function startProjectsWatcher() {
-  const watchDir = activeProjectsDir();
+  for (const account of accountsInView()) {
+    startAccountWatcher(account);
+  }
+}
+
+function startAccountWatcher(account) {
+  const watchDir = getProjectsDir(account);
   if (!fs.existsSync(watchDir)) return;
+  watchedDirs.push(watchDir);
 
   const pendingFolders = new Set();
   let debounceTimer = null;
+  // A flush still queued when the watchers are torn down would refresh folders
+  // for an account that may no longer be in view.
+  watcherCancels.push(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = null;
+    pendingFolders.clear();
+  });
 
   function flushChanges() {
     debounceTimer = null;
@@ -2841,15 +3073,20 @@ function startProjectsWatcher() {
     for (const folder of folders) {
       const folderPath = path.join(watchDir, folder);
       if (fs.existsSync(folderPath)) {
-        detectSessionTransitions(folder);
-        refreshFolder(folder);
+        // Fork/plan-accept detection is bound to one projects directory — the
+        // active account's — because that is where a running session's new
+        // .jsonl appears. A watcher for another account has no session of its
+        // own to re-key.
+        if (account.id === getActiveAccount().id) detectSessionTransitions(folder);
+        refreshFolder(folder, account);
       } else {
-        deleteCachedFolder(folder, getActiveAccount().id);
+        deleteCachedFolder(folder, account.id);
       }
       changed = true;
     }
 
     if (changed) {
+      invalidateProjectAccounts();
       notifyRendererProjectsChanged();
     }
   }
@@ -2861,14 +3098,15 @@ function startProjectsWatcher() {
     debounceTimer = setTimeout(flushChanges, 500);
   }
 
-  if (activeWslDistro()) {
-    projectsPoller = startProjectsPolling(watchDir, queueFolder);
-    log.info(`[watcher] WSL-backed account: polling ${watchDir} every ${PROJECTS_POLL_MS}ms`);
+  if (accountWslDistro(account)) {
+    projectsPollers.push(startProjectsPolling(watchDir, queueFolder));
+    log.info(`[watcher] WSL-backed account "${account.name || account.id}": polling ${watchDir} every ${PROJECTS_POLL_MS}ms`);
     return;
   }
 
+  let poller = null;
   try {
-    projectsWatcher = fs.watch(watchDir, { recursive: true }, (_eventType, filename) => {
+    const watcher = fs.watch(watchDir, { recursive: true }, (_eventType, filename) => {
       if (!filename) return;
 
       // filename is relative, e.g. "folder-name/sessions-index.json" or "folder-name/abc.jsonl"
@@ -2882,25 +3120,45 @@ function startProjectsWatcher() {
       queueFolder(folder);
     });
 
-    projectsWatcher.on('error', (err) => {
+    watcher.on('error', (err) => {
       console.error('Projects watcher error:', err);
-      if (!projectsPoller) projectsPoller = startProjectsPolling(watchDir, queueFolder);
+      if (!poller) {
+        poller = startProjectsPolling(watchDir, queueFolder);
+        projectsPollers.push(poller);
+      }
     });
+    projectsWatchers.push(watcher);
   } catch (err) {
     console.error('Failed to start projects watcher:', err);
-    projectsPoller = startProjectsPolling(watchDir, queueFolder);
+    poller = startProjectsPolling(watchDir, queueFolder);
+    projectsPollers.push(poller);
   }
 }
 
+function stopProjectsWatchers() {
+  for (const cancel of watcherCancels) {
+    try { cancel(); } catch {}
+  }
+  watcherCancels = [];
+  for (const watcher of projectsWatchers) {
+    try { watcher.close(); } catch {}
+  }
+  projectsWatchers = [];
+  for (const poller of projectsPollers) {
+    clearInterval(poller);
+  }
+  projectsPollers = [];
+  watchedDirs = [];
+}
+
 function restartProjectsWatcher() {
-  if (projectsWatcher) {
-    projectsWatcher.close();
-    projectsWatcher = null;
-  }
-  if (projectsPoller) {
-    clearInterval(projectsPoller);
-    projectsPoller = null;
-  }
+  // Nothing to do when the set is already the one being asked for. An account
+  // switch inside the merged view is the case this exists for: it happens on
+  // every cross-account launch, and each restart would cost every WSL account
+  // its polling baseline.
+  const wanted = accountsInView().map(getProjectsDir).filter(d => fs.existsSync(d));
+  if (wanted.length === watchedDirs.length && wanted.every(d => watchedDirs.includes(d))) return;
+  stopProjectsWatchers();
   startProjectsWatcher();
 }
 
@@ -2949,7 +3207,9 @@ app.whenReady().then(() => {
     const profileId = globalSettings.shellProfile || SETTING_DEFAULTS.shellProfile;
     // A scheduled command belongs to its project, so one in a distribution runs
     // there — the shell setting cannot chdir into a POSIX path from Windows.
-    const distro = activeWslDistro();
+    // Which distribution follows from the project, not from whoever is active
+    // when the timer fires.
+    const distro = accountWslDistro(accountForPath(cwd));
     const inWsl = Boolean(distro) && isPosixAbsolutePath(cwd);
     const profile = resolveShell(inWsl ? 'wsl:' + distro : profileId);
     const shell = profile.path;
@@ -2982,8 +3242,16 @@ app.whenReady().then(() => {
   scheduleIpc.init(log, runScheduleCommand);
   startScheduler(log, runScheduleCommand);
 
-  // Re-index search if FTS table was recreated (e.g. tokenizer config change)
-  if (searchFtsRecreated) populateCacheViaWorker();
+  // Re-index search if FTS table was recreated (e.g. tokenizer config change).
+  // The index is global and has just been emptied, so every account on screen
+  // has to be re-read — scanning only the active one would leave the others
+  // unsearchable until something else happened to rescan them.
+  if (searchFtsRecreated) {
+    for (const account of accountsInView()) {
+      autoScannedAccounts.add(account.id);
+      populateCacheViaWorker(account);
+    }
+  }
 
   // Check for updates after launch
   if (autoUpdater) {
@@ -3017,11 +3285,8 @@ app.on('before-quit', () => {
   // Shut down all MCP servers
   shutdownAllMcp();
 
-  // Close filesystem watcher
-  if (projectsWatcher) {
-    projectsWatcher.close();
-    projectsWatcher = null;
-  }
+  // Close filesystem watchers
+  stopProjectsWatchers();
 
 
   // Kill all PTY processes on quit

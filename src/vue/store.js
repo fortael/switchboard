@@ -25,6 +25,13 @@ export const store = reactive({
   visibleSessionCount: 10,
   sessionMaxAgeDays: 3,
 
+  // Multi-account. In the merged view the sidebar lists every account's projects
+  // at once, so a session has to say which account it belongs to; outside it the
+  // list is one account's own and the badges stay off.
+  mergedAccountView: false,
+  accounts: [],
+  activeAccountId: 'default',
+
   // Header state (active session context)
   headerSession: null,
   headerPtyTitle: null,

@@ -135,6 +135,53 @@ and a proxy configured inside the distribution — the CLI resolves a proxy for
 the IDE socket and honours `NO_PROXY`, so `HTTP_PROXY`/`ALL_PROXY` set in the
 distro will capture the connection to the host address.
 
+### Merged account view
+
+The global setting `mergedAccountView` puts every account's projects in one
+list. It lives in the `"global"` settings row rather than `SETTING_DEFAULTS` —
+a key listed there becomes overridable per project, which is wrong for something
+that applies to the whole window. `accountsInView()` in `main.js` is the one
+place that answers "which accounts" — `session-cache.js` takes it through
+`init()` rather than rebuilding it; nothing else should branch on the setting.
+See `docs/adr/0001-merged-account-view.md`.
+
+**The setting is a hard boundary, not a preference.** With it off the app must
+behave exactly as it did before the merged view existed: nothing may consult,
+read from, watch or activate an account other than the active one. Every branch
+this feature added is on the merged side of a `mergedAccountView()` test, and
+`open-terminal` ignores `sessionOptions.accountId` outright when the setting is
+off rather than trusting each caller to have left it out. When adding anything
+here, ask what it does with the setting off — the answer has to be "what it did
+before".
+
+Three consequences worth knowing before touching this code:
+
+1. **The active account no longer means "what is on screen"** — in the merged
+   view. It means where a launch that names no account of its own goes. Anything
+   that reads *what to show* asks `accountsInView()`; anything that reads *where
+   to run* takes the account from the launch.
+2. **A launch names its account.** `open-terminal` takes
+   `sessionOptions.accountId` and activates it before spawning, so fork
+   detection, MCP diffs and the file panel stay on the same account as the
+   shell. A resume passes the session's own `accountId` — never the active one.
+   A reattach is a launch too, and there the running session's own `accountId`
+   wins. The reply always carries the account actually in effect, never the one
+   that was asked for: the renderer follows it, and a declined request that
+   reported itself as granted would move the UI to an account the main process
+   is not on.
+3. **The account is resolved from the path, not from the selection.**
+   `hostPath()` and `projectExecFile()` go through `accountForPath()`, so a
+   project of a WSL account is read and its git run inside that distribution
+   while another account is active. Outside the merged view `accountForPath()`
+   returns the active account unconditionally — that is what keeps the standard
+   view byte-for-byte what it was, and why the merged branch must never be the
+   default.
+
+Session cache rows carry `accountId`; `cache_meta` and `search_map` do not, and
+are shared by folder name. That is why the worker path clears search entries per
+session rather than per folder — two accounts holding the same project produce
+the same folder name, and a folder-wide delete drops the other account's rows.
+
 ### Session identity and fork detection
 
 When a new Claude session is spawned with `--fork-session` or a plan is accepted, a new `.jsonl` file appears with a different session UUID. `session-transitions.js` monitors active PTY sessions for new files in their project folder and matches them to the correct parent via `forkedFrom` or `parentSessionId` fields in the JSONL. Once matched, it re-keys the active session map and notifies the renderer.

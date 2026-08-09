@@ -170,6 +170,13 @@ if (migrations.length > currentDbVersion) {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(JSON.stringify(migrations.length));
 }
 
+// getProjectAccountIds() is a DISTINCT over exactly this pair and sits under
+// every path→account lookup, so it must not have to read the table. Created
+// after the migrations rather than beside the other indexes: `accountId` is a
+// column v4 adds, and a fresh install has no such column when the CREATE TABLE
+// above has just run — the statement would throw before the app ever opened.
+db.exec('CREATE INDEX IF NOT EXISTS idx_session_cache_project_account ON session_cache(projectPath, accountId)');
+
 // --- FTS5 full-text search ---
 db.exec(`
   CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
@@ -217,6 +224,7 @@ const stmts = {
       aiTitle = COALESCE(session_cache.aiTitle, excluded.aiTitle), accountId = excluded.accountId
   `),
   cacheGetByFolder: db.prepare('SELECT sessionId, modified FROM session_cache WHERE folder = ? AND accountId = ?'),
+  cacheProjectAccounts: db.prepare('SELECT DISTINCT projectPath, accountId FROM session_cache WHERE projectPath IS NOT NULL'),
   cacheGetFolder: db.prepare('SELECT folder FROM session_cache WHERE sessionId = ?'),
   cacheGetSession: db.prepare('SELECT * FROM session_cache WHERE sessionId = ?'),
   cacheDeleteSession: db.prepare('DELETE FROM session_cache WHERE sessionId = ?'),
@@ -312,6 +320,19 @@ function upsertCachedSessions(sessions, accountId = 'default') {
 
 function getCachedByFolder(folder, accountId = 'default') {
   return stmts.cacheGetByFolder.all(folder, accountId);
+}
+
+// projectPath → the accounts that have sessions in it. One project can belong to
+// several accounts: the path is the same directory whoever opened it.
+function getProjectAccountIds() {
+  const map = new Map();
+  // The query is DISTINCT over exactly this pair, so a row never repeats one.
+  for (const row of stmts.cacheProjectAccounts.all()) {
+    const ids = map.get(row.projectPath);
+    if (ids) ids.push(row.accountId);
+    else map.set(row.projectPath, [row.accountId]);
+  }
+  return map;
 }
 
 function getCachedFolder(sessionId) {
@@ -537,6 +558,7 @@ function closeDb() {
 module.exports = {
   getMeta, getAllMeta, setName, toggleStar, setArchived,
   isCachePopulated, getAllCached, getCachedByFolder, getCachedFolder, getCachedSession, upsertCachedSessions,
+  getProjectAccountIds,
   deleteCachedSession, deleteCachedFolder,
   getFolderMeta, getAllFolderMeta, setFolderMeta,
   getProjectGitCache, setProjectGitCache, getAllProjectGitCounts,
