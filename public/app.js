@@ -1832,9 +1832,14 @@ window.__sb = {
 
   discoverWslClaudeHomes: () => window.api.discoverWslClaudeHomes(),
 
-  createWslAccount: async (distro, name) => {
-    const newAcc = await window.api.createWslAccount(distro, name);
+  listWslDistros: () => window.api.listWslDistros(),
+
+  createWslAccount: async (distro, name, claudePosix) => {
+    const newAcc = await window.api.createWslAccount(distro, name, claudePosix);
     if (!newAcc || newAcc.error) return newAcc;
+    // Attaching a directory that already has an account returns that account
+    // rather than a new one, and it is already in the list.
+    if (accounts.some(a => a.id === newAcc.id)) return newAcc;
     accounts = [...accounts, newAcc];
     await refreshAccountUsage();
     updateAccountDropdown();

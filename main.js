@@ -57,7 +57,8 @@ const cleanPtyEnv = Object.fromEntries(
 const {
   discoverShellProfiles, getShellProfiles, resolveShell, isWindows, isWslShell,
   windowsToWslPath, shellArgs,
-  wslToWindowsPath, isPosixAbsolutePath, probeWslClaudeHome, discoverWslClaudeHomes, wslExecArgs,
+  wslToWindowsPath, isPosixAbsolutePath, probeWslClaudeHome, probeWslClaudeDir,
+  discoverWslClaudeHomes, listWslDistros, defaultClaudePosix, wslExecArgs,
   withWslEnv, wslDistroFromUncPath, projectJoin,
 } = require('./shell-profiles');
 const { startScheduler } = require('./schedule-runner');
@@ -113,12 +114,22 @@ const MAX_BUFFER_SIZE = 256 * 1024;
 
 const DEFAULT_ACCOUNT = { id: 'default', name: 'Default', configDir: DEFAULT_CLAUDE_DIR };
 
+// A WSL account attached before a distribution could hold more than one carries
+// no `wslClaudePosix`: it is the distribution's default home by construction.
+// Filling it in here means one shape reaches every reader, main and renderer
+// alike, and the field is written back the next time accounts are saved.
+function withWslClaudePosix(account) {
+  if (!account.wslDistro || account.wslClaudePosix || !account.wslHome) return account;
+  return { ...account, wslClaudePosix: defaultClaudePosix(account.wslHome) };
+}
+
 function getAccounts() {
   const stored = getSetting('accounts');
   if (!Array.isArray(stored) || stored.length === 0) return [DEFAULT_ACCOUNT];
+  const normalized = stored.map(withWslClaudePosix);
   // Always ensure default account is present
-  if (!stored.find(a => a.id === 'default')) return [DEFAULT_ACCOUNT, ...stored];
-  return stored;
+  if (!normalized.find(a => a.id === 'default')) return [DEFAULT_ACCOUNT, ...normalized];
+  return normalized;
 }
 
 function getActiveAccount() {
@@ -160,6 +171,18 @@ function accountWslDistro(account) {
 
 function activeWslDistro() {
   return accountWslDistro(getActiveAccount());
+}
+
+// The POSIX config directory to hand the CLI for a WSL account, or null when
+// there is nothing to say. A distribution resolves its own ~/.claude without
+// being told, so only a sibling directory — a second Claude account inside the
+// same distribution — has to be named. The account's `configDir` is the Windows
+// view of that directory and means nothing inside the distribution, which is why
+// it is never what crosses the boundary.
+function accountWslConfigEnv(account) {
+  const claudePosix = account && account.wslClaudePosix;
+  if (!accountWslDistro(account) || !claudePosix || !account.wslHome) return null;
+  return claudePosix === defaultClaudePosix(account.wslHome) ? null : claudePosix;
 }
 
 // Translate a canonical project path into one a Windows fs call can open.
@@ -1504,6 +1527,7 @@ ipcMain.handle('refresh-stats', async () => {
   // credentials are, and a Windows shell could reach neither.
   const globalSettings = getSetting('global') || {};
   const statsDistro = activeWslDistro();
+  const statsWslConfigEnv = accountWslConfigEnv(getActiveAccount());
   const statsProfileId = globalSettings.shellProfile || SETTING_DEFAULTS.shellProfile;
   const statsShellProfile = resolveShell(statsDistro ? 'wsl:' + statsDistro : statsProfileId);
   const statsShell = statsShellProfile.path;
@@ -1525,12 +1549,16 @@ ipcMain.handle('refresh-stats', async () => {
     FORCE_COLOR: '3',
     // No ITERM_SESSION_ID: without it Claude CLI won't try to reach iTerm2 via AppleScript,
     // which avoids the macOS "would like to access data from other apps" permission prompt.
-    // CLAUDE_CONFIG_DIR is skipped for a WSL account: its configDir is the
-    // Windows view of a home that is already the default inside the distro.
-    ...(configDir !== DEFAULT_CLAUDE_DIR && !statsDistro ? { CLAUDE_CONFIG_DIR: configDir } : {}),
+    // For a WSL account the Windows configDir is meaningless inside the
+    // distribution, so what crosses is the POSIX directory — and only for an
+    // account that is not the distribution's default Claude home.
+    ...(statsDistro
+      ? (statsWslConfigEnv ? { CLAUDE_CONFIG_DIR: statsWslConfigEnv } : {})
+      : (configDir !== DEFAULT_CLAUDE_DIR ? { CLAUDE_CONFIG_DIR: configDir } : {})),
   };
   if (statsInWsl) {
     Object.assign(ptyEnv, withWslEnv(ptyEnv, [
+      'CLAUDE_CONFIG_DIR',
       'TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'FORCE_COLOR',
     ]));
   }
@@ -1884,27 +1912,72 @@ ipcMain.handle('create-account', (_event, name) => {
   return account;
 });
 
-// Distributions that hold a reachable Claude home, for the "add account" UI.
+// Claude homes reachable inside WSL, for the "add account" UI. One entry per
+// config directory, so a distribution holding several accounts contributes one
+// row each rather than only its default home.
 ipcMain.handle('discover-wsl-claude-homes', async () => {
   try { return await discoverWslClaudeHomes(); } catch { return []; }
 });
 
-// Attach an account to the Claude home inside a WSL distribution. Additive:
-// accounts without `wslDistro` keep behaving exactly as before.
-ipcMain.handle('create-wsl-account', async (_event, distro, name) => {
-  const existingForDistro = getAccounts().find(a => a.wslDistro === distro);
-  if (existingForDistro) return existingForDistro;
-  const probe = await probeWslClaudeHome(distro);
-  if (!probe) return { error: `No reachable Claude home in WSL distribution "${distro}"` };
+// Installed distributions, so a config directory discovery cannot see — one
+// outside $HOME, or one Claude has not written a projects/ into yet — can still
+// be named by hand.
+ipcMain.handle('list-wsl-distros', () => {
+  try { return listWslDistros(); } catch { return []; }
+});
+
+// The account already attached to a config directory inside a distribution, if
+// there is one. Identity is the directory rather than the distribution: several
+// Claude accounts can live in one distribution, told apart only by which config
+// directory they read.
+function findWslAccount(distro, claudePosix) {
+  return getAccounts().find(a => a.wslDistro === distro && a.wslClaudePosix === claudePosix);
+}
+
+// A second account in the same distribution needs a name that says which one it
+// is; the default home keeps the plain distribution name it has always had.
+function wslAccountName(probe) {
+  return probe.isDefault
+    ? `WSL — ${probe.distro}`
+    : `WSL — ${probe.distro} (${probe.claudePosix.split('/').pop()})`;
+}
+
+// Attach an account to a Claude home inside a WSL distribution. `claudePosix`
+// names which config directory; without it the distribution's default ~/.claude
+// is used, which is what the single-account form of this call always meant.
+ipcMain.handle('create-wsl-account', async (_event, distro, name, claudePosix) => {
+  // Re-attaching a directory already known costs no exec, which is what the UI
+  // does every time the accounts list is redrawn behind a stale button.
+  if (claudePosix) {
+    const known = findWslAccount(distro, claudePosix);
+    if (known) return known;
+  }
+  const probe = claudePosix
+    ? await probeWslClaudeDir(distro, claudePosix)
+    : await probeWslClaudeHome(distro);
+  if (!probe) {
+    return {
+      error: claudePosix
+        ? `No directory "${claudePosix}" in WSL distribution "${distro}"`
+        : `No reachable Claude home in WSL distribution "${distro}"`,
+    };
+  }
+  const existing = findWslAccount(probe.distro, probe.claudePosix);
+  if (existing) return existing;
+
   const { randomUUID } = require('crypto');
   const id = 'wsl-' + randomUUID().replace(/-/g, '').slice(0, 12);
   const account = {
     id,
-    name: name || `WSL — ${distro}`,
+    name: name || wslAccountName(probe),
     configDir: probe.configDir,
     wslDistro: probe.distro,
     wslUncPrefix: probe.uncPrefix,
     wslHome: probe.home,
+    // What CLAUDE_CONFIG_DIR has to say inside the distribution. `configDir`
+    // above is the Windows view of this same directory and cannot stand in for
+    // it — the distribution has no idea what a UNC path is.
+    wslClaudePosix: probe.claudePosix,
   };
   setSetting('accounts', [...getAccounts(), account]);
   return account;
@@ -2385,11 +2458,15 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
         TERM: 'xterm-256color', COLORTERM: 'truecolor',
         TERM_PROGRAM: 'iTerm.app', TERM_PROGRAM_VERSION: '3.6.6', FORCE_COLOR: '3', ITERM_SESSION_ID: '1',
       };
-      // A WSL account's configDir is the Windows view of ~/.claude inside the
-      // distribution — meaningless as CLAUDE_CONFIG_DIR there, where that home
-      // is already the default. Setting it would point Claude at a path it
-      // cannot resolve.
-      if (activeAccount.id !== 'default' && !accountWslDistro(activeAccount)) {
+      // A WSL account's configDir is the Windows view of a directory inside the
+      // distribution — meaningless as CLAUDE_CONFIG_DIR there, and setting it
+      // would point Claude at a path it cannot resolve. What crosses instead is
+      // the POSIX directory, and only when it is not the ~/.claude the
+      // distribution would have picked on its own.
+      const wslConfigEnv = accountWslConfigEnv(activeAccount);
+      if (wslConfigEnv) {
+        ptyEnv.CLAUDE_CONFIG_DIR = wslConfigEnv;
+      } else if (activeAccount.id !== 'default' && !accountWslDistro(activeAccount)) {
         ptyEnv.CLAUDE_CONFIG_DIR = activeAccount.configDir;
       }
       if (mcpServer) {
@@ -2404,6 +2481,9 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       if (isWsl) {
         Object.assign(ptyEnv, withWslEnv(ptyEnv, [
           'CLAUDE_CODE_SSE_PORT',
+          // Only present for an account that is not the distribution's default
+          // Claude home; withWslEnv skips a name the environment does not carry.
+          'CLAUDE_CONFIG_DIR',
           'TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'FORCE_COLOR', 'ITERM_SESSION_ID',
         ]));
       }

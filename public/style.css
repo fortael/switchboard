@@ -786,6 +786,26 @@ body { display: flex; flex-direction: column; }
   white-space: nowrap;
 }
 
+/* Naming a config directory by hand, for the ones discovery cannot see. */
+.accounts-wsl-manual {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  margin-top: 6px;
+}
+
+.accounts-wsl-distro {
+  flex: 0 0 auto;
+  max-width: 40%;
+}
+
+.accounts-wsl-manual-path {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .account-row-name-input {
   background: rgba(255,255,255,0.08);
   border: 1px solid rgba(128,136,255,0.4);

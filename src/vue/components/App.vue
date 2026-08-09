@@ -329,7 +329,9 @@ const accountsCallbacks = {
   deleteAccount: (id) => window.__sb?.deleteAccount?.(id),
   createAccount: (name) => window.__sb?.createAccount?.(name),
   discoverWslClaudeHomes: () => window.__sb?.discoverWslClaudeHomes?.(),
-  createWslAccount: (distro, name) => window.__sb?.createWslAccount?.(distro, name),
+  listWslDistros: () => window.__sb?.listWslDistros?.(),
+  createWslAccount: (distro, name, claudePosix) =>
+    window.__sb?.createWslAccount?.(distro, name, claudePosix),
 };
 
 const accountDropdownCallbacks = {

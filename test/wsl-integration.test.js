@@ -29,6 +29,14 @@ delete process.env.CLAUDE_CONFIG_DIR;
 const DISTRO = 'Ubuntu';
 const PROJECT_POSIX = '/home/delirus/work/proj';
 const PROJECT_UNC = '\\\\wsl.localhost\\Ubuntu\\home\\delirus\\work\\proj';
+const WSL_HOME = '/home/delirus';
+// A second Claude account in the same distribution, told apart from the first
+// only by the config directory it reads.
+const SECOND_CONFIG = '/home/delirus/.claude-work';
+// The one path the simulated distribution does not have. Every other path under
+// the distribution is answered as existing by the fs interception below, so a
+// "not there" case needs a name that interception knows to refuse.
+const MISSING_CONFIG = '/home/delirus/.claude-absent';
 
 const calls = { readdirSync: [], existsSync: [], readFileSync: [], statSync: [], spawn: [] };
 const settings = new Map([
@@ -64,7 +72,10 @@ const stubs = {
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
     ipcMain: { handle: (channel, fn) => handlers.set(channel, fn), on: noop, removeHandler: noop },
     Menu: permissive({ buildFromTemplate: () => permissive() }),
-    screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) },
+    // Permissive, not a bare object: main.js also subscribes to display changes,
+    // and a missing screen.on rejects asynchronously — after whichever test was
+    // running had already ended, which is where it surfaced.
+    screen: permissive({ getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) }),
     shell: permissive(),
     nativeTheme: permissive(),
   },
@@ -98,8 +109,20 @@ const stubs = {
       if (file === 'wsl.exe' && args[0] === '--list') return `${DISTRO}\r\n`;
       throw new Error(`Command failed: ${file} ${args.join(' ')}`);
     },
+    // The Claude-home probe is answered, since attaching an account depends on
+    // it: `sh -c` with a script the distribution would run. Everything else,
+    // including the wsl.exe that carries a project command, still fails carrying
+    // its argv — that failure is what the routing tests assert on.
     execFile: (file, args, options, callback) => {
       const done = typeof options === 'function' ? options : callback;
+      const script = args[args.indexOf('-c') + 1];
+      if (file === 'wsl.exe' && args.includes('--exec') && String(script).startsWith('printf')) {
+        const answer = script.includes('.claude*')
+          ? `${WSL_HOME}\n${WSL_HOME}/.claude\n${SECOND_CONFIG}`
+          : WSL_HOME;
+        if (done) setImmediate(() => done(null, answer, ''));
+        return permissive({ pid: 1 });
+      }
       if (done) setImmediate(() => done(new Error(`Command failed: ${file} ${args.join(' ')}`), '', ''));
       return permissive({ pid: 1 });
     },
@@ -137,7 +160,7 @@ for (const name of ['readdirSync', 'existsSync', 'readFileSync', 'statSync', 'mk
     const asString = String(p);
     if (!asString.includes('wsl.localhost')) return original.call(fs, p, ...rest);
     if (calls[name]) calls[name].push(asString);
-    if (name === 'existsSync') return true;
+    if (name === 'existsSync') return !asString.includes('.claude-absent');
     if (name === 'readdirSync') return [];
     if (name === 'statSync') return { isDirectory: () => true, mtime: new Date(0), mtimeMs: 0 };
     return '';
@@ -190,6 +213,85 @@ test('a Claude session for a WSL account is spawned inside the distribution', as
   // Setting this would point Claude at a path it cannot resolve inside the distro
   assert.equal(spawned.opts.env.CLAUDE_CONFIG_DIR, undefined);
 });
+
+// --- Several Claude accounts inside one distribution -----------------------
+// They differ only by which config directory they read, so that directory is
+// what identifies an account and what has to cross into the distribution.
+
+test('an account attached before this was possible is read as the default home', async () => {
+  const account = (await handlers.get('get-accounts')({})).find(a => a.id === 'wsl-test');
+  // The stored row carries no wslClaudePosix at all — see the settings map above
+  assert.equal(account.wslClaudePosix, `${WSL_HOME}/.claude`);
+});
+
+test('discovery lists every config directory, not just the distribution default', async () => {
+  const homes = await handlers.get('discover-wsl-claude-homes')({});
+  assert.deepEqual(homes.map(h => h.claudePosix), [`${WSL_HOME}/.claude`, SECOND_CONFIG]);
+  assert.deepEqual(homes.map(h => h.isDefault), [true, false]);
+  // Each still carries the Windows view the app opens files through
+  assert.equal(homes[1].configDir, '\\\\wsl.localhost\\Ubuntu\\home\\delirus\\.claude-work');
+});
+
+test('a second account in the same distribution is attachable, and only once', async () => {
+  const created = await handlers.get('create-wsl-account')({}, DISTRO, null, SECOND_CONFIG);
+  assert.equal(created.error, undefined);
+  assert.equal(created.wslDistro, DISTRO);
+  assert.equal(created.wslClaudePosix, SECOND_CONFIG);
+  // The name has to say which of the two it is
+  assert.equal(created.name, 'WSL — Ubuntu (.claude-work)');
+
+  // Attaching the same directory again returns the account rather than a twin
+  const again = await handlers.get('create-wsl-account')({}, DISTRO, null, SECOND_CONFIG);
+  assert.equal(again.id, created.id);
+  // and so does the distribution's default home, which the account attached
+  // before any of this already holds — matched on the backfilled directory
+  const defaultHome = await handlers.get('create-wsl-account')({}, DISTRO, null, `${WSL_HOME}/.claude`);
+  assert.equal(defaultHome.id, 'wsl-test');
+
+  const forDistro = (await handlers.get('get-accounts')({})).filter(a => a.wslDistro === DISTRO);
+  assert.equal(forDistro.length, 2, 'one distribution, two config directories, two accounts');
+});
+
+test('a directory that is not there is refused rather than attached', async () => {
+  const before = (await handlers.get('get-accounts')({})).length;
+  const missing = await handlers.get('create-wsl-account')({}, DISTRO, null, MISSING_CONFIG);
+  assert.match(missing.error, new RegExp(MISSING_CONFIG));
+  assert.equal((await handlers.get('get-accounts')({})).length, before, 'nothing was written for it');
+
+  // A path the distribution could not resolve either is refused without asking it
+  const relative = await handlers.get('create-wsl-account')({}, DISTRO, null, 'claude-work');
+  assert.match(relative.error, /claude-work/);
+});
+
+test('the second account tells the CLI which config directory to read', async () => {
+  const second = (await handlers.get('get-accounts')({}))
+    .find(a => a.wslClaudePosix === SECOND_CONFIG);
+  await withActiveAccount(second.id, async () => {
+    calls.spawn.length = 0;
+    const result = await handlers.get('open-terminal')({}, 'sess-3', PROJECT_POSIX, true, { mcpEmulation: false });
+    assert.equal(result.ok, true);
+
+    const [spawned] = calls.spawn;
+    // The POSIX directory, never the Windows view of it — the distribution
+    // cannot resolve a UNC path
+    assert.equal(spawned.opts.env.CLAUDE_CONFIG_DIR, SECOND_CONFIG);
+    // and wsl.exe drops anything WSLENV does not name
+    assert.match(spawned.opts.env.WSLENV, /CLAUDE_CONFIG_DIR/);
+  });
+});
+
+// Swap the active account for the duration of one test. The IPC that does this
+// in the app also re-inits the cache and starts a worker, neither of which this
+// suite can shut down again; the setting is what every account read goes through.
+async function withActiveAccount(id, fn) {
+  const previous = settings.get('global');
+  settings.set('global', { ...previous, activeAccountId: id });
+  try {
+    await fn();
+  } finally {
+    settings.set('global', previous);
+  }
+}
 
 test('IDE emulation publishes the contract the CLI parses, and the port crosses', async () => {
   calls.spawn.length = 0;

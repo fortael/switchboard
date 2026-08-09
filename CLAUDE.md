@@ -92,9 +92,9 @@ that `SettingsPanelApp.vue` calls after saving.
 An account may carry `wslDistro`, in which case its Claude home lives inside
 that WSL distribution and `configDir` is the Windows UNC view of it. Accounts
 without the field behave exactly as before — every helper below is identity for
-them. See `docs/adr/0002-wsl-backed-accounts.md` for the reasoning.
+them.
 
-Three rules, in order of how easy they are to break:
+Four rules, in order of how easy they are to break:
 
 1. **The POSIX path is canonical.** `projectPath` is stored, keyed and
    `encodeProjectPath`-hashed in the form Claude wrote into the `.jsonl` — never
@@ -109,6 +109,16 @@ Three rules, in order of how easy they are to break:
    `projectExecFile()` (or `projectGit()` on top of it), which rewrites
    `(argv, cwd)` into `wsl.exe -d <distro> --cd <cwd> --exec <argv>`. Never a
    shell string: the project path must not meet shell quoting.
+4. **A WSL account is a config directory, not a distribution.** One distribution
+   can hold several Claude accounts, told apart only by which directory they
+   read, so `wslClaudePosix` — not `wslDistro` — is what identifies an account
+   and what `findWslAccount()` dedupes on. That POSIX directory is what crosses
+   as `CLAUDE_CONFIG_DIR`, and only when it is not the `$HOME/.claude` the
+   distribution would resolve on its own (`accountWslConfigEnv()`); `configDir`
+   is its Windows view and means nothing inside. Anything named in the PTY
+   environment must also be listed in `withWslEnv()`, or `wsl.exe` drops it.
+   Accounts attached before this was possible carry no `wslClaudePosix` and are
+   backfilled to the default home in `getAccounts()`.
 
 Whatever the account owns follows the account, not the Windows home — plans,
 global memory files, `/stats`, schedules. Modules that cannot reach

@@ -220,39 +220,98 @@ function listWslDistros() {
   }
 }
 
-// Turn a resolved $HOME into the account fields, choosing the UNC prefix that
-// actually resolves. Returns null when the distribution has no Claude home.
-function wslClaudeHomeFrom(distro, home) {
+// The directory a distribution's Claude reads when nothing tells it otherwise.
+// Every other account inside the same distribution is a sibling of it, named by
+// CLAUDE_CONFIG_DIR.
+function defaultClaudePosix(home) {
+  return home + '/.claude';
+}
+
+// Turn a config directory inside a distribution into the account fields,
+// choosing the UNC prefix that actually resolves. `claudePosix` defaults to the
+// distribution's own ~/.claude; pass another to describe a second account living
+// in the same distribution. Returns null when the directory holds no Claude home.
+function wslClaudeHomeFrom(distro, home, claudePosix = null) {
   if (!home || !home.startsWith('/')) return null;
-  const claudePosix = home + '/.claude';
+  const dir = claudePosix || defaultClaudePosix(home);
   for (const prefix of WSL_UNC_PREFIXES) {
-    const configDir = wslToWindowsPath(claudePosix, distro, prefix);
+    const configDir = wslToWindowsPath(dir, distro, prefix);
     if (fs.existsSync(path.join(configDir, 'projects'))) {
-      return { distro, home, claudePosix, configDir, uncPrefix: prefix };
+      return {
+        distro, home, claudePosix: dir, configDir, uncPrefix: prefix,
+        isDefault: dir === defaultClaudePosix(home),
+      };
     }
   }
   return null;
 }
 
-// Resolve $HOME inside a distribution and the Windows path of its ~/.claude.
-// Async: starting a distribution can take seconds, and this runs in the main
-// process where a synchronous wait would freeze the window.
-async function probeWslClaudeHome(distro) {
-  if (!isWindows || !distro) return null;
+// Run a script inside a distribution and hand back its output, or null if it
+// could not be run. Async: starting a distribution can take seconds, and this
+// runs in the main process where a synchronous wait would freeze the window.
+function wslCapture(distro, script) {
   const { execFile } = require('child_process');
-  const home = await new Promise((resolve) => {
-    execFile('wsl.exe', ['-d', distro, '--exec', 'sh', '-c', 'printf %s "$HOME"'], {
+  return new Promise((resolve) => {
+    execFile('wsl.exe', ['-d', distro, '--exec', 'sh', '-c', script], {
       timeout: 10000, encoding: 'utf8',
     }, (err, stdout) => resolve(err ? null : (stdout || '').replace(/\0/g, '').trim()));
   });
-  return wslClaudeHomeFrom(distro, home);
 }
 
-// Distributions that actually hold a Claude home worth attaching an account to.
+// $HOME followed by one line per Claude config directory under it. Claude tells
+// its accounts apart by directory, so the glob is what enumerates them.
+// The listing is done by the distribution's own shell rather than by a readdir
+// over the 9p share, which would have to walk the whole home directory.
+// `exit 0` because the last iteration's test decides the script's status, and a
+// sibling without projects/ would otherwise look like a failed probe.
+const WSL_CLAUDE_DIRS_SCRIPT =
+  'printf %s "$HOME"; for d in "$HOME"/.claude*; do [ -d "$d/projects" ] && printf \'\\n%s\' "$d"; done; exit 0';
+
+// Every Claude account reachable inside one distribution, in one exec — starting
+// the distribution is the cost here, and the glob is free next to it.
+async function probeWslClaudeHomes(distro) {
+  if (!isWindows || !distro) return [];
+  const raw = await wslCapture(distro, WSL_CLAUDE_DIRS_SCRIPT);
+  if (raw === null) return [];
+  const [home, ...dirs] = raw.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!home || !home.startsWith('/')) return [];
+  return dirs.map(dir => wslClaudeHomeFrom(distro, home, dir)).filter(Boolean);
+}
+
+// The distribution's default Claude home, which is the one an account attaches
+// to when no directory is named.
+async function probeWslClaudeHome(distro) {
+  const homes = await probeWslClaudeHomes(distro);
+  return homes.find(entry => entry.isDefault) || null;
+}
+
+// A config directory named by hand. Deliberately weaker than discovery: only the
+// directory itself has to exist, with no projects/ inside it — a config Claude
+// has just been pointed at, or one living outside $HOME, is exactly what
+// discovery cannot see and what this exists for.
+async function probeWslClaudeDir(distro, claudePosix) {
+  if (!isWindows || !distro || typeof claudePosix !== 'string') return null;
+  const dir = claudePosix.trim().replace(/\/+$/, '');
+  if (!dir.startsWith('/')) return null;
+  const home = await wslCapture(distro, 'printf %s "$HOME"');
+  if (!home || !home.startsWith('/')) return null;
+  for (const prefix of WSL_UNC_PREFIXES) {
+    const configDir = wslToWindowsPath(dir, distro, prefix);
+    if (fs.existsSync(configDir)) {
+      return {
+        distro, home, claudePosix: dir, configDir, uncPrefix: prefix,
+        isDefault: dir === defaultClaudePosix(home),
+      };
+    }
+  }
+  return null;
+}
+
+// Every Claude account across every distribution, for the "add account" UI.
 // Probed concurrently so several distributions cost one wait, not N.
 async function discoverWslClaudeHomes() {
-  const probes = await Promise.all(listWslDistros().map(probeWslClaudeHome));
-  return probes.filter(Boolean);
+  const perDistro = await Promise.all(listWslDistros().map(probeWslClaudeHomes));
+  return perDistro.flat();
 }
 
 // Build the argv that runs `argv` inside `distro`, with `cwd` as the working
@@ -329,6 +388,7 @@ module.exports = {
   discoverShellProfiles, getShellProfiles, resolveShell, isWindows, isWslShell,
   windowsToWslPath, shellArgs,
   WSL_UNC_PREFIXES, wslToWindowsPath, isPosixAbsolutePath, listWslDistros,
-  probeWslClaudeHome, discoverWslClaudeHomes, wslClaudeHomeFrom, wslExecArgs, projectJoin,
+  probeWslClaudeHome, probeWslClaudeHomes, probeWslClaudeDir, discoverWslClaudeHomes,
+  wslClaudeHomeFrom, defaultClaudePosix, wslExecArgs, projectJoin,
   withWslEnv, wslHostAddressFrom, wslDistroFromUncPath,
 };
