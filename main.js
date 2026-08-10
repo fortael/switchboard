@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const pty = require('node-pty');
+const { createMirror, writeMirror, resizeMirror, serializeMirror, disposeMirror } = require('./terminal-mirror');
 
 if (!app.isPackaged) {
   const origUserData = app.getPath('userData');
@@ -110,7 +111,13 @@ const {
 const DEFAULT_CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const CLAUDE_DIR = DEFAULT_CLAUDE_DIR;
 const STATS_CACHE_PATH = path.join(CLAUDE_DIR, 'stats-cache.json');
-const MAX_BUFFER_SIZE = 256 * 1024;
+
+// The size every PTY is spawned at, until the renderer fits its terminal and
+// resizes it. Named rather than repeated because the screen mirror has to be
+// created at the same size — the two disagreeing about where a line wrapped is
+// exactly what a mirror is not allowed to do.
+const PTY_INITIAL_COLS = 120;
+const PTY_INITIAL_ROWS = 30;
 
 // --- Multi-account helpers ---
 
@@ -776,6 +783,14 @@ function createWindow() {
   // the window is the other half of that, since the user is now looking at it.
   mainWindow.on('focus', () => clearSessionAttention(viewedSessionId));
 
+  // Whether a session counts as watched is answered when the tray is built, so
+  // leaving the window is a change in that answer and the tray has to be rebuilt
+  // for it. Without this, a request raised while the session was on screen stays
+  // invisible until something unrelated happens to refresh the tray — and hiding
+  // to the tray is exactly when it needs to be right.
+  mainWindow.on('blur', refreshTray);
+  mainWindow.on('hide', refreshTray);
+
   // Set position after creation to prevent macOS from clamping size
   if (restorePosition) {
     const restored = { ...restorePosition, width: bounds.width, height: bounds.height };
@@ -873,6 +888,8 @@ function createWindow() {
       if (!session.exited) {
         try { session.pty.kill(); } catch {}
       }
+      disposeMirror(session.screen);
+      session.screen = null;
       activeSessions.delete(id);
     }
     mainWindow = null;
@@ -936,7 +953,11 @@ function traySnapshot() {
     if (session.exited) continue;
     const sessionId = session.realSessionId || key;
     const entry = { sessionId, projectPath: session.projectPath, sessionSlug: session.sessionSlug };
-    if (session._attention) attention.push(entry);
+    // Whether the user is watching is asked here, every time the tray is built,
+    // rather than once when the request arrived. A prompt that appeared while the
+    // session was on screen is still unanswered after the user looks away, and
+    // deciding at arrival time meant the tray never learned about it.
+    if (session._attention && !isWatchingSession(sessionId)) attention.push(entry);
     else if (session._cliBusy) busy.push(entry);
   }
   return { attention, busy, accounts: getAccounts(), usage: accountsUsageSnapshot() };
@@ -957,8 +978,64 @@ function refreshTray() {
 // the tray has to be right exactly when the window is hidden and the renderer is not
 // being looked at.
 function noteSessionNotification(session, sessionId, message) {
-  if (!ATTENTION_MESSAGE.test(message) || isWatchingSession(sessionId)) return;
+  if (!ATTENTION_MESSAGE.test(message)) return;
+  // Recorded even while the session is on screen. Being watched decides whether
+  // the tray shows it, in traySnapshot, and that answer changes when the user
+  // looks away; dropping the request here made it permanent.
   session._attention = true;
+  refreshTray();
+}
+
+// The CLI title, as an OSC 0 payload: a braille spinner means it is working, ✳
+// means it has stopped. Resuming work is also the one signal that a request the
+// user was asked for has been answered — they have to be looking at the session
+// to answer it, so nothing else observes the reply.
+function handleOscTitle(session, sessionId, payload) {
+  const firstChar = payload.charAt(0);
+  const isBusy = firstChar.charCodeAt(0) >= 0x2800 && firstChar.charCodeAt(0) <= 0x28FF;
+  const isIdle = firstChar === '\u2733'; // ✳
+  log.debug(`[OSC 0] session=${sessionId} char=U+${firstChar.charCodeAt(0).toString(16).toUpperCase()} busy=${isBusy} idle=${isIdle} wasBusy=${!!session._cliBusy}`);
+  if (isBusy && !session._cliBusy) {
+    log.debug(`[OSC 0] session=${sessionId} → BUSY`);
+    setCliBusy(session, sessionId, true);
+  } else if (isIdle && session._cliBusy) {
+    log.debug(`[OSC 0] session=${sessionId} → IDLE`);
+    setCliBusy(session, sessionId, false);
+  }
+}
+
+// An OSC 9 payload: either ConEmu progress (`4;level;percent`) or an iTerm2
+// notification, which is how the CLI says it is waiting for the user.
+function handleOscNotification(session, sessionId, payload) {
+  if (payload.startsWith('4;')) {
+    const level = payload.split(';')[1];
+    // 4;0 is also used for clearing, making it unreliable as an idle signal.
+    if (level === '0') return;
+    log.debug(`[OSC 9;4] session=${sessionId} level=${level} payload="${payload}" wasBusy=${!!session._cliBusy}`);
+    if ((level === '1' || level === '2' || level === '3') && !session._cliBusy) {
+      log.debug(`[OSC 9;4] session=${sessionId} → BUSY`);
+      setCliBusy(session, sessionId, true);
+    }
+    return;
+  }
+
+  log.info(`[OSC 9] session=${sessionId} message="${payload}"`);
+  // Classified once, here, and the verdict travels with the message: the renderer
+  // used to run its own copy of this test, and two copies of the rule drift apart
+  // in the one direction that matters — the sidebar marking a session the tray
+  // does not.
+  const wantsUser = ATTENTION_MESSAGE.test(payload);
+  sendToRenderer('terminal-notification', sessionId, payload, wantsUser);
+  noteSessionNotification(session, sessionId, payload);
+}
+
+function setCliBusy(session, sessionId, busy) {
+  session._cliBusy = busy;
+  // Work resuming means the question was answered. Without this the mark would
+  // outlive what it stands for, and the tray would keep asking for an answer that
+  // has already been given.
+  if (busy) session._attention = false;
+  sendToRenderer('cli-busy-state', sessionId, busy);
   refreshTray();
 }
 
@@ -1009,6 +1086,14 @@ function stopTray() {
 ipcMain.on('session-viewed', (_event, sessionId) => {
   viewedSessionId = sessionId || null;
   clearSessionAttention(sessionId);
+  // Rebuilt even when nothing was cleared. Which session is watched is what
+  // traySnapshot filters on, so moving to another session — or off the sessions
+  // view entirely — changes the answer for the one just left; and that is exactly
+  // the case clearSessionAttention returns early from, since the session arriving
+  // is not the one holding a request. Without this the tray keeps saying nothing
+  // is waiting until something unrelated happens to refresh it, which is the same
+  // hole the blur and hide handlers close for leaving the window.
+  refreshTray();
 });
 
 ipcMain.handle('set-tray-enabled', (_event, enabled) => {
@@ -2664,22 +2749,43 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
   if (activeSessions.has(sessionId)) {
     const session = activeSessions.get(sessionId);
     session.rendererAttached = true;
-    session.firstResize = !session.isPlainTerminal;
 
-    // If TUI is in alternate screen mode, send escape to switch into it
-    if (session.altScreen && !session.isPlainTerminal) {
-      mainWindow.webContents.send('terminal-data', sessionId, '\x1b[?1049h');
-    }
-
-    // Send buffered output for reattach
-    for (const chunk of session.outputBuffer) {
-      mainWindow.webContents.send('terminal-data', sessionId, chunk);
-    }
-
-    if (!session.isPlainTerminal) {
-      // Hide cursor after buffer replay — the live PTY stream or resize nudge
-      // will re-show it at the correct position, avoiding a stale cursor artifact
-      mainWindow.webContents.send('terminal-data', sessionId, '\x1b[?25l');
+    // Hand over the screen rather than the bytes that produced it. The renderer
+    // creates the terminal before it calls this, and always a fresh one, so this
+    // lands on an empty grid — which is what the serialized form is written to be
+    // restored into. It carries the alt buffer and the cursor itself, so neither
+    // has to be arranged around it.
+    //
+    // That grid is still at xterm's default size: the renderer fits it in
+    // showSession, after this returns. Writing the screen narrow and reflowing it
+    // wide is not what SerializeAddon recommends, and it is nonetheless exact —
+    // test/terminal-mirror.test.js is what keeps that true.
+    //
+    // Live output is held for the length of the serialization rather than racing
+    // it. Serializing waits for the mirror's own parse to drain, so it is not
+    // instantaneous, and whatever arrives meanwhile belongs after the screen.
+    //
+    // The queue is held by hand rather than read back off the session: a second reattach for
+    // the same session would install a queue of its own, and this one would then
+    // flush — or null — something that is no longer its.
+    const replayQueue = [];
+    session._replayQueue = replayQueue;
+    try {
+      const screen = await serializeMirror(session.screen);
+      if (session.screen && !screen) {
+        // Nothing to restore from a screen that exists is a serialization that
+        // failed. Worth saying so: there is no repaint nudge left to cover it, so
+        // what the user sees is an empty terminal until the CLI writes again.
+        log.warn(`[mirror] session=${sessionId} serialized to nothing — reattaching with a blank screen`);
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (screen) mainWindow.webContents.send('terminal-data', sessionId, screen);
+        for (const [id, chunk] of replayQueue) {
+          mainWindow.webContents.send('terminal-data', id, chunk);
+        }
+      }
+    } finally {
+      if (session._replayQueue === replayQueue) session._replayQueue = null;
     }
 
     // The account actually in effect, not the one the session was started under:
@@ -2795,8 +2901,8 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       if (isWsl) Object.assign(plainEnv, withWslEnv(plainEnv, ['CLAUDE_CONFIG_DIR']));
       ptyProcess = pty.spawn(shell, shellArgs(shell, undefined, shellExtraArgs), {
         name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
+        cols: PTY_INITIAL_COLS,
+        rows: PTY_INITIAL_ROWS,
         cwd: isWsl ? os.homedir() : projectPath,
         env: plainEnv,
       });
@@ -2936,8 +3042,8 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
 
       ptyProcess = pty.spawn(shell, shellArgs(shell, claudeCmd, shellExtraArgs), {
         name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
+        cols: PTY_INITIAL_COLS,
+        rows: PTY_INITIAL_ROWS,
         cwd: isWsl ? os.homedir() : projectPath,
         // TERM_PROGRAM=iTerm.app: Claude Code checks this to decide whether to emit
         // OSC 9 notifications (e.g. "needs your attention"). Without it, the packaged
@@ -2952,8 +3058,8 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
 
   const session = {
     pty: ptyProcess, rendererAttached: true, exited: false,
-    outputBuffer: [], outputBufferSize: 0, altScreen: false,
-    projectPath, firstResize: true,
+    screen: null,
+    projectPath,
     projectFolder, knownJsonlFiles, sessionSlug,
     isPlainTerminal, forkFrom: sessionOptions?.forkFrom || null,
     // The account this session runs under. It outlives the active selection: a
@@ -2961,103 +3067,54 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     accountId: activeAccount.id,
     mcpServer, _openedAt: Date.now(),
   };
+  // Started at the size the PTY was spawned with, and resized with it, so the two
+  // never disagree about where a line wrapped. It is also where the CLI's title
+  // and notifications are read from — the id is resolved per call, since a fork or
+  // plan-accept re-keys the session under a new one while this object stays.
+  session.screen = createMirror(PTY_INITIAL_COLS, PTY_INITIAL_ROWS, {
+    osc: {
+      0: (payload) => handleOscTitle(session, session.realSessionId || sessionId, payload.slice(0, 120)),
+      9: (payload) => handleOscNotification(session, session.realSessionId || sessionId, payload),
+    },
+  });
   activeSessions.set(sessionId, session);
 
   ptyProcess.onData(data => {
     const currentId = session.realSessionId || sessionId;
 
-    // Parse OSC sequences (title changes, progress, notifications, etc.)
-    if (data.includes('\x1b]')) {
-      const oscMatches = data.matchAll(/\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
-      for (const m of oscMatches) {
-        const code = m[1];
-        const payload = m[2].slice(0, 120);
-        // Detect Claude CLI busy state from OSC 0 title (spinner chars = busy, ✳ = idle)
-        if (code === '0') {
-          const firstChar = payload.charAt(0);
-          const isBusy = firstChar.charCodeAt(0) >= 0x2800 && firstChar.charCodeAt(0) <= 0x28FF;
-          const isIdle = firstChar === '\u2733'; // ✳
-          log.debug(`[OSC 0] session=${currentId} char=U+${firstChar.charCodeAt(0).toString(16).toUpperCase()} busy=${isBusy} idle=${isIdle} wasBusy=${!!session._cliBusy}`);
-          if (isBusy && !session._cliBusy) {
-            session._cliBusy = true;
-            session._oscIdle = false;
-            log.debug(`[OSC 0] session=${currentId} → BUSY`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, true);
-            }
-            refreshTray();
-          } else if (isIdle && session._cliBusy) {
-            session._cliBusy = false;
-            session._oscIdle = true;
-            log.debug(`[OSC 0] session=${currentId} → IDLE`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, false);
-            }
-            refreshTray();
-          }
-        }
-      }
-      // Parse iTerm2 OSC 9 sequences (terminated by BEL \x07 or ST \x1b\\)
-      const osc9Matches = data.matchAll(/\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
-      for (const osc9 of osc9Matches) {
-        const payload = osc9[1];
-        // OSC 9;4 progress: 4;0; = clear/done, 4;1;N = running at N%, 4;2;N = error, 4;3; = indeterminate
-        if (payload.startsWith('4;')) {
-          const level = payload.split(';')[1];
-          if (level === '0') continue; // 4;0 is also used for clearing, making it unreliable as an idle signal
-          log.debug(`[OSC 9;4] session=${currentId} level=${level} payload="${payload}" wasBusy=${!!session._cliBusy}`);
-          if ((level === '1' || level === '2' || level === '3') && !session._cliBusy) {
-            session._cliBusy = true;
-            session._oscIdle = false;
-            log.debug(`[OSC 9;4] session=${currentId} → BUSY`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, true);
-            }
-            refreshTray();
-          }
-        } else {
-          // Regular notification (attention, permission, etc.)
-          log.info(`[OSC 9] session=${currentId} message="${payload}"`);
-          // Classified once, here, and the verdict travels with the message: the
-          // renderer used to run its own copy of this test, and two copies of the
-          // rule drift apart in the one direction that matters — the sidebar marking
-          // a session the tray does not.
-          const wantsUser = ATTENTION_MESSAGE.test(payload);
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('terminal-notification', currentId, payload, wantsUser);
-          }
-          noteSessionNotification(session, currentId, payload);
-        }
-      }
-    }
+    // OSC sequences are not read from this chunk. They used to be, by matching a
+    // whole sequence inside one PTY read, which silently dropped any that a read
+    // boundary fell inside — and a dropped OSC 9 is a permission prompt the tray
+    // never hears about. The mirror parses the same bytes with a real VT parser,
+    // which holds a partial sequence across reads and calls back once it is whole:
+    // handleOscTitle and handleOscNotification, wired in where the mirror is made.
 
     // Standalone BEL (not part of an OSC sequence)
     if (data.includes('\x07') && !data.includes('\x1b]')) {
       log.info(`[BEL] session=${currentId}`);
     }
 
-    // Track alternate screen mode (only if data contains the marker)
-    if (data.includes('\x1b[?')) {
-      if (data.includes('\x1b[?1049h') || data.includes('\x1b[?47h')) {
-        session.altScreen = true;
-        log.info(`[altscreen] session=${currentId} ON`);
-      }
-      if (data.includes('\x1b[?1049l') || data.includes('\x1b[?47l')) {
-        session.altScreen = false;
-        log.info(`[altscreen] session=${currentId} OFF`);
-      }
+    // Alternate-screen mode is not tracked from this chunk either. It was, to
+    // decide whether a reattach had to be sent \x1b[?1049h before the replay; the
+    // serialized screen carries the alt buffer itself, so nothing read the flag
+    // any more and scanning every chunk for it bought a log line.
+
+    // Every byte, unconditionally: the mirror is a copy of the screen, and a
+    // screen with a hole in it is not a smaller screen but a wrong one. It can
+    // still refuse them — xterm discards rather than buffer without bound — and
+    // the refusal must not stop the same bytes reaching the renderer below.
+    if (!writeMirror(session.screen, data) && !session._mirrorLostOutput) {
+      session._mirrorLostOutput = true;
+      log.warn(`[mirror] session=${currentId} refused output — the screen a reattach restores may be incomplete`);
     }
 
-    // Buffer output (skip resize-triggered redraws for plain terminals)
-    if (!session._suppressBuffer) {
-      session.outputBuffer.push(data);
-      session.outputBufferSize += data.length;
-      while (session.outputBufferSize > MAX_BUFFER_SIZE && session.outputBuffer.length > 1) {
-        session.outputBufferSize -= session.outputBuffer.shift().length;
-      }
-    }
-
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    // A reattach in progress is serializing the screen these bytes are part of,
+    // and it has to reach the renderer before them — a frame delivered ahead of
+    // the screen it was drawn against is the desync this whole change removes.
+    // The queue is short by construction: it drains as soon as the screen is sent.
+    if (session._replayQueue) {
+      session._replayQueue.push([currentId, data]);
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('terminal-data', currentId, data);
     }
   });
@@ -3082,6 +3139,10 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     activeSessions.delete(realId);
     // Clean up the original key too in case transition detection hasn't run yet
     activeSessions.delete(sessionId);
+    // Nothing can reattach to a session that has left the map, so the screen it
+    // was holding open has no reader left.
+    disposeMirror(session.screen);
+    session.screen = null;
     // An exited session cannot be waiting for anything, and traySnapshot skips it
     // on both counts now — it is gone from the map and marked exited.
     session._attention = false;
@@ -3099,6 +3160,15 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
 ipcMain.on('terminal-input', (_event, sessionId, data) => {
   const session = activeSessions.get(sessionId);
   if (session && !session.exited) {
+    // Typing into a session is the user answering it, and it is the earliest and
+    // most direct sign of that. The CLI resuming work is the other one, and it is
+    // not enough on its own: an answer that ends the turn rather than continuing
+    // it — a denied tool, a session the user then leaves — never produces one, and
+    // the mark would outlive it and claim the session is still waiting.
+    if (session._attention) {
+      session._attention = false;
+      refreshTray();
+    }
     session.pty.write(data);
   }
 });
@@ -3107,28 +3177,13 @@ ipcMain.on('terminal-input', (_event, sessionId, data) => {
 ipcMain.on('terminal-resize', (_event, sessionId, cols, rows) => {
   const session = activeSessions.get(sessionId);
   if (session && !session.exited) {
-    // For plain terminals, suppress buffering during resize to avoid
-    // accumulating prompt redraws that pollute reattach replay
-    if (session.isPlainTerminal) session._suppressBuffer = true;
-
+    // The PTY and its mirror move together. There used to be a nudge here that
+    // resized the PTY to cols + 1 and back to force a TUI to repaint on reattach:
+    // the renderer was never told about the intermediate width, so for as long as
+    // it lasted the CLI drew frames for a screen wider than the one they landed
+    // on. A reattach is handed the real screen now and has nothing to force.
     session.pty.resize(cols, rows);
-
-    if (session.isPlainTerminal) {
-      setTimeout(() => { session._suppressBuffer = false; }, 200);
-    }
-
-    // First resize: nudge to force TUI redraw on reattach (skip for plain terminals — causes duplicate prompts)
-    if (session.firstResize && !session.isPlainTerminal) {
-      session.firstResize = false;
-      setTimeout(() => {
-        try {
-          session.pty.resize(cols + 1, rows);
-          setTimeout(() => {
-            try { session.pty.resize(cols, rows); } catch {}
-          }, 50);
-        } catch {}
-      }, 50);
-    }
+    resizeMirror(session.screen, cols, rows);
   }
 });
 

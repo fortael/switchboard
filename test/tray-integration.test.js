@@ -181,12 +181,27 @@ const menuLabels = () => (trayState.menu || []).map((item) => item.label).filter
 
 // Text of an iTerm2 OSC 9 notification, the shape the Claude CLI emits.
 const osc9 = (message) => `]9;${message}`;
+// The CLI window title, as an OSC 0 sequence — a braille spinner while it works,
+// U+2733 once it stops. These used to be written without the introducer and the
+// terminator, which is not an OSC sequence at all: nothing ever parsed them, so
+// the busy path below was asserting on whatever icon a previous test left behind.
+const osc0 = (title) => `]0;${title}`;
 
 async function openSession(sessionId) {
   const result = await handlers.get('open-terminal')({}, sessionId, PROJECT, true, { mcpEmulation: false });
   assert.equal(result.ok, true, `open-terminal failed: ${result.error}`);
   return stubs['node-pty']._onData;
 }
+
+// Feed bytes to a session the way its PTY would, then let them be parsed. The OSC
+// sequences the tray reacts to are read off the session's screen mirror, which is
+// a real terminal parser and works through its write buffer on its own tick — so
+// pushing bytes and inspecting the tray in the same turn would inspect it too
+// early. This is also what lets a sequence be split across two reads.
+const push = async (onData, ...chunks) => {
+  for (const chunk of chunks) onData(chunk);
+  await new Promise((resolve) => realSetTimeout(resolve, 20));
+};
 
 test('the tray comes up with the app and reports an idle app', async () => {
   await ready;
@@ -210,7 +225,7 @@ test('an alert from a session reaches the tray, and viewing it clears it', async
   const onData = await openSession('sess-attention');
   assert.ok(typeof onData === 'function', 'pty data callback was not captured');
 
-  onData(osc9('Claude needs your permission to use Bash'));
+  await push(onData, osc9('Claude needs your permission to use Bash'));
   assert.match(trayState.tooltip, /1 session waiting for you/);
   assert.match(trayState.image._path, /attention(Template)?\.png$/);
   assert.ok(menuLabels().includes('proj'), `menu was ${JSON.stringify(menuLabels())}`);
@@ -225,7 +240,7 @@ test('an alert from a session reaches the tray, and viewing it clears it', async
 test('a message that is not a request for the user does not light the tray', async () => {
   await ready;
   const onData = await openSession('sess-quiet');
-  onData(osc9('Claude is waiting for your input'));
+  await push(onData, osc9('Claude is waiting for your input'));
   assert.match(trayState.tooltip, /nothing waiting/);
   handlers.get('on:session-viewed')({}, null);
 });
@@ -237,7 +252,86 @@ test('an alert about the session already on screen is not raised', async () => {
   windowState.visible = true;
   windowState.focused = true;
 
-  onData(osc9('Claude Code needs your attention'));
+  await push(onData, osc9('Claude Code needs your attention'));
+  assert.match(trayState.tooltip, /nothing waiting/);
+
+  // The request is on record even though the tray stayed quiet — being watched is
+  // re-asked every time the tray is built, so looking elsewhere without answering
+  // would surface it. Answered here so it does not follow the next test around.
+  handlers.get('on:session-viewed')({}, 'sess-watched');
+});
+
+test('a request raised while the session was on screen surfaces on looking away', async () => {
+  await ready;
+  const onData = await openSession('sess-lookaway');
+  handlers.get('on:session-viewed')({}, 'sess-lookaway');
+  windowState.visible = true;
+  windowState.focused = true;
+
+  await push(onData, osc9('Claude needs your permission to use Bash'));
+  assert.match(trayState.tooltip, /nothing waiting/, 'quiet while it is being watched');
+
+  // The user leaves without answering. Nothing new arrives from the CLI — it has
+  // already asked once and will not ask again — so the tray has to reach the same
+  // verdict from what it already holds.
+  windowState.focused = false;
+  fireWindow('blur');
+  assert.match(trayState.tooltip, /1 session waiting for you/);
+
+  windowState.focused = true;
+  fireWindow('focus');
+  assert.match(trayState.tooltip, /nothing waiting/);
+});
+
+test('switching to another session surfaces the request left behind', async () => {
+  await ready;
+  const onData = await openSession('sess-left-behind');
+  handlers.get('on:session-viewed')({}, 'sess-left-behind');
+  windowState.visible = true;
+  windowState.focused = true;
+
+  await push(onData, osc9('Claude needs your permission to use Bash'));
+  assert.match(trayState.tooltip, /nothing waiting/, 'quiet while it is being watched');
+
+  // Looking at a different session inside the window is looking away from this
+  // one, and nothing else arrives to rebuild the tray — the CLI has asked once.
+  // The session being switched to holds no request of its own, which is exactly
+  // the case that used to leave the tray reporting the old answer.
+  handlers.get('on:session-viewed')({}, 'sess-elsewhere');
+  assert.match(trayState.tooltip, /1 session waiting for you/);
+
+  handlers.get('on:session-viewed')({}, 'sess-left-behind');
+  assert.match(trayState.tooltip, /nothing waiting/);
+});
+
+test('the CLI going back to work answers the request on its own', async () => {
+  await ready;
+  const onData = await openSession('sess-answered');
+  await push(onData, osc9('Claude needs your permission to use Bash'));
+  assert.match(trayState.tooltip, /1 session waiting for you/);
+
+  // Only someone looking at the session can answer it, and the CLI resuming is
+  // what says they did. Without this the mark outlives what it stands for.
+  await push(onData, osc0('⠇ working'));
+  assert.doesNotMatch(trayState.tooltip, /waiting for you/);
+  assert.match(trayState.image._path, /busy(Template)?\.png$/);
+  await push(onData, osc0('✳ idle'));
+});
+
+test('typing into a session answers its request even when the CLI stays quiet', async () => {
+  await ready;
+  await openSession('sess-typed');
+  handlers.get('on:session-viewed')({}, 'sess-typed');
+  windowState.focused = true;
+
+  const onData = stubs['node-pty']._onData;
+  await push(onData, osc9('Claude needs your permission to use Bash'));
+
+  // The user answers and the turn ends there — no spinner follows, so the CLI
+  // resuming work never happens and cannot be what clears the mark. Looking at
+  // another session afterwards would otherwise report this one as still waiting.
+  handlers.get('on:terminal-input')({}, 'sess-typed', 'n\r');
+  handlers.get('on:session-viewed')({}, 'sess-somewhere-else');
   assert.match(trayState.tooltip, /nothing waiting/);
 });
 
@@ -247,7 +341,7 @@ test('the same alert is raised once the window is no longer being looked at', as
   handlers.get('on:session-viewed')({}, 'sess-hidden');
   windowState.focused = false;
 
-  onData(osc9('Claude Code needs your attention'));
+  await push(onData, osc9('Claude Code needs your attention'));
   assert.match(trayState.tooltip, /1 session waiting for you/);
 
   // Coming back to the window is the other half of clearing it
@@ -264,7 +358,7 @@ test('leaving the sessions view stops counting as watching that session', async 
 
   // What the renderer reports when it switches to a tab that hides the terminal
   handlers.get('on:session-viewed')({}, null);
-  onData(osc9('Claude needs your permission to use Bash'));
+  await push(onData, osc9('Claude needs your permission to use Bash'));
   assert.match(trayState.tooltip, /1 session waiting for you/);
   handlers.get('on:session-viewed')({}, 'sess-tab');
 });
@@ -273,12 +367,12 @@ test('the verdict on a message travels to the renderer with it', async () => {
   await ready;
   const onData = await openSession('sess-verdict');
   sent.length = 0;
-  onData(osc9('Claude Code needs your attention'));
+  await push(onData, osc9('Claude Code needs your attention'));
   const asked = sent.find((m) => m.channel === 'terminal-notification');
   assert.deepEqual(asked.args.slice(1), ['Claude Code needs your attention', true]);
 
   sent.length = 0;
-  onData(osc9('Claude is waiting for your input'));
+  await push(onData, osc9('Claude is waiting for your input'));
   const reported = sent.find((m) => m.channel === 'terminal-notification');
   assert.equal(reported.args[2], false, 'a report is not a request, and both sides must agree');
   handlers.get('on:session-viewed')({}, 'sess-verdict');
@@ -288,10 +382,10 @@ test('a running session shows as busy without asking for anything', async () => 
   await ready;
   const onData = await openSession('sess-busy');
   // OSC 0 title starting with a braille spinner is the CLI's busy signal
-  onData(']0;⠇ working');
+  await push(onData, osc0('⠇ working'));
   assert.match(trayState.image._path, /busy(Template)?\.png$/);
   assert.match(trayState.tooltip, /running/);
-  onData(']0;✳ idle');
+  await push(onData, osc0('✳ idle'));
   assert.match(trayState.image._path, /idle(Template)?\.png$/);
 });
 

@@ -242,7 +242,11 @@ function createTerminalEntry(session) {
     theme: TERMINAL_THEME,
     cursorBlink: false,
     scrollback: 10000,
-    convertEol: true,
+    // No convertEol: it has been here since the first web build and was never a
+    // decision. On a PTY it is wrong — it makes every LF also return the cursor
+    // to column 0, so any application that uses LF to step down a line while
+    // holding its column has the rest of that line drawn against the left margin.
+    // The tty driver, or ConPTY on Windows, already emits CR where one belongs.
     allowProposedApi: true,
     linkHandler: {
       activate: (_event, uri) => {

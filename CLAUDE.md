@@ -60,6 +60,7 @@ Switchboard is an **Electron app** that acts as a session manager and IDE emulat
 | `db.js`                                  | SQLite schema, migrations, all DB read/write helpers                                                                                                       |
 | `session-cache.js`                       | In-memory + DB cache management; incremental folder refresh                                                                                                |
 | `session-transitions.js`                 | Detects fork/plan-accept transitions in active PTY sessions by watching for new `.jsonl` files                                                             |
+| `terminal-mirror.js`                     | Headless xterm per live PTY in the main process — the screen a reattach is restored from                                                                   |
 | `mcp-bridge.js`                          | Per-session WebSocket MCP server — registers Switchboard as a VS Code–compatible IDE so Claude CLI sends diffs/file-opens here instead of to a real editor |
 | `derive-project-path.js`                 | Decodes encoded folder names back to filesystem paths                                                                                                      |
 | `encode-project-path.js`                 | Encodes a filesystem path to the `~/.claude/projects/<folder>` naming convention                                                                           |
@@ -215,3 +216,78 @@ an alias — a developer who wrote either made a choice more specific than ours.
 ### Session identity and fork detection
 
 When a new Claude session is spawned with `--fork-session` or a plan is accepted, a new `.jsonl` file appears with a different session UUID. `session-transitions.js` monitors active PTY sessions for new files in their project folder and matches them to the correct parent via `forkedFrom` or `parentSessionId` fields in the JSONL. Once matched, it re-keys the active session map and notifies the renderer.
+
+### A reattach is handed a screen, not a recording
+
+A session outlives the terminal showing it: closing a tab or reloading the window
+leaves the PTY running, and reopening it has to put back what was on screen.
+`terminal-mirror.js` keeps a headless xterm per live PTY, fed the same bytes the
+renderer is sent, and `open-terminal` serializes it.
+
+The rule this replaced a ring of raw PTY chunks for: **a byte log has no safe
+truncation point.** Dropping its head drops the cursor position, scroll region,
+SGR and alt-screen state that the dropped prefix established, and can cut an
+escape sequence in half. Claude Code redraws differentially — cursor moved
+relative to the frame it believes is on screen, only the changes rewritten — so a
+screen restored from a truncated log is not the one the next frame is drawn
+against, and the difference stays visible as duplicated rows and a cursor parked
+in a column nothing put it in.
+
+The mirror is also where the CLI's own signals are read from — the OSC 0 title
+that says whether it is working, and the OSC 9 notification that says it is
+waiting for the user. Those used to be matched with a regex against each PTY
+read, which drops any sequence a read boundary falls inside; a dropped OSC 9 is a
+permission prompt the tray never hears about. `createMirror` takes an `osc` map
+for this, and handlers observe rather than consume — each returns false so xterm
+still does what it would have done. The cost is that the signals now arrive a
+tick later than the bytes that carried them, which is why the tray tests have to
+let a push settle before they read the tray.
+
+Four things this needs, and none of them are optional:
+
+1. **Every byte reaches the mirror.** There is no equivalent of the old
+   "suppress buffering during resize": a screen with a hole is not a smaller
+   screen, it is a wrong one.
+2. **The mirror and the renderer's terminal measure characters the same way.**
+   Same grapheme addon, same Unicode version as `createTerminalEntry()` — change
+   one and change the other, or the same bytes occupy different columns in each.
+3. **Nothing may reach the renderer ahead of the screen.** Serializing waits for
+   the mirror's own parse to drain, so it is not instantaneous; live output is
+   queued for that window and flushed behind the screen.
+4. **Cursor visibility is carried by hand.** `SerializeAddon` restores contents,
+   colours, cursor position, the alt buffer and the DEC modes it knows — but not
+   DECTCEM, the one a TUI holds off for most of a frame.
+
+The PTY is no longer nudged to `cols + 1` and back to force a repaint on
+reattach: the renderer was never told about the intermediate width, so for as
+long as it lasted the CLI drew frames for a screen wider than the one they landed
+on. A reattach has a real screen now and nothing to force.
+
+### A session waiting for you stays waiting
+
+`session._attention` records that the CLI asked the user something. The CLI asks
+**once**, so anything that drops the request drops it permanently — which is why
+none of the three rules below is a filter at the moment it arrives:
+
+1. **Being watched is re-asked, not decided.** `noteSessionNotification` records
+   every request, including one raised while the session is on screen;
+   `traySnapshot` is where `isWatchingSession` is consulted, so the answer follows
+   the user out of the window. Everything that changes that answer has to rebuild
+   the tray, and none of it involves the CLI: `blur` and `hide` for leaving the
+   window, and `session-viewed` unconditionally — the session being switched *to*
+   holds no request, so clearing alone would return early and leave the tray
+   reporting the session just left as quiet.
+2. **Both replies are watched for, and typing is the earlier one.** Answering
+   requires looking at the session, so the reply is only ever visible as input to
+   it or as the CLI resuming work. `terminal-input` clears the mark, and
+   `setCliBusy` clears it again when the session goes busy. The second alone is
+   not enough: an answer that ends the turn rather than continuing it never
+   produces a spinner, and the mark would outlive it.
+3. **One rule, in one place.** `ATTENTION_MESSAGE` is tested in the main process
+   and the verdict travels to the renderer with the message. Two copies of the
+   test drift apart in the direction that matters — the sidebar marking a session
+   the tray does not.
+
+The tray only knows the two states above, `attention` and `busy`. The renderer
+has a third, `response-ready`, that never reaches the tray: a session that has
+finished and is waiting for input shows the idle icon.
