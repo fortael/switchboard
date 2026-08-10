@@ -27,7 +27,9 @@
           <template v-else>{{ displayName }}</template>
         </div>
         <div v-if="session.aiTitle && !renaming" class="session-subtitle">{{ cleanName(session.aiTitle) }}</div>
-        <div class="session-meta">{{ timeStr }}{{ msgSuffix }}</div>
+        <div class="session-meta">
+          <span v-if="accountLabel" class="session-account-badge" :class="{ foreign: !isActiveAccount }">{{ accountLabel }}</span>{{ timeStr }}{{ msgSuffix }}
+        </div>
       </div>
 
       <div class="session-actions">
@@ -46,6 +48,7 @@
 
 <script setup>
 import { computed, ref, nextTick } from 'vue';
+import { store } from '../store.js';
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -77,6 +80,18 @@ const timeStr = computed(() => {
 const msgSuffix = computed(() =>
   props.session.messageCount ? ` · ${props.session.messageCount} msgs` : ''
 );
+
+const sessionAccountId = computed(() => props.session.accountId || 'default');
+
+const isActiveAccount = computed(() => sessionAccountId.value === store.activeAccountId);
+
+// Only in the merged view, and only when there is more than one account to tell
+// apart — everywhere else the account is a constant and the badge is noise.
+const accountLabel = computed(() => {
+  if (!store.mergedAccountView || store.accounts.length < 2) return '';
+  const acc = store.accounts.find(a => a.id === sessionAccountId.value);
+  return acc ? (acc.name || acc.id) : '';
+});
 
 const itemClasses = computed(() => ({
   active: props.isActive,

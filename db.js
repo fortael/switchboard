@@ -154,6 +154,18 @@ const migrations = [
       )
     `);
   },
+  // v8: Summaries were cut to 120 characters before their markup was stripped,
+  // so any first message wrapped in tags kept whatever tag the cut landed inside
+  // — a session started with /clear was titled "/clear clear </com". The cut now
+  // happens last, in read-session-file.js, but every summary already in the cache
+  // was written by the old order. Clear it so a re-index rewrites them.
+  (db) => {
+    try { db.exec('DELETE FROM session_cache'); } catch {}
+    try { db.exec('DELETE FROM cache_meta'); } catch {}
+    try { db.exec('DELETE FROM search_map'); } catch {}
+    try { db.exec('DROP TABLE IF EXISTS search_fts'); } catch {}
+    searchFtsRecreated = true;
+  },
 ];
 
 const currentDbVersion = (() => {
@@ -169,6 +181,13 @@ for (let i = currentDbVersion; i < migrations.length; i++) {
 if (migrations.length > currentDbVersion) {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', ?)").run(JSON.stringify(migrations.length));
 }
+
+// getProjectAccountIds() is a DISTINCT over exactly this pair and sits under
+// every path→account lookup, so it must not have to read the table. Created
+// after the migrations rather than beside the other indexes: `accountId` is a
+// column v4 adds, and a fresh install has no such column when the CREATE TABLE
+// above has just run — the statement would throw before the app ever opened.
+db.exec('CREATE INDEX IF NOT EXISTS idx_session_cache_project_account ON session_cache(projectPath, accountId)');
 
 // --- FTS5 full-text search ---
 db.exec(`
@@ -217,6 +236,7 @@ const stmts = {
       aiTitle = COALESCE(session_cache.aiTitle, excluded.aiTitle), accountId = excluded.accountId
   `),
   cacheGetByFolder: db.prepare('SELECT sessionId, modified FROM session_cache WHERE folder = ? AND accountId = ?'),
+  cacheProjectAccounts: db.prepare('SELECT DISTINCT projectPath, accountId FROM session_cache WHERE projectPath IS NOT NULL'),
   cacheGetFolder: db.prepare('SELECT folder FROM session_cache WHERE sessionId = ?'),
   cacheGetSession: db.prepare('SELECT * FROM session_cache WHERE sessionId = ?'),
   cacheDeleteSession: db.prepare('DELETE FROM session_cache WHERE sessionId = ?'),
@@ -312,6 +332,19 @@ function upsertCachedSessions(sessions, accountId = 'default') {
 
 function getCachedByFolder(folder, accountId = 'default') {
   return stmts.cacheGetByFolder.all(folder, accountId);
+}
+
+// projectPath → the accounts that have sessions in it. One project can belong to
+// several accounts: the path is the same directory whoever opened it.
+function getProjectAccountIds() {
+  const map = new Map();
+  // The query is DISTINCT over exactly this pair, so a row never repeats one.
+  for (const row of stmts.cacheProjectAccounts.all()) {
+    const ids = map.get(row.projectPath);
+    if (ids) ids.push(row.accountId);
+    else map.set(row.projectPath, [row.accountId]);
+  }
+  return map;
 }
 
 function getCachedFolder(sessionId) {
@@ -537,6 +570,7 @@ function closeDb() {
 module.exports = {
   getMeta, getAllMeta, setName, toggleStar, setArchived,
   isCachePopulated, getAllCached, getCachedByFolder, getCachedFolder, getCachedSession, upsertCachedSessions,
+  getProjectAccountIds,
   deleteCachedSession, deleteCachedFolder,
   getFolderMeta, getAllFolderMeta, setFolderMeta,
   getProjectGitCache, setProjectGitCache, getAllProjectGitCounts,

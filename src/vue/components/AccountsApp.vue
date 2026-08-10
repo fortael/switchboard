@@ -41,8 +41,12 @@
                   data-tooltip="Open Claude session in home directory"
                   @click.stop="onOpenClaude(acc)"
                 >Open Claude</button>
+<!-- Every account can go, the default one included: an install that
+                     only runs Claude inside WSL has no use for a Windows home it
+                     never opens. The last one stays — the app has to be looking
+                     at something. -->
                 <button
-                  v-if="acc.id !== 'default'"
+                  v-if="accounts.length > 1"
                   class="account-row-del"
                   data-tooltip="Remove account"
                   @click.stop="onDelete(acc)"
@@ -90,20 +94,54 @@
           </div>
         </div>
 
-        <div v-if="wslHomes.length" class="accounts-add-form accounts-wsl-section">
+        <!-- Only after the local home has been removed. "Add account" above
+             makes a fresh empty config under ~/.wootonpad instead of attaching
+             ~/.claude, so without this the removal would be a one-way door. -->
+        <div v-if="!hasDefaultAccount" class="accounts-add-form accounts-restore-row">
+          <span class="accounts-wsl-path">~/.claude (local Claude home)</span>
+          <button class="btn-green" :disabled="restoring" @click="restoreDefault">
+            {{ restoring ? 'Restoring…' : 'Restore' }}
+          </button>
+        </div>
+
+        <div v-if="wslDistros.length" class="accounts-add-form accounts-wsl-section">
           <p class="accounts-add-desc">
-            Claude also runs inside WSL. Attach an account to a distribution to browse
-            the sessions it stores there, alongside the ones on Windows.
+            Claude also runs inside WSL. Attach an account to browse the sessions it
+            stores there, alongside the ones on Windows. A distribution can hold
+            several accounts — one per Claude config directory — and each is attached
+            on its own.
           </p>
-          <div v-for="home in wslHomes" :key="home.distro" class="accounts-wsl-row">
+          <div v-for="home in wslHomes" :key="homeKey(home)" class="accounts-wsl-row">
             <span class="accounts-wsl-name">{{ home.distro }}</span>
             <span class="accounts-wsl-path">{{ home.claudePosix }}</span>
             <button
               class="btn-green"
-              :disabled="addingWsl === home.distro || hasWslAccount(home.distro)"
+              :disabled="addingWsl === homeKey(home) || hasWslAccount(home)"
               @click="addWslAccount(home)"
             >
-              {{ hasWslAccount(home.distro) ? 'Added' : (addingWsl === home.distro ? 'Adding…' : 'Attach') }}
+              {{ hasWslAccount(home) ? 'Added' : (addingWsl === homeKey(home) ? 'Adding…' : 'Attach') }}
+            </button>
+          </div>
+
+          <!-- Discovery only lists $HOME/.claude* directories that already hold a
+               projects/ folder. A config kept elsewhere, or one Claude has not
+               written to yet, has to be named. -->
+          <div class="accounts-wsl-manual">
+            <select v-model="manualDistro" class="accounts-wsl-distro">
+              <option v-for="distro in wslDistros" :key="distro" :value="distro">{{ distro }}</option>
+            </select>
+            <input
+              v-model="manualPath"
+              class="accounts-wsl-manual-path"
+              placeholder="/home/you/.claude-work"
+              @keydown.enter="addManualWslAccount"
+            />
+            <button
+              class="btn-green"
+              :disabled="addingWsl === MANUAL || !manualPath.trim()"
+              @click="addManualWslAccount"
+            >
+              {{ addingWsl === MANUAL ? 'Adding…' : 'Attach' }}
             </button>
           </div>
         </div>
@@ -113,7 +151,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 
 const props = defineProps({
   callbacks: { type: Object, required: true },
@@ -127,11 +165,19 @@ const editName = ref('');
 let activeEditInput = null;
 const newName = ref('');
 const adding = ref(false);
+const restoring = ref(false);
 const addOpen = ref(false);
-// Distributions holding a reachable Claude home. Empty off Windows, and empty
-// when no distribution has one — the section stays hidden in both cases.
+// Claude config directories reachable inside WSL, one row each — a distribution
+// with two accounts contributes two. Empty off Windows.
 const wslHomes = ref([]);
+// Installed distributions. The section keys off this rather than off wslHomes,
+// so a config directory discovery cannot see can still be typed in.
+const wslDistros = ref([]);
+// Which attach is in flight: a config directory path, or MANUAL for the form.
 const addingWsl = ref(null);
+const MANUAL = Symbol('manual');
+const manualDistro = ref('');
+const manualPath = ref('');
 // Probing starts a distribution, so it happens once per window rather than on
 // every accounts refresh — including when the answer is "none".
 let wslHomesLoaded = false;
@@ -183,9 +229,25 @@ function onOpenClaude(acc) {
   props.callbacks.openAccountHomeSession?.(acc);
 }
 
+const hasDefaultAccount = computed(() => accounts.value.some(a => a.id === 'default'));
+
 async function onDelete(acc) {
-  if (!confirm(`Remove account "${acc.name}"?`)) return;
+  // Worth saying out loud for the local home: what is removed is the app's link
+  // to a config directory, never the directory itself.
+  const note = acc.id === 'default'
+    ? '\n\nThe ~/.claude directory itself is left alone and can be attached again.'
+    : '';
+  if (!confirm(`Remove account "${acc.name}"?${note}`)) return;
   props.callbacks.deleteAccount?.(acc.id);
+}
+
+async function restoreDefault() {
+  restoring.value = true;
+  try {
+    await props.callbacks.restoreDefaultAccount?.();
+  } finally {
+    restoring.value = false;
+  }
 }
 
 async function addAccount() {
@@ -197,27 +259,58 @@ async function addAccount() {
   if (newAcc) newName.value = '';
 }
 
-function hasWslAccount(distro) {
-  return accounts.value.some(a => a.wslDistro === distro);
+// What tells one discovered row from another. Not the config directory alone:
+// two distributions with the same user both offer /home/<user>/.claude, which
+// would collide as a v-for key and light up "Adding…" on both rows at once.
+function homeKey(home) {
+  return `${home.distro}:${home.claudePosix}`;
 }
 
-async function addWslAccount(home) {
-  addingWsl.value = home.distro;
+// An account belongs to a config directory, not to a distribution — the same
+// distribution can hold several, and only the one already attached is "Added".
+function hasWslAccount(home) {
+  return accounts.value.some(
+    a => a.wslDistro === home.distro && a.wslClaudePosix === home.claudePosix,
+  );
+}
+
+async function attachWsl(distro, claudePosix, busyKey) {
+  addingWsl.value = busyKey;
   try {
-    const created = await props.callbacks.createWslAccount?.(home.distro);
+    const created = await props.callbacks.createWslAccount?.(distro, null, claudePosix);
     if (created?.error) alert(created.error);
+    return created;
   } finally {
     addingWsl.value = null;
   }
+}
+
+function addWslAccount(home) {
+  return attachWsl(home.distro, home.claudePosix, homeKey(home));
+}
+
+async function addManualWslAccount() {
+  const claudePosix = manualPath.value.trim();
+  const distro = manualDistro.value || wslDistros.value[0];
+  if (!claudePosix || !distro) return;
+  const created = await attachWsl(distro, claudePosix, MANUAL);
+  if (created && !created.error) manualPath.value = '';
 }
 
 async function loadWslHomes() {
   if (wslHomesLoaded) return;
   wslHomesLoaded = true;
   try {
-    wslHomes.value = (await props.callbacks.discoverWslClaudeHomes?.()) || [];
+    const [homes, distros] = await Promise.all([
+      props.callbacks.discoverWslClaudeHomes?.(),
+      props.callbacks.listWslDistros?.(),
+    ]);
+    wslHomes.value = homes || [];
+    wslDistros.value = distros || [];
+    manualDistro.value = wslDistros.value[0] || '';
   } catch {
     wslHomes.value = [];
+    wslDistros.value = [];
   }
 }
 

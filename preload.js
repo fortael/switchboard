@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webUtils, webFrame } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
   // Invoke (request-response)
@@ -28,14 +28,42 @@ contextBridge.exposeInMainWorld('api', {
   setSetting: (key, value) => ipcRenderer.invoke('set-setting', key, value),
   deleteSetting: (key) => ipcRenderer.invoke('delete-setting', key),
 
+  // Interface scale. Page zoom rather than a CSS transform: it changes the CSS
+  // pixel size of the whole frame, so text, spacing, icons and the terminal
+  // canvas all scale together and stay crisp at the new device pixel ratio.
+  // Clamped here as well as in the renderer — this is the call that can leave
+  // the window unusable if a stored value is ever garbage.
+  setUiZoom: (factor) => {
+    const f = Number(factor);
+    webFrame.setZoomFactor(Number.isFinite(f) && f > 0 ? Math.min(1.5, Math.max(0.8, f)) : 1);
+  },
+  // Zoom costs CSS pixels, so the window's minimum size has to follow it. Takes the
+  // same zoom factor as setUiZoom, not a percentage — one unit across the bridge.
+  setUiScaleMinimum: (factor) => ipcRenderer.invoke('set-ui-scale-minimum', factor),
+
+  // Tray. The tray lives in the main process, so switching it on or off is a request
+  // rather than a stored value the renderer applies itself. Resolves to whether a
+  // tray icon actually exists afterwards, which a desktop without a tray host can
+  // refuse.
+  setTrayEnabled: (enabled) => ipcRenderer.invoke('set-tray-enabled', enabled),
+  // Which session the user is looking at, so the tray does not report an alert for a
+  // session already on screen.
+  sessionViewed: (sessionId) => ipcRenderer.send('session-viewed', sessionId),
+  onFocusSession: (callback) => {
+    ipcRenderer.on('focus-session', (_event, sessionId) => callback(sessionId));
+  },
+
   // Multi-account
   getAccounts: () => ipcRenderer.invoke('get-accounts'),
   saveAccounts: (accounts) => ipcRenderer.invoke('save-accounts', accounts),
   createAccount: (name) => ipcRenderer.invoke('create-account', name),
   discoverWslClaudeHomes: () => ipcRenderer.invoke('discover-wsl-claude-homes'),
-  createWslAccount: (distro, name) => ipcRenderer.invoke('create-wsl-account', distro, name),
+  listWslDistros: () => ipcRenderer.invoke('list-wsl-distros'),
+  createWslAccount: (distro, name, claudePosix) =>
+    ipcRenderer.invoke('create-wsl-account', distro, name, claudePosix),
   renameAccount: (id, name) => ipcRenderer.invoke('rename-account', id, name),
   deleteAccount: (id) => ipcRenderer.invoke('delete-account', id),
+  restoreDefaultAccount: () => ipcRenderer.invoke('restore-default-account'),
   getActiveAccountId: () => ipcRenderer.invoke('get-active-account-id'),
   setActiveAccountId: (id) => ipcRenderer.invoke('set-active-account-id', id),
   getAccountsUsage: () => ipcRenderer.invoke('get-accounts-usage'),
@@ -85,7 +113,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('process-exited', (_event, sessionId, exitCode) => callback(sessionId, exitCode));
   },
   onTerminalNotification: (callback) => {
-    ipcRenderer.on('terminal-notification', (_event, sessionId, message) => callback(sessionId, message));
+    // needsAttention is the main process's verdict on the message: whether the CLI is
+    // asking the user for something rather than just reporting.
+    ipcRenderer.on('terminal-notification', (_event, sessionId, message, needsAttention) => {
+      callback(sessionId, message, needsAttention);
+    });
   },
   onCliBusyState: (callback) => {
     ipcRenderer.on('cli-busy-state', (_event, sessionId, busy) => callback(sessionId, busy));
@@ -149,6 +181,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('file-changed', (_event, filePath) => callback(filePath));
   },
   onLaunchProjectSession: (callback) => {
-    ipcRenderer.on('launch-project-session', (_event, projectPath, continueSession) => callback(projectPath, continueSession));
+    ipcRenderer.on('launch-project-session', (_event, projectPath, continueSession, accountId, accountNamed) => callback(projectPath, continueSession, accountId, accountNamed));
   },
 });

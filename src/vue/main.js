@@ -40,6 +40,11 @@ window.vueSidebar = {
     store.visibleSessionCount = count;
     store.sessionMaxAgeDays = ageDays;
   },
+  setAccounts(accounts, activeAccountId) {
+    store.accounts = accounts || [];
+    if (activeAccountId) store.activeAccountId = activeAccountId;
+  },
+  setMergedAccountView(merged) { store.mergedAccountView = !!merged; },
   setHeaderSession(session) { store.headerSession = session; },
   setHeaderPtyTitle(title) { store.headerPtyTitle = title || null; },
   setHeaderShellProfile(profile) { store.headerShellProfile = profile || null; },

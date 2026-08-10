@@ -717,7 +717,8 @@ body { display: flex; flex-direction: column; }
   border: 1px solid var(--border-subtle);
 }
 
-.accounts-add-form input {
+.accounts-add-form input,
+.accounts-add-form select {
   background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.1);
   border-radius: 5px;
@@ -728,7 +729,8 @@ body { display: flex; flex-direction: column; }
   font-family: inherit;
 }
 
-.accounts-add-form input:focus {
+.accounts-add-form input:focus,
+.accounts-add-form select:focus {
   border-color: rgba(128,136,255,0.4);
 }
 
@@ -784,6 +786,36 @@ body { display: flex; flex-direction: column; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Offer to re-attach the local Claude home once it has been removed. It also
+   carries .accounts-add-form for the card framing, which lays its children out
+   in a column — hence the explicit direction, or the button lands underneath. */
+.accounts-restore-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Naming a config directory by hand, for the ones discovery cannot see. */
+.accounts-wsl-manual {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  margin-top: 6px;
+}
+
+.accounts-wsl-distro {
+  flex: 0 0 auto;
+  max-width: 40%;
+}
+
+.accounts-wsl-manual-path {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .account-row-name-input {
@@ -4133,6 +4165,44 @@ body { display: flex; flex-direction: column; }
 }
 .settings-update-link:hover { text-decoration: underline; }
 
+/* Interface scale slider */
+.settings-scale-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 140px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-default);
+  outline: none;
+  cursor: pointer;
+}
+.settings-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.settings-range:hover::-webkit-slider-thumb,
+.settings-range:focus::-webkit-slider-thumb {
+  background: var(--green-500);
+}
+/* The value must not reflow the row as it goes 80% → 150% */
+.settings-scale-value {
+  min-width: 38px;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
 /* Font selector preview */
 .settings-font-control {
   flex-direction: column;
@@ -4586,6 +4656,39 @@ body { display: flex; flex-direction: column; }
 
 .file-panel-reject-btn:hover {
   background: rgba(224,80,112,0.1);
+}
+
+/* Account badges in the sidebar — only rendered in the merged view, where one
+   list holds the projects of every account. The account currently in use is
+   muted; the others are tinted, so what is *not* the active account stands out. */
+.session-account-badge {
+  font-size: 9px;
+  color: #6a7090;
+  background: rgba(255,255,255,0.06);
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-right: 5px;
+  white-space: nowrap;
+}
+
+.session-account-badge.foreign {
+  color: #8088ff;
+  background: rgba(128,136,255,0.12);
+}
+
+.project-account-badges {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  margin-left: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.project-account-badges .session-account-badge {
+  margin-right: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Account badge in terminal header */

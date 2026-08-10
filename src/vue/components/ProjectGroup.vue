@@ -14,6 +14,12 @@
       <span class="arrow" @click.stop="toggle">&#9660;</span>
       <ProjectAvatar class="project-header-avatar" :project-path="project.projectPath" @click.stop="toggle" />
       <span class="project-name" @click.stop="toggle">{{ shortName }}</span>
+      <span v-if="accountLabels.length" class="project-account-badges" @click.stop="toggle">
+        <span
+          v-for="label in accountLabels" :key="label.id"
+          class="session-account-badge" :class="{ foreign: !label.active }"
+        >{{ label.name }}</span>
+      </span>
       <button class="project-settings-btn" data-tooltip="Project settings" @click.stop="$emit('settings', project.projectPath)" v-html="gearSvg"></button>
       <button class="project-archive-btn" data-tooltip="Archive all sessions" @click.stop="archiveAll" v-html="archiveSvg"></button>
       <button class="project-new-btn" data-tooltip="New session" @click.stop="$emit('new-session', project, $event.currentTarget)" v-html="plusSvg"></button>
@@ -151,6 +157,7 @@ import { computed, ref } from 'vue';
 import SessionItem from './SessionItem.vue';
 import SlugGroup from './SlugGroup.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
+import { store } from '../store.js';
 
 const props = defineProps({
   project: { type: Object, required: true },
@@ -188,6 +195,20 @@ const shortName = computed(() =>
 const hasActiveSession = computed(() =>
   !!props.activeSessionId && (props.project.sessions || []).some(s => s.sessionId === props.activeSessionId)
 );
+
+// Which accounts have this project. One project can belong to several: the
+// directory is the same whoever opened it. Shown only in the merged view, where
+// the list is not one account's own.
+const accountLabels = computed(() => {
+  if (!store.mergedAccountView || store.accounts.length < 2) return [];
+  const ids = props.project.accountIds || [];
+  return ids
+    .map(id => {
+      const acc = store.accounts.find(a => a.id === id);
+      return acc ? { id, name: acc.name || acc.id, active: id === store.activeAccountId } : null;
+    })
+    .filter(Boolean);
+});
 
 const worktreeName = computed(() => {
   const match = props.project.projectPath.match(/\/\.claude\/worktrees\/([^/]+)\/?$/);

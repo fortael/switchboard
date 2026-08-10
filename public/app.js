@@ -100,6 +100,9 @@ function clearNotifications(sessionId) {
   clearUnread(sessionId);
   attentionSessions.delete(sessionId);
   window.vueSidebar?.clearNotifications(sessionId);
+  // showSession is the only caller, so this is also the moment to tell the main
+  // process which session is on screen — it keeps the tray's own set of alerts.
+  window.api.sessionViewed?.(sessionId);
 }
 // Terminal themes, utils (cleanDisplayName, formatDate, escapeHtml, shellEscape)
 // are defined in terminal-themes.js and utils.js (loaded before app.js).
@@ -253,14 +256,12 @@ window.api.onProcessExited((sessionId, exitCode) => {
 });
 
 // --- Terminal notifications (iTerm2 OSC 9 — "needs attention") ---
-window.api.onTerminalNotification((sessionId, message) => {
-  // Only mark as needing attention for "attention" messages, not "waiting for input"
-  // Matches all four CLI notification types:
-  // 1. "Claude Code needs your attention"         → attention
-  // 2. "Claude Code needs your approval for the plan" → approval, needs your
-  // 3. "Claude needs your permission to use {tool}"   → permission, needs your
-  // 4. "Claude Code wants to enter plan mode"         → wants to enter
-  if (/attention|approval|permission|needs your|wants to enter/i.test(message) && sessionId !== activeSessionId) {
+window.api.onTerminalNotification((sessionId, message, needsAttention) => {
+  // Whether the CLI is asking for something is decided in the main process, which
+  // needs the same verdict for the tray — one rule, in one place. The local test is
+  // only a fallback for a message that arrived without one.
+  const wantsUser = needsAttention ?? /attention|approval|permission|needs your|wants to enter/i.test(message);
+  if (wantsUser && sessionId !== activeSessionId) {
     attentionSessions.add(sessionId);
     window.vueSidebar?.addAttention(sessionId);
   } else if (/waiting for your input/i.test(message)) {
@@ -280,6 +281,17 @@ window.api.onCliBusyState((sessionId, busy) => {
   setActivity(sessionId, busy);
 });
 
+// --- Session picked from the tray menu ---
+// Same path as a click in the sidebar: it leaves whatever panel is open, switches to
+// the sessions tab and reattaches a session whose tab was closed while it kept
+// running — showSession alone would leave an empty terminal area for that one. A
+// session too new to be in the project cache is not reachable that way, so it falls
+// back to showing the entry that is already open for it.
+window.api.onFocusSession?.((sessionId) => {
+  if (sessionMap.has(sessionId)) window.__sb?.openSessionById(sessionId);
+  else if (openSessions.has(sessionId) && typeof showSession === 'function') showSession(sessionId);
+});
+
 // --- Single entry point for all sidebar renders ---
 // resort=true: re-sort items by priority+time (use for user-initiated actions)
 // resort=false (default): preserve existing DOM order, new items go to top
@@ -289,7 +301,11 @@ function refreshSidebar({ resort = false } = {}) {
     ? cachedAllProjects
     : (showArchived ? cachedAllProjects : cachedProjects);
 
-  // Vue sidebar handles its own filtering; just pass the full project list
+  // Vue sidebar handles its own filtering; just pass the full project list.
+  // The account state is pushed on every render rather than once at startup:
+  // the bridge object may not exist yet when the settings are first read.
+  window.vueSidebar?.setMergedAccountView?.(mergedAccountView);
+  window.vueSidebar?.setAccounts?.(accounts, activeAccountId);
   window.vueSidebar?.setProjects(projects);
   window.vueSidebar?.setSearch(searchMatchIds, searchMatchProjectPaths);
   window.vueSidebar?.setFilters({ showStarredOnly, showRunningOnly, showTodayOnly, showArchived });
@@ -525,6 +541,7 @@ async function loadProjects({ resort = false } = {}) {
 async function launchNewSession(project, sessionOptions) {
   const sessionId = crypto.randomUUID();
   const projectPath = project.projectPath;
+  const launchAccountId = sessionOptions?.accountId || defaultAccountIdForProject(project);
   const session = {
     sessionId,
     summary: 'New session',
@@ -536,7 +553,7 @@ async function launchNewSession(project, sessionOptions) {
     messageCount: 0,
     modified: new Date().toISOString(),
     created: new Date().toISOString(),
-    accountId: activeAccountId,
+    accountId: launchAccountId,
   };
 
   // Track as pending (no .jsonl yet)
@@ -568,13 +585,20 @@ async function launchNewSession(project, sessionOptions) {
 
   const entry = createTerminalEntry(session);
 
-  // Open terminal in main process with session options
-  const result = await window.api.openTerminal(sessionId, projectPath, true, sessionOptions || null);
+  // Open terminal in main process with session options. The account travels with
+  // the launch rather than being read off the current selection in the main
+  // process — in the merged view they are not the same thing.
+  const result = await window.api.openTerminal(sessionId, projectPath, true, { ...(sessionOptions || {}), accountId: launchAccountId });
   if (!result.ok) {
     entry.terminal.write(`\r\nError: ${result.error}\r\n`);
     entry.closed = true;
     return;
   }
+  noteLaunchedAccount(result);
+  // The reply says which account the session actually got — the main process is
+  // free to decline the one that was asked for, and the sidebar entry injected
+  // above must not keep claiming otherwise.
+  if (result.accountId) session.accountId = result.accountId;
   if (typeof setSessionMcpActive === 'function') setSessionMcpActive(sessionId, !!result.mcpActive);
 
   showSession(sessionId);
@@ -628,7 +652,10 @@ async function openSession(session, customOptions) {
     if (entry.closed) {
       destroySession(sessionId);
       if (session.type === 'terminal') {
-        launchTerminalSession({ projectPath: session.projectPath });
+        // The replacement belongs to the same account as the terminal it stands
+        // in for — on a WSL-backed one that is which distribution the shell runs
+        // in, and the active account need not be it.
+        launchTerminalSession({ projectPath: session.projectPath, accountId: session.accountId });
         return;
       }
     } else {
@@ -640,14 +667,20 @@ async function openSession(session, customOptions) {
   // Create new terminal entry (hidden until showSession)
   const entry = createTerminalEntry(session);
 
-  // Open terminal in main process
+  // Open terminal in main process. A resumed session belongs to the account that
+  // recorded it, whatever is active now — that is where its .jsonl and its
+  // Claude home are.
   const resumeOptions = customOptions || await resolveDefaultSessionOptions({ projectPath });
-  const result = await window.api.openTerminal(sessionId, projectPath, false, resumeOptions);
+  const result = await window.api.openTerminal(sessionId, projectPath, false, {
+    ...resumeOptions,
+    accountId: session.accountId || resumeOptions.accountId || activeAccountId,
+  });
   if (!result.ok) {
     entry.terminal.write(`\r\nError: ${result.error}\r\n`);
     entry.closed = true;
     return;
   }
+  noteLaunchedAccount(result);
   if (typeof setSessionMcpActive === 'function') setSessionMcpActive(sessionId, !!result.mcpActive);
 
   showSession(sessionId);
@@ -773,6 +806,10 @@ setTimeout(() => {
     if (global.sessionMaxAgeDays) {
       sessionMaxAgeDays = global.sessionMaxAgeDays;
     }
+    if (global.mergedAccountView) {
+      mergedAccountView = true;
+      window.vueSidebar?.setMergedAccountView?.(true);
+    }
     if (global.terminalTheme && TERMINAL_THEMES[global.terminalTheme]) {
       currentThemeName = global.terminalTheme;
       TERMINAL_THEME = getTerminalTheme();
@@ -783,6 +820,12 @@ setTimeout(() => {
     if (global.uiFont && global.uiFont !== 'default' && window.TERMINAL_FONTS?.[global.uiFont]) {
       document.documentElement.style.setProperty('--font-ui', window.TERMINAL_FONTS[global.uiFont].family);
     }
+    if (global.uiScale) {
+      window._applyUiScale?.(global.uiScale);
+    }
+    if (global.terminalFontSize) {
+      window._applyTerminalFontSize?.(global.terminalFontSize);
+    }
     if (global.showAvatars === false) {
       document.body.classList.add('hide-avatars');
     }
@@ -791,6 +834,29 @@ setTimeout(() => {
 
 window._setShowAvatars = (val) => {
   document.body.classList.toggle('hide-avatars', !val);
+};
+
+// Interface scale, in percent. 100 is the size everything was designed at, so
+// the stylesheet keeps its pixel values and the zoom does the scaling.
+const UI_SCALE_MIN = 80;
+const UI_SCALE_MAX = 150;
+const UI_SCALE_DEFAULT = 100;
+
+window._normalizeUiScale = (value) => {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return UI_SCALE_DEFAULT;
+  return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, n));
+};
+
+window._applyUiScale = (percent) => {
+  const factor = window._normalizeUiScale(percent) / 100;
+  window.api.setUiZoom(factor);
+  // The window's minimum size is in device-independent pixels, so it has to grow
+  // with the scale to keep the same layout room — the main process owns that.
+  window.api.setUiScaleMinimum?.(factor)?.catch(() => {});
+  // Zooming changes the viewport size in CSS pixels, which fires 'resize' and
+  // refits the terminals through the handler above. Terminals opened later are
+  // fitted on show, so nothing else has to be told about the new scale.
 };
 
 window._applyUiFont = (fontKey) => {
@@ -854,10 +920,35 @@ loadProjects().then(async () => {
   } catch {}
 });
 
-window.api.onLaunchProjectSession((projectPath, continueSession) => {
+window.api.onLaunchProjectSession(async (projectPath, continueSession, accountId, accountNamed) => {
+  // A launch that names its own account has already moved the main process to it,
+  // and nothing else tells the renderer — an already-open session is shown without
+  // an open-terminal round trip, and the reply is what usually carries a switch
+  // back. Following it here also refreshes the list, which until now belonged to
+  // the account that was active before.
+  if (accountNamed && accountId) {
+    // One reload, not two: noteLaunchedAccount starts its own whenever the
+    // account really moved, and awaiting a second getProjects here would only
+    // race it. A reload that fails leaves a stale list, which is what this
+    // handler had before — it must not take the launch down with it.
+    const reloading = noteLaunchedAccount({ accountId });
+    if (continueSession) {
+      try { await (reloading || loadProjects()); } catch {}
+    }
+  }
   if (continueSession) {
-    const proj = cachedProjects.find(p => p.projectPath === projectPath);
-    const last = proj?.sessions?.find(s => !s.archived);
+    // The merged view groups the same directory across accounts into one entry, so
+    // its sessions are not all the launcher's: prefer one belonging to the account
+    // the path resolved to before falling back to the most recent of any. Outside
+    // the merged view every cached session is the active account's already, which
+    // makes the preference a no-op there.
+    const proj = cachedAllProjects.find(p => p.projectPath === projectPath);
+    const live = proj?.sessions?.filter(s => !s.archived) || [];
+    // No such fallback when the launch named its account: another account's
+    // .jsonl does not exist in the Claude home this session would resume in, so
+    // there is nothing to resume and a new session is the honest answer.
+    const ofAccount = accountId ? live.find(s => s.accountId === accountId) : null;
+    const last = ofAccount || (accountNamed ? null : live[0]);
     if (last) {
       if (window.vueStore?.activeTab !== 'sessions') window.vueApp?.setTab('sessions');
       setActiveSession(last.sessionId);
@@ -865,7 +956,15 @@ window.api.onLaunchProjectSession((projectPath, continueSession) => {
       return;
     }
   }
-  launchNewSession({ projectPath });
+  // An external launcher names a path and nothing else, so the account is the
+  // one that owns the path — sent along by the main process, which can resolve it
+  // from the database before this list exists. Launching on the active account
+  // instead would mean the wrong Claude home, and for a WSL account the wrong
+  // side of the boundary entirely. The cached entry is the fallback for a launch
+  // that carries no account, and a project the app has never seen has no owner to
+  // find and lands on the active account exactly as it did before.
+  const known = cachedAllProjects.find(p => p.projectPath === projectPath);
+  launchNewSession(known || { projectPath }, accountId ? { accountId } : undefined);
 });
 
 // Live-reload sidebar when filesystem changes are detected
@@ -963,6 +1062,15 @@ let accounts = [];
 let activeAccountId = 'default';
 let accountsUsage = {};
 let pendingAccountSwitch = false;
+// Mirrors the global setting: with it on the sidebar lists every account's
+// projects and the active account only decides where an unattributed launch goes.
+let mergedAccountView = false;
+
+window._setMergedAccountView = (value) => {
+  mergedAccountView = !!value;
+  window.vueSidebar?.setMergedAccountView?.(mergedAccountView);
+  loadProjects({ resort: true });
+};
 
 const terminalHeaderAccount = document.getElementById('terminal-header-account');
 
@@ -979,6 +1087,36 @@ function buildUsageChips(usage) {
 
 function updateAccountDropdown() {
   window.vueAccountDropdown?.setAccounts(accounts, activeAccountId, accountsUsage);
+  window.vueSidebar?.setAccounts?.(accounts, activeAccountId);
+}
+
+// The account a launch uses when the caller names none. In the merged view the
+// project on screen may be one the active account has never opened, and starting
+// a session there under the active account would put it in the wrong Claude home.
+function defaultAccountIdForProject(project) {
+  const ids = project?.accountIds;
+  if (!mergedAccountView || !Array.isArray(ids) || ids.length === 0) return activeAccountId;
+  return ids.includes(activeAccountId) ? activeAccountId : ids[0];
+}
+
+// A launch activates the account it runs under in the main process, so the
+// renderer's idea of which one is active has to follow it back. Returns the
+// reload it started, or null when it started none — a caller that has to read the
+// new list waits for that one rather than racing a second getProjects against it.
+function noteLaunchedAccount(result) {
+  if (!result?.accountId || result.accountId === activeAccountId) return null;
+  activeAccountId = result.accountId;
+  updateAccountDropdown();
+  renderAccountsPanel();
+  const reloading = reloadForActiveAccount();
+  // The merged list is the same whichever account is active, so it stays as it
+  // is. The standard one is that account's own — and the launch has just moved
+  // the app to another, which is how the accounts panel opens a Claude session
+  // in an account without switching to it first.
+  if (!mergedAccountView && (window.vueStore?.activeTab || 'sessions') === 'sessions') {
+    return loadProjects({ resort: true });
+  }
+  return reloading;
 }
 
 function closeAccountDropdown() {
@@ -998,8 +1136,10 @@ async function openAccountHomeSession(account) {
     }
   }
 
-  // Nothing open yet — launch a new session (stays on accounts tab, terminal appears in main area)
-  await launchNewSession({ projectPath: homedir }, {});
+  // Nothing open yet — launch a new session (stays on accounts tab, terminal
+  // appears in main area). The account is named rather than assumed: this is the
+  // one card the user pressed, not whichever account happens to be active.
+  await launchNewSession({ projectPath: homedir }, { accountId: account.id });
 }
 
 async function switchAccount(id) {
@@ -1008,16 +1148,34 @@ async function switchAccount(id) {
   updateAccountDropdown();
   renderAccountsPanel();
 
-  if (window.vueStore) window.vueStore.accountSwitching = true;
-  pendingAccountSwitch = true;
+  // In the merged view the sidebar shows the same projects whichever account is
+  // active — only the marker moves, and no rescan follows. Raising the switching
+  // flag there would blank the list until a projects-changed that never comes.
+  if (window.vueStore) window.vueStore.accountSwitching = !mergedAccountView;
+  pendingAccountSwitch = !mergedAccountView;
 
   await window.api.setActiveAccountId(id);
 
+  reloadForActiveAccount();
+  // Outside the merged view accountSwitching stays true — cleared in
+  // onProjectsChanged once new data arrives.
+}
+
+// The view half of an account change, without the IPC that causes one. Deleting
+// the account on screen also moves the app to another, and the main process has
+// already done that by the time the renderer is told — going through
+// switchAccount() there would re-run the whole re-init a second time.
+// Returns the project reload it started, or null when the tab on screen needs
+// none, so a caller that has to read the refreshed list can wait for it.
+function reloadForActiveAccount() {
   window.vueStats?.invalidate();
   const activeTab = window.vueStore?.activeTab || 'sessions';
   if (activeTab === 'stats') window.vueStats?.load();
-  if (activeTab === 'projects') loadProjects().then(() => renderProjectsPanel());
-  // accountSwitching stays true — cleared in onProjectsChanged once new data arrives
+  if (activeTab === 'projects') return loadProjects().then(() => renderProjectsPanel());
+  // The merged list is not reloaded by the account change itself, but an account
+  // leaving or joining the view does change it — and nothing else will ask.
+  if (mergedAccountView && activeTab === 'sessions') return loadProjects();
+  return null;
 }
 
 // makeGroup is defined in utils.js (loaded first)
@@ -1552,6 +1710,10 @@ window.__sb = {
     searchMatchProjectPaths = null;
     window.vueSidebar?.setSearch(null, null);
     saveUiState({ sidebarTab: tabName });
+    // Every other tab hides the terminal area, so no session is on screen any more
+    // and an alert for the one that was has to reach the tray. Coming back reports
+    // itself: the sessions branch below shows the session again.
+    if (tabName !== 'sessions') window.api.sessionViewed?.(null);
 
     if (tabName === 'sessions') {
       saveUiState({ panel: 'terminal', sidebarTab: tabName });
@@ -1768,11 +1930,51 @@ window.__sb = {
   },
 
   deleteAccount: async (id) => {
-    if (activeAccountId === id) await switchAccount('default');
+    // Removing the account on screen moves the app to another one, and the main
+    // process re-points the caches inside the handler — so the projects-changed
+    // push it causes can reach the renderer before this reply does. The flags go
+    // up first for the same reason switchAccount raises them before its IPC:
+    // onProjectsChanged has to recognise the arrival as the end of a switch.
+    const moving = activeAccountId === id && !mergedAccountView;
+    if (moving) {
+      pendingAccountSwitch = true;
+      if (window.vueStore) window.vueStore.accountSwitching = true;
+    }
+
+    const result = await window.api.deleteAccount(id);
+    if (!result?.ok) {
+      if (moving) {
+        pendingAccountSwitch = false;
+        if (window.vueStore) window.vueStore.accountSwitching = false;
+      }
+      alert(result?.error || 'Could not remove the account');
+      return result;
+    }
+
     accounts = accounts.filter(a => a.id !== id);
-    await window.api.deleteAccount(id);
+    // Which account it lands on is the main process's call, not a guess here.
+    const moved = result.activeAccountId !== activeAccountId;
+    if (moved) activeAccountId = result.activeAccountId;
     updateAccountDropdown();
     renderAccountsPanel();
+    if (moved) reloadForActiveAccount();
+    // A deleted account leaves the merged list whether or not it was the active
+    // one, and that is a change no rescan announces.
+    else if (mergedAccountView) loadProjects();
+    return result;
+  },
+
+  restoreDefaultAccount: async () => {
+    const restored = await window.api.restoreDefaultAccount();
+    if (!restored || accounts.some(a => a.id === restored.id)) return restored;
+    accounts = [restored, ...accounts];
+    await refreshAccountUsage();
+    updateAccountDropdown();
+    renderAccountsPanel();
+    // An account joining the merged view brings its projects with it; the reload
+    // is also what asks the main process to index one it has never seen.
+    if (mergedAccountView) loadProjects();
+    return restored;
   },
 
   createAccount: async (name) => {
@@ -1782,18 +1984,25 @@ window.__sb = {
     await refreshAccountUsage();
     updateAccountDropdown();
     renderAccountsPanel();
+    if (mergedAccountView) loadProjects();
     return newAcc;
   },
 
   discoverWslClaudeHomes: () => window.api.discoverWslClaudeHomes(),
 
-  createWslAccount: async (distro, name) => {
-    const newAcc = await window.api.createWslAccount(distro, name);
+  listWslDistros: () => window.api.listWslDistros(),
+
+  createWslAccount: async (distro, name, claudePosix) => {
+    const newAcc = await window.api.createWslAccount(distro, name, claudePosix);
     if (!newAcc || newAcc.error) return newAcc;
+    // Attaching a directory that already has an account returns that account
+    // rather than a new one, and it is already in the list.
+    if (accounts.some(a => a.id === newAcc.id)) return newAcc;
     accounts = [...accounts, newAcc];
     await refreshAccountUsage();
     updateAccountDropdown();
     renderAccountsPanel();
+    if (mergedAccountView) loadProjects();
     return newAcc;
   },
 

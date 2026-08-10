@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const pty = require('node-pty');
+const { createMirror, writeMirror, resizeMirror, serializeMirror, disposeMirror } = require('./terminal-mirror');
 
 if (!app.isPackaged) {
   const origUserData = app.getPath('userData');
@@ -57,11 +58,13 @@ const cleanPtyEnv = Object.fromEntries(
 const {
   discoverShellProfiles, getShellProfiles, resolveShell, isWindows, isWslShell,
   windowsToWslPath, shellArgs,
-  wslToWindowsPath, isPosixAbsolutePath, probeWslClaudeHome, discoverWslClaudeHomes, wslExecArgs,
+  wslToWindowsPath, isPosixAbsolutePath, probeWslClaudeHome, probeWslClaudeDir,
+  discoverWslClaudeHomes, defaultClaudePosix, wslExecArgs,
   withWslEnv, wslDistroFromUncPath, projectJoin,
 } = require('./shell-profiles');
 const { startScheduler } = require('./schedule-runner');
 const { encodeProjectPath } = require('./encode-project-path');
+const { parseLaunchUrl, parseLaunchArgv, LAUNCH_PROTOCOL } = require('./parse-launch-url');
 
 
 
@@ -93,7 +96,8 @@ if (app.isPackaged || process.env.FORCE_UPDATER) {
 }
 const {
   getMeta, getAllMeta, toggleStar, setName, setArchived,
-  isCachePopulated, getAllCached, getCachedByFolder, getCachedFolder, getCachedSession, upsertCachedSessions,
+  isCachePopulated, getAllCached, getCachedByFolder, getCachedSession, upsertCachedSessions,
+  getProjectAccountIds,
   deleteCachedSession, deleteCachedFolder,
   getFolderMeta, getAllFolderMeta, setFolderMeta,
   getProjectGitCache, setProjectGitCache, getAllProjectGitCounts,
@@ -107,24 +111,94 @@ const {
 const DEFAULT_CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const CLAUDE_DIR = DEFAULT_CLAUDE_DIR;
 const STATS_CACHE_PATH = path.join(CLAUDE_DIR, 'stats-cache.json');
-const MAX_BUFFER_SIZE = 256 * 1024;
+
+// The size every PTY is spawned at, until the renderer fits its terminal and
+// resizes it. Named rather than repeated because the screen mirror has to be
+// created at the same size — the two disagreeing about where a line wrapped is
+// exactly what a mirror is not allowed to do.
+const PTY_INITIAL_COLS = 120;
+const PTY_INITIAL_ROWS = 30;
 
 // --- Multi-account helpers ---
 
 const DEFAULT_ACCOUNT = { id: 'default', name: 'Default', configDir: DEFAULT_CLAUDE_DIR };
 
+// A WSL account attached before a distribution could hold more than one carries
+// no `wslClaudePosix`: it is the distribution's default home by construction.
+// Filling it in here means one shape reaches every reader, main and renderer
+// alike, and the field is written back the next time accounts are saved.
+function withWslClaudePosix(account) {
+  if (!account.wslDistro || account.wslClaudePosix || !account.wslHome) return account;
+  return { ...account, wslClaudePosix: defaultClaudePosix(account.wslHome) };
+}
+
+// Nothing stored at all is a fresh install, which starts on the local Claude
+// home. A stored list is taken exactly as it stands — the default account is
+// deletable like any other, and re-adding it here would quietly undo that.
 function getAccounts() {
   const stored = getSetting('accounts');
   if (!Array.isArray(stored) || stored.length === 0) return [DEFAULT_ACCOUNT];
-  // Always ensure default account is present
-  if (!stored.find(a => a.id === 'default')) return [DEFAULT_ACCOUNT, ...stored];
-  return stored;
+  return stored.map(withWslClaudePosix);
 }
 
+// The first account is the fallback rather than the default one, which may have
+// been removed. getAccounts() never answers empty, so this always resolves.
 function getActiveAccount() {
-  const global = getSetting('global') || {};
-  const activeId = global.activeAccountId || 'default';
-  return getAccounts().find(a => a.id === activeId) || DEFAULT_ACCOUNT;
+  const accounts = getAccounts();
+  const activeId = (getSetting('global') || {}).activeAccountId || 'default';
+  return accounts.find(a => a.id === activeId) || accounts[0];
+}
+
+function accountById(id) {
+  if (!id) return null;
+  return getAccounts().find(a => a.id === id) || null;
+}
+
+// The merged view puts every account's projects into one list, and the active
+// account stops deciding what is on screen — it only says where a launch that
+// names no account of its own goes. Kept in the global settings row rather than
+// SETTING_DEFAULTS: anything listed there becomes overridable per project, which
+// is wrong for something that applies to the whole window.
+function mergedAccountView() {
+  return !!(getSetting('global') || {}).mergedAccountView;
+}
+
+// The accounts whose projects belong on screen right now.
+function accountsInView() {
+  return mergedAccountView() ? getAccounts() : [getActiveAccount()];
+}
+
+// An account holding no sessions at all never turns isCachePopulated() true, so
+// "scan it because its cache is empty" is a condition that answers yes forever:
+// get-projects would spawn a worker on every call, and the scan's own
+// projects-changed notification would bring the next call straight back. One
+// automatic scan per account per run instead — anything that has to force
+// another (an account switch, which has real catch-up to do) calls
+// populateCacheViaWorker directly and records it here.
+// A scan that failed is not a scan: the mark is dropped again so the next
+// get-projects retries, which is what happened before this guard existed.
+const autoScannedAccounts = new Set();
+
+function scanAccountOnce(account) {
+  if (autoScannedAccounts.has(account.id)) return;
+  autoScannedAccounts.add(account.id);
+  populateCacheViaWorker(account, (ok) => {
+    if (!ok) autoScannedAccounts.delete(account.id);
+  });
+}
+
+// The account list itself changed — one was added, attached or removed. Only the
+// merged view has work to do: the standard one watches and reads whichever
+// account is active, and that has not moved. Declared here next to the rest of
+// the account helpers; everything it calls is defined further down and resolved
+// by the time any IPC handler can run.
+function accountsChanged() {
+  invalidateProjectAccounts();
+  if (!mergedAccountView()) return;
+  restartProjectsWatcher();
+  for (const account of accountsInView()) {
+    if (!isCachePopulated(account.id)) scanAccountOnce(account);
+  }
 }
 
 function getProjectsDir(account) {
@@ -162,6 +236,32 @@ function activeWslDistro() {
   return accountWslDistro(getActiveAccount());
 }
 
+// The POSIX config directory to hand the CLI for a WSL account, or null when
+// there is nothing to say. A distribution resolves its own ~/.claude without
+// being told, so only a sibling directory — a second Claude account inside the
+// same distribution — has to be named. The account's `configDir` is the Windows
+// view of that directory and means nothing inside the distribution, which is why
+// it is never what crosses the boundary.
+function accountWslConfigEnv(account) {
+  const claudePosix = account && account.wslClaudePosix;
+  if (!accountWslDistro(account) || !claudePosix || !account.wslHome) return null;
+  return claudePosix === defaultClaudePosix(account.wslHome) ? null : claudePosix;
+}
+
+// The config directory to name in a plain terminal's environment, in the form a
+// shell inside that terminal can resolve: the POSIX directory for a WSL account,
+// whose `configDir` is a UNC path meaning nothing inside the distribution.
+//
+// Deliberately unlike accountWslConfigEnv() above, which answers null when the
+// directory is the one the CLI would resolve unaided. That is right when the CLI
+// is being launched — there is nothing to tell it — and wrong here: what a shell
+// needs is a *defined* value, and suppressing the default would leave the most
+// common account inheriting whatever the environment happened to carry.
+function accountShellConfigDir(account) {
+  if (accountWslDistro(account)) return account.wslClaudePosix || null;
+  return account.configDir || null;
+}
+
 // Translate a canonical project path into one a Windows fs call can open.
 // Identity on any account without a distribution, and on paths that are
 // already Windows-shaped — so it is safe to wrap every fs call with it.
@@ -170,12 +270,74 @@ function accountHostPath(account, p) {
   return wslToWindowsPath(p, account.wslDistro, account.wslUncPrefix);
 }
 
-// Request-scoped: the account is read per call, which is right for anything
-// driven by the UI. Work that outlives the current selection — a running
-// session pushing diffs at us — must bind accountHostPath to its own account
-// instead, or an account switch would retarget it mid-session.
+// projectPath → owning accounts, cached: accountForPath() sits under every fs
+// call in the app, and it must not turn each one into a query. Short-lived
+// rather than event-driven — the map only changes when a project appears in an
+// account for the first time, and being a few seconds late costs nothing.
+const PROJECT_ACCOUNTS_TTL_MS = 5000;
+let projectAccountsCache = null;
+let projectAccountsCachedAt = 0;
+
+function invalidateProjectAccounts() {
+  projectAccountsCache = null;
+}
+
+function projectAccounts() {
+  if (projectAccountsCache && Date.now() - projectAccountsCachedAt < PROJECT_ACCOUNTS_TTL_MS) {
+    return projectAccountsCache;
+  }
+  projectAccountsCache = getProjectAccountIds() || new Map();
+  projectAccountsCachedAt = Date.now();
+  return projectAccountsCache;
+}
+
+// A path lies inside a project when it is that project or below it. Compared as
+// stored: both forms come out of the same .jsonl the project was recorded from.
+// A Windows-shaped project path is matched case-insensitively — the filesystem
+// is, and a path arriving from the CLI over MCP need not agree on case with the
+// one Claude recorded.
+function isPathInside(p, projectPath) {
+  const windows = projectPath.includes('\\') && !projectPath.startsWith('/');
+  const a = windows ? p.toLowerCase() : p;
+  const b = windows ? projectPath.toLowerCase() : projectPath;
+  if (a === b) return true;
+  const sep = windows ? '\\' : '/';
+  return a.startsWith(b.endsWith(sep) ? b : b + sep);
+}
+
+// The account a path belongs to. Only asked in the merged view: with a single
+// account's projects on screen the active account is the answer by construction,
+// and a stale row about a project two accounts share must not be able to
+// redirect a call away from the account the user is actually on. Paths outside
+// every known project — config directories, plans, temporary files — belong to
+// the active account too.
+function accountForPath(p) {
+  const active = getActiveAccount();
+  if (!mergedAccountView() || typeof p !== 'string' || !p) return active;
+
+  let ownerIds = null;
+  let matchedLength = 0;
+  for (const [projectPath, ids] of projectAccounts()) {
+    if (projectPath.length <= matchedLength) continue;
+    if (!isPathInside(p, projectPath)) continue;
+    ownerIds = ids;
+    matchedLength = projectPath.length;
+  }
+  if (!ownerIds || ownerIds.includes(active.id)) return active;
+  for (const id of ownerIds) {
+    const owner = accountById(id);
+    if (owner) return owner;
+  }
+  return active;
+}
+
+// Request-scoped: the account is resolved from the path itself, which is what
+// the merged view needs — a project of another account still has to be read
+// through that account's distribution. Work that outlives the current selection
+// — a running session pushing diffs at us — must bind accountHostPath to its own
+// account instead, or an account switch would retarget it mid-session.
 function hostPath(p) {
-  return accountHostPath(getActiveAccount(), p);
+  return accountHostPath(accountForPath(p), p);
 }
 
 // A Windows folder picker returns \\wsl.localhost\<distro>\… for a directory
@@ -190,9 +352,12 @@ function canonicalProjectPath(p) {
 // `cwd` and any caller-supplied `env` are dropped when redirecting: both hold
 // Windows-side values that mean nothing inside the distribution, which resolves
 // the working directory via --cd and the command via the distro's own PATH.
+// The distribution comes from the account that owns `cwd`, not from the active
+// one: in the merged view a project of another account is on screen alongside
+// the current one, and its git lives in that account's distribution.
 // Returns [file, args, options] for execFile/execFileSync.
 function projectExecFile(argv, cwd, options = {}) {
-  const distro = activeWslDistro();
+  const distro = accountWslDistro(accountForPath(cwd));
   if (!distro || !isPosixAbsolutePath(cwd)) {
     return [argv[0], argv.slice(1), { ...options, cwd }];
   }
@@ -229,11 +394,14 @@ function computeStatsFromDb(accountId) {
 const activeSessions = new Map();
 let mainWindow = null;
 
-// --- Single-instance: parse --project <path> from argv ---
-function parseProjectArg(argv) {
-  const idx = argv.indexOf('--project');
-  if (idx !== -1 && argv[idx + 1]) return argv[idx + 1];
-  return null;
+// Send to the renderer, waiting for the page when it has not finished loading yet —
+// a message sent before that has no listener on the other side and is simply lost.
+function sendToRenderer(channel, ...args) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const contents = mainWindow.webContents;
+  const send = () => { try { contents.send(channel, ...args); } catch {} };
+  if (contents.isLoading()) contents.once('did-finish-load', send);
+  else send();
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -241,11 +409,16 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-    const projectPath = parseProjectArg(argv);
-    if (projectPath) mainWindow.webContents.send('launch-project-session', projectPath);
+    // The window may be hidden in the tray rather than merely minimised, or gone
+    // altogether while the app lives on, and a second launch is the clearest possible
+    // request to see it — so this must not be conditional on a window existing.
+    showMainWindow();
+    // Everywhere except macOS this is also how a wootonpad:// URL arrives: the OS
+    // starts a second instance with the URL as an argument, and the lock forwards
+    // that argv here. parseLaunchArgv understands both forms, so the scheme works
+    // on Windows and Linux without a second implementation.
+    const request = parseLaunchArgv(argv);
+    if (request) dispatchProjectOpen(request.projectPath, request.continueSession, request.account);
   });
 }
 
@@ -253,6 +426,8 @@ if (!gotSingleInstanceLock) {
 // macOS routes wootonpad:// URLs to the running app via Apple Events — no
 // server, no polling, zero overhead. The OS resolves the handler from its
 // Launch Services registry and delivers the URL whether the app is open or not.
+// Elsewhere the URL is an argument rather than an event; see `second-instance`
+// above and the startup argv read after did-finish-load.
 //
 // New session:      open wootonpad://{dir}
 // Continue latest:  open wootonpad://+{dir}
@@ -261,36 +436,293 @@ if (!gotSingleInstanceLock) {
 // did-finish-load.
 const pendingOpenPaths = [];
 
+// The startup argv is one request, but `did-finish-load` fires again on every
+// reload — the dev reloader's, and a window re-created from the tray after the
+// last one was closed. Re-reading process.argv there would launch the same
+// project once more each time, so the read is consumed after the first window
+// has had it.
+let startupLaunchConsumed = false;
+
 // In dev, Electron is the "default app" so we pass the script path explicitly.
 if (process.defaultApp && process.argv.length >= 2) {
-  app.setAsDefaultProtocolClient('wootonpad', process.execPath, [path.resolve(process.argv[1])]);
+  app.setAsDefaultProtocolClient(LAUNCH_PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
 } else {
-  app.setAsDefaultProtocolClient('wootonpad');
+  app.setAsDefaultProtocolClient(LAUNCH_PROTOCOL);
 }
 
-function dispatchProjectOpen(filePath, continueSession) {
+// Which account an externally launched project belongs to. Resolved here rather
+// than in the renderer because a launch by URL routinely arrives before the
+// renderer has a project list to look in — a cold start *is* the interesting
+// case — while the main process reads the ownership straight out of the
+// database. With the merged view off `accountForPath` returns the active account
+// whatever the path, which is the boundary that setting draws and not something
+// this feature may cross.
+function launchAccountId(filePath) {
+  try {
+    return accountForPath(filePath)?.id || null;
+  } catch {
+    return null;
+  }
+}
+
+// Two config directories naming the same place. The POSIX form is compared as it
+// stands, but a Windows one is not: the filesystem is case-insensitive and takes
+// either separator, and a directory typed by hand into a launcher agrees with the
+// stored form on neither by luck.
+function sameConfigDir(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (process.platform !== 'win32') return false;
+  const norm = (s) => s.replace(/[\\/]+/g, '\\').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+// Two names for the same distribution. Matched the way `wsl.exe -d` matches it —
+// case-insensitively — for the same reason the config directory is: a name
+// interpolated from $WSL_DISTRO_NAME arrives in its stored spelling, but one
+// typed into a launcher by hand does not have to, and a miss here silently sends
+// the launch to whichever account was already selected.
+function sameDistro(a, b) {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+// The account a launch names by its config directory, or null when it names none
+// this app holds. Identity is the directory rather than the distribution — one
+// distribution can hold several Claude accounts, told apart only by which
+// directory they read — so a bare distribution matches only as a last resort,
+// meaning "whichever account of that distribution I have".
+//
+// A named distribution narrows every match rather than only the first: an account
+// of another distribution is not the one that was asked for, whatever directory
+// it happens to read.
+function accountFromLaunchHint(hint) {
+  if (!hint || (!hint.configDir && !hint.distro)) return null;
+  const accounts = getAccounts() || [];
+  const inDistro = (a) => !hint.distro || sameDistro(a.wslDistro, hint.distro);
+  if (hint.configDir) {
+    // The POSIX directory is what identifies a WSL account; `configDir` is its
+    // Windows view, and matching that too is what lets a launcher on the Windows
+    // side name an account by the directory the app itself shows for it.
+    return accounts.find(a => a.wslClaudePosix === hint.configDir && inDistro(a))
+      || accounts.find(a => sameConfigDir(a.configDir, hint.configDir) && inDistro(a))
+      || null;
+  }
+  // A distribution on its own is what a template produces when CLAUDE_CONFIG_DIR
+  // is unset — and unset means the home Claude resolves unaided, so the
+  // distribution's default account is the answer rather than whichever sibling
+  // happens to be stored first.
+  const ofDistro = accounts.filter(a => sameDistro(a.wslDistro, hint.distro));
+  const isDefaultHome = (a) => a.wslHome && a.wslClaudePosix === defaultClaudePosix(a.wslHome);
+  return ofDistro.find(isDefaultHome) || ofDistro[0] || null;
+}
+
+// Naming an account in a launch is a request to switch to it — the same move the
+// account dropdown makes, and the reason it is done here rather than left to
+// `open-terminal`: that handler ignores a named account outside the merged view
+// by design, so a launch that only carried the field would silently open on
+// whatever account was already selected, which is exactly the bug this fixes.
+// Activating first means the app really is on that account, in either view.
+// Nothing here may take the launch down with it: an account that cannot be
+// resolved or switched to still leaves a perfectly good project to open, and the
+// launch then behaves as it did before it named one.
+function activateLaunchAccount(hint) {
+  try {
+    const account = accountFromLaunchHint(hint);
+    if (!account) {
+      // A hint that resolves to nothing is not the same as no hint at all: the
+      // launch is about to open on whichever account was already selected, and
+      // without a line here that looks like the feature simply not working.
+      if (hint) {
+        log.warn(`[account] external launch named an account this app does not hold: ${hint.distro || ''}${hint.distro && hint.configDir ? ':' : ''}${hint.configDir || ''}`);
+      }
+      return null;
+    }
+    if (account.id !== getActiveAccount().id) {
+      log.info(`[account] external launch names "${account.name || account.id}" — activating it`);
+      try {
+        activateAccount(account.id);
+      } catch (err) {
+        // The active id is written before the watchers and the rescan follow it,
+        // so a throw further down still leaves the app on this account. Which
+        // account it is really on is read back below rather than assumed either
+        // way — the renderer is told to move only if the main process did.
+        log.warn(`[account] external launch named an account that could not be fully activated: ${err?.message}`);
+      }
+    }
+    return getActiveAccount().id === account.id ? account : null;
+  } catch (err) {
+    log.warn(`[account] external launch named an account that could not be activated: ${err?.message}`);
+    return null;
+  }
+}
+
+// The single place an external launch reaches the renderer. The path is
+// canonicalised first: it arrives from outside the app and a launcher on the
+// Windows side names a project inside a distribution by its \\wsl.localhost\…
+// view, while the app keys, stores and hashes the POSIX form Claude recorded.
+// Skipping this would resolve the wrong account and encode a project folder that
+// matches nothing on disk. The account is read after the translation, for the
+// same reason — and an account the launch named itself outranks the one inferred
+// from the path, because it is the launcher's own answer rather than our guess.
+function sendLaunchProjectSession(rawPath, continueSession, accountHint) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const named = activateLaunchAccount(accountHint);
+  const filePath = canonicalProjectPath(rawPath);
+  // Whether the account was named is sent alongside it, and is not the same
+  // question as which account it is. A named one has just been activated here, so
+  // the renderer's project list is still the account that was active before —
+  // stale in exactly the way that matters, since a session read out of it belongs
+  // to a Claude home this launch is no longer pointed at.
+  mainWindow.webContents.send(
+    'launch-project-session', filePath, continueSession,
+    named?.id || launchAccountId(filePath), !!named,
+  );
+}
+
+function dispatchProjectOpen(filePath, continueSession, account) {
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
-    mainWindow.webContents.send('launch-project-session', filePath, continueSession);
+    sendLaunchProjectSession(filePath, continueSession, account);
   } else {
-    pendingOpenPaths.push({ filePath, continueSession });
+    pendingOpenPaths.push({ filePath, continueSession, account });
   }
 }
 
 app.on('open-url', (event, url) => {
   event.preventDefault();
-  // wootonpad://+/path/to/project  →  continue last session
-  // wootonpad:///path/to/project   →  new session
-  const continueSession = url.startsWith('wootonpad://+');
-  const prefix = continueSession ? 'wootonpad://+' : 'wootonpad://';
-  const filePath = decodeURIComponent(url.slice(prefix.length));
-  if (filePath) dispatchProjectOpen(filePath, continueSession);
+  const request = parseLaunchUrl(url);
+  if (request) dispatchProjectOpen(request.projectPath, request.continueSession, request.account);
 });
+
+// The window floor the app shipped with, i.e. the smallest frame the layout was
+// drawn for at 100%. Page zoom makes a window of a given size worth fewer CSS
+// pixels, so the floor has to grow with the interface scale — at 150% an 800 px
+// window is 533 CSS px, which cannot hold the 340 px sidebar and a terminal
+// beside it.
+const MIN_WINDOW_WIDTH = 800;
+const MIN_WINDOW_HEIGHT = 500;
+
+// Same clamp as the renderer and the preload bridge, which keeps its own copy of the
+// limits — a sandboxed preload can only require Electron and Node built-ins, not a
+// shared module. A stored value that has been hand-edited must not be able to demand
+// a window nobody can fit on screen, and a value that is not a usable number means
+// no scaling at all.
+function clampUiScaleFactor(factor) {
+  const n = Number(factor);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  return Math.min(1.5, Math.max(0.8, n));
+}
+
+// Settings store the scale as a percentage; a missing or empty key means no scaling.
+function uiScaleFactorFromPercent(percent) {
+  if (percent == null || percent === '') return 1;
+  return clampUiScaleFactor(Number(percent) / 100);
+}
+
+// The scale currently reflected in the window minimum, so a display change can
+// recompute the floor without waiting for the renderer to ask again.
+let uiScaleMinimumFactor = 1;
+
+// Set when a scale bump grew the window mid-session: remembers the size the user
+// had, so dropping the scale again — or cancelling a preview — can put it back.
+// Cleared as soon as the user resizes the window themselves; the grown size is
+// theirs then. Growth at window creation is deliberately not recorded: there is no
+// user action to undo, and the size the window opened at is the size it has had all
+// session, so shrinking it later would come out of nowhere.
+let scaleGrowth = null;
+let displayWatchInstalled = false;
+
+// Window sizes are device-independent pixels, which is what the scale multiplies.
+// Capped at the work area of the display the window is on: a minimum larger than
+// the screen leaves a window that cannot be resized at all. `reference` names that
+// display before the window exists, e.g. a restored position on a second monitor.
+function minimumWindowSize(factor, reference) {
+  const rect = reference
+    || (mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : null);
+  const display = rect ? screen.getDisplayMatching(rect) : screen.getPrimaryDisplay();
+  const { width, height } = display.workAreaSize;
+  return {
+    width: Math.min(Math.round(MIN_WINDOW_WIDTH * factor), width),
+    height: Math.min(Math.round(MIN_WINDOW_HEIGHT * factor), height),
+  };
+}
+
+// Keeps a rectangle inside the work area of the display it sits on. Growing a
+// window to a new minimum moves its far edge, which without this pushes the window
+// off screen instead of just making it bigger.
+function fitBoundsToWorkArea(rect) {
+  const area = screen.getDisplayMatching(rect).workArea;
+  const width = Math.min(rect.width, area.width);
+  const height = Math.min(rect.height, area.height);
+  return {
+    width,
+    height,
+    x: Math.round(Math.min(Math.max(rect.x, area.x), area.x + area.width - width)),
+    y: Math.round(Math.min(Math.max(rect.y, area.y), area.y + area.height - height)),
+  };
+}
+
+// Applies the floor for a given scale to the live window: grows it when it sits
+// under the floor, and shrinks it back once the floor drops again while the window
+// is still exactly the size we grew it to.
+function applyWindowMinimum(factor) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+
+  const minimum = minimumWindowSize(factor);
+  mainWindow.setMinimumSize(minimum.width, minimum.height);
+
+  // The bounds of a minimised, maximised or full-screen window are not a size the
+  // user picked, so leave them alone — the minimum applies again on restore.
+  if (mainWindow.isMinimized() || mainWindow.isMaximized() || mainWindow.isFullScreen()) {
+    return minimum;
+  }
+
+  const b = mainWindow.getBounds();
+  if (scaleGrowth && (b.width !== scaleGrowth.width || b.height !== scaleGrowth.height)) {
+    scaleGrowth = null;
+  }
+
+  if (b.width < minimum.width || b.height < minimum.height) {
+    const before = scaleGrowth ? scaleGrowth.before : { width: b.width, height: b.height };
+    mainWindow.setBounds(fitBoundsToWorkArea({
+      ...b,
+      width: Math.max(b.width, minimum.width),
+      height: Math.max(b.height, minimum.height),
+    }));
+    const grown = mainWindow.getBounds();
+    scaleGrowth = { before, width: grown.width, height: grown.height };
+  } else if (scaleGrowth) {
+    const width = Math.max(scaleGrowth.before.width, minimum.width);
+    const height = Math.max(scaleGrowth.before.height, minimum.height);
+    // Only when the floor has actually dropped far enough to give the size back.
+    // Without this test, being called again at the same scale — a save right after
+    // a preview, or a display-metrics event — resizes to the size the window
+    // already has and forgets what it was grown from.
+    if (width !== b.width || height !== b.height) {
+      mainWindow.setBounds(fitBoundsToWorkArea({ ...b, width, height }));
+      scaleGrowth = null;
+    }
+  }
+  return minimum;
+}
+
+// A display change can leave the floor larger than the screen the window is now on
+// — undocking from a big monitor — which makes the window unresizable and strands
+// part of it off screen. Recompute it from the scale currently in effect.
+function watchDisplayChanges() {
+  if (displayWatchInstalled) return;
+  displayWatchInstalled = true;
+  const recompute = () => applyWindowMinimum(uiScaleMinimumFactor);
+  screen.on('display-added', recompute);
+  screen.on('display-removed', recompute);
+  screen.on('display-metrics-changed', recompute);
+}
 
 function createWindow() {
   // Restore saved window bounds
-  const savedBounds = getSetting('global')?.windowBounds;
+  const globalSettings = getSetting('global');
+  const savedBounds = globalSettings?.windowBounds;
   let bounds = { width: 1400, height: 900 };
 
   let restorePosition = null;
@@ -312,10 +744,22 @@ function createWindow() {
     }
   }
 
+  // Bounds saved at a smaller scale can be under the floor the current scale
+  // needs; widen them here rather than opening a window the user cannot restore
+  // to its own size once they touch the frame.
+  uiScaleMinimumFactor = uiScaleFactorFromPercent(globalSettings?.uiScale);
+  const minimum = minimumWindowSize(
+    uiScaleMinimumFactor,
+    restorePosition ? { ...restorePosition, width: bounds.width, height: bounds.height } : null,
+  );
+  const grownByFloor = bounds.width < minimum.width || bounds.height < minimum.height;
+  bounds.width = Math.max(bounds.width, minimum.width);
+  bounds.height = Math.max(bounds.height, minimum.height);
+
   mainWindow = new BrowserWindow({
     ...bounds,
-    minWidth: 800,
-    minHeight: 500,
+    minWidth: minimum.width,
+    minHeight: minimum.height,
     title: 'Wooton Pad',
     icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: {
@@ -325,9 +769,34 @@ function createWindow() {
     },
   });
 
+  // Closing hides the window while a tray icon exists — sessions keep running and
+  // the app is reached from the tray. Conditional on the tray actually existing:
+  // on a desktop with no status-notifier host there would be nothing left to click,
+  // and the window would be gone for good.
+  mainWindow.on('close', (event) => {
+    if (isQuitting || !trayIcon.isTrayActive()) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
+  // The alert for the session on screen is cleared by the renderer; coming back to
+  // the window is the other half of that, since the user is now looking at it.
+  mainWindow.on('focus', () => clearSessionAttention(viewedSessionId));
+
+  // Whether a session counts as watched is answered when the tray is built, so
+  // leaving the window is a change in that answer and the tray has to be rebuilt
+  // for it. Without this, a request raised while the session was on screen stays
+  // invisible until something unrelated happens to refresh the tray — and hiding
+  // to the tray is exactly when it needs to be right.
+  mainWindow.on('blur', refreshTray);
+  mainWindow.on('hide', refreshTray);
+
   // Set position after creation to prevent macOS from clamping size
   if (restorePosition) {
-    mainWindow.setBounds({ ...restorePosition, width: bounds.width, height: bounds.height });
+    const restored = { ...restorePosition, width: bounds.width, height: bounds.height };
+    // Re-clamp only when the floor grew the window: an untouched restore keeps the
+    // slack the on-screen check above deliberately allows.
+    mainWindow.setBounds(grownByFloor ? fitBoundsToWorkArea(restored) : restored);
   }
 
   mainWindow.loadFile(path.join(__dirname, 'public', 'index.html'));
@@ -347,10 +816,15 @@ function createWindow() {
   // window.open() then sets location.href) routes through our IPC instead of
   // creating a child BrowserWindow.
   mainWindow.webContents.on('did-finish-load', () => {
-    const startupProject = parseProjectArg(process.argv);
-    if (startupProject) mainWindow.webContents.send('launch-project-session', startupProject);
-    for (const { filePath, continueSession } of pendingOpenPaths.splice(0)) {
-      mainWindow.webContents.send('launch-project-session', filePath, continueSession);
+    // A launch by URL with the app not yet running lands here too: outside macOS
+    // the OS passes the URL as an argument of the very first process. Read once —
+    // this event repeats on every reload, and process.argv still says the same
+    // thing hours later.
+    const startup = startupLaunchConsumed ? null : parseLaunchArgv(process.argv);
+    startupLaunchConsumed = true;
+    if (startup) sendLaunchProjectSession(startup.projectPath, startup.continueSession, startup.account);
+    for (const { filePath, continueSession, account } of pendingOpenPaths.splice(0)) {
+      sendLaunchProjectSession(filePath, continueSession, account);
     }
 
     mainWindow.webContents.executeJavaScript(`
@@ -414,11 +888,222 @@ function createWindow() {
       if (!session.exited) {
         try { session.pty.kill(); } catch {}
       }
+      disposeMirror(session.screen);
+      session.screen = null;
       activeSessions.delete(id);
     }
     mainWindow = null;
   });
+
+  watchDisplayChanges();
 }
+
+// Keeps the window's floor in step with the interface scale, including while the
+// settings slider is only previewing — so what the preview shows is what saving
+// gives, and cancelling gives the window back. Growing is deliberate: a window
+// already under the new floor cannot be dragged back to the size it currently has,
+// which reads as a bug.
+ipcMain.handle('set-ui-scale-minimum', (_event, factor) => {
+  uiScaleMinimumFactor = clampUiScaleFactor(factor);
+  return applyWindowMinimum(uiScaleMinimumFactor);
+});
+
+// --- Tray ---------------------------------------------------------------------
+const trayIcon = require('./tray');
+
+// Which session the renderer is showing, so an alert about the session the user is
+// already watching does not light the tray up.
+let viewedSessionId = null;
+
+// Same classification the renderer applies to an OSC 9 message (public/app.js), for
+// the four shapes the CLI emits: attention, plan approval, tool permission, and
+// entering plan mode.
+const ATTENTION_MESSAGE = /attention|approval|permission|needs your|wants to enter/i;
+
+let isQuitting = false;
+
+function trayEnabledSetting() {
+  const value = getSetting('global')?.showTray;
+  return value === undefined || value === null ? true : !!value;
+}
+
+// True only while the user can actually see the session in question.
+function isWatchingSession(sessionId) {
+  return sessionId === viewedSessionId
+    && !!mainWindow && !mainWindow.isDestroyed()
+    && mainWindow.isVisible() && mainWindow.isFocused();
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+}
+
+function traySnapshot() {
+  const attention = [];
+  const busy = [];
+  // A re-keyed session replaces its old entry in activeSessions, so every session
+  // appears exactly once here, under the id the renderer also knows it by.
+  for (const [key, session] of activeSessions) {
+    if (session.exited) continue;
+    const sessionId = session.realSessionId || key;
+    const entry = { sessionId, projectPath: session.projectPath, sessionSlug: session.sessionSlug };
+    // Whether the user is watching is asked here, every time the tray is built,
+    // rather than once when the request arrived. A prompt that appeared while the
+    // session was on screen is still unanswered after the user looks away, and
+    // deciding at arrival time meant the tray never learned about it.
+    if (session._attention && !isWatchingSession(sessionId)) attention.push(entry);
+    else if (session._cliBusy) busy.push(entry);
+  }
+  return { attention, busy, accounts: getAccounts(), usage: accountsUsageSnapshot() };
+}
+
+function refreshTray() {
+  if (!trayIcon.isTrayActive()) return;
+  const state = traySnapshot();
+  trayIcon.updateTray(state);
+  // macOS and Unity; a no-op on Windows, where the equivalent is an overlay icon.
+  try { app.setBadgeCount(state.attention.length); } catch {}
+}
+
+// A session the CLI has asked something of is marked on the session object itself
+// rather than in a set of ids: a fork or plan-accept re-keys the session under a new
+// id, and a mark carried by the object survives that on its own. The mark is kept
+// here rather than in the renderer, which keeps its own set for the sidebar, because
+// the tray has to be right exactly when the window is hidden and the renderer is not
+// being looked at.
+function noteSessionNotification(session, sessionId, message) {
+  if (!ATTENTION_MESSAGE.test(message)) return;
+  // Recorded even while the session is on screen. Being watched decides whether
+  // the tray shows it, in traySnapshot, and that answer changes when the user
+  // looks away; dropping the request here made it permanent.
+  session._attention = true;
+  refreshTray();
+}
+
+// The CLI title, as an OSC 0 payload: a braille spinner means it is working, ✳
+// means it has stopped. Resuming work is also the one signal that a request the
+// user was asked for has been answered — they have to be looking at the session
+// to answer it, so nothing else observes the reply.
+function handleOscTitle(session, sessionId, payload) {
+  const firstChar = payload.charAt(0);
+  const isBusy = firstChar.charCodeAt(0) >= 0x2800 && firstChar.charCodeAt(0) <= 0x28FF;
+  const isIdle = firstChar === '\u2733'; // ✳
+  log.debug(`[OSC 0] session=${sessionId} char=U+${firstChar.charCodeAt(0).toString(16).toUpperCase()} busy=${isBusy} idle=${isIdle} wasBusy=${!!session._cliBusy}`);
+  if (isBusy && !session._cliBusy) {
+    log.debug(`[OSC 0] session=${sessionId} → BUSY`);
+    setCliBusy(session, sessionId, true);
+  } else if (isIdle && session._cliBusy) {
+    log.debug(`[OSC 0] session=${sessionId} → IDLE`);
+    setCliBusy(session, sessionId, false);
+  }
+}
+
+// An OSC 9 payload: either ConEmu progress (`4;level;percent`) or an iTerm2
+// notification, which is how the CLI says it is waiting for the user.
+function handleOscNotification(session, sessionId, payload) {
+  if (payload.startsWith('4;')) {
+    const level = payload.split(';')[1];
+    // 4;0 is also used for clearing, making it unreliable as an idle signal.
+    if (level === '0') return;
+    log.debug(`[OSC 9;4] session=${sessionId} level=${level} payload="${payload}" wasBusy=${!!session._cliBusy}`);
+    if ((level === '1' || level === '2' || level === '3') && !session._cliBusy) {
+      log.debug(`[OSC 9;4] session=${sessionId} → BUSY`);
+      setCliBusy(session, sessionId, true);
+    }
+    return;
+  }
+
+  log.info(`[OSC 9] session=${sessionId} message="${payload}"`);
+  // Classified once, here, and the verdict travels with the message: the renderer
+  // used to run its own copy of this test, and two copies of the rule drift apart
+  // in the one direction that matters — the sidebar marking a session the tray
+  // does not.
+  const wantsUser = ATTENTION_MESSAGE.test(payload);
+  sendToRenderer('terminal-notification', sessionId, payload, wantsUser);
+  noteSessionNotification(session, sessionId, payload);
+}
+
+function setCliBusy(session, sessionId, busy) {
+  session._cliBusy = busy;
+  // Work resuming means the question was answered. Without this the mark would
+  // outlive what it stands for, and the tray would keep asking for an answer that
+  // has already been given.
+  if (busy) session._attention = false;
+  sendToRenderer('cli-busy-state', sessionId, busy);
+  refreshTray();
+}
+
+function clearSessionAttention(sessionId) {
+  if (!sessionId) return;
+  // Either id resolves: activeSessions is keyed by the temporary id until a fork or
+  // plan-accept re-keys it, and by the real one afterwards.
+  const session = activeSessions.get(sessionId);
+  if (!session?._attention) return;
+  session._attention = false;
+  refreshTray();
+}
+
+function startTray() {
+  const created = trayIcon.createTray({
+    onShow: showMainWindow,
+    onQuit: () => { isQuitting = true; app.quit(); },
+    onFocusSession: (sessionId) => {
+      showMainWindow();
+      clearSessionAttention(sessionId);
+      sendToRenderer('focus-session', sessionId);
+    },
+  });
+  if (created) {
+    refreshTray();
+    startUsagePolling();
+  } else {
+    log.warn('[tray] no tray icon could be created; the window will keep closing to quit');
+    // Deferred while the page is still loading: the tray is started during
+    // whenReady, before the renderer has a listener for this.
+    sendToRenderer(
+      'status-update',
+      'No tray icon available on this desktop — closing the window still quits',
+      'warn',
+    );
+  }
+  return created;
+}
+
+function stopTray() {
+  trayIcon.destroyTray();
+  stopUsagePolling();
+  try { app.setBadgeCount(0); } catch {}
+}
+
+// The renderer reports which session it is showing; that is also the moment its own
+// attention marker is cleared, so the two stay in step.
+ipcMain.on('session-viewed', (_event, sessionId) => {
+  viewedSessionId = sessionId || null;
+  clearSessionAttention(sessionId);
+  // Rebuilt even when nothing was cleared. Which session is watched is what
+  // traySnapshot filters on, so moving to another session — or off the sessions
+  // view entirely — changes the answer for the one just left; and that is exactly
+  // the case clearSessionAttention returns early from, since the session arriving
+  // is not the one holding a request. Without this the tray keeps saying nothing
+  // is waiting until something unrelated happens to refresh it, which is the same
+  // hole the blur and hide handlers close for leaving the window.
+  refreshTray();
+});
+
+ipcMain.handle('set-tray-enabled', (_event, enabled) => {
+  if (enabled) {
+    if (!trayIcon.isTrayActive()) startTray();
+  } else {
+    stopTray();
+  }
+  return trayIcon.isTrayActive();
+});
 
 function buildMenu() {
   const template = [
@@ -470,16 +1155,16 @@ const { deriveProjectPath } = require('./derive-project-path');
 const sessionCache = require('./session-cache');
 
 function initSessionCache() {
-  const account = getActiveAccount();
   sessionCache.init({
-    PROJECTS_DIR: getProjectsDir(account),
-    accountId: account.id,
+    getActiveAccount,
+    getProjectsDir,
+    accountsInView,
     activeSessions,
     getMainWindow: () => mainWindow,
     log,
     db: {
       deleteCachedFolder, getCachedByFolder, upsertCachedSessions, deleteCachedSession,
-      deleteSearchFolder, deleteSearchSession, upsertSearchEntries,
+      deleteSearchSession, upsertSearchEntries,
       setFolderMeta, getAllFolderMeta, getAllMeta, getAllCached, getSetting, getMeta, setName, getAllProjectGitCounts,
     },
   });
@@ -542,8 +1227,12 @@ ipcMain.handle('add-project', (_event, rawProjectPath) => {
       fs.writeFileSync(seedFile, line + '\n');
     }
 
-    // Immediately index the new folder so it's in cache before frontend renders
-    refreshFolder(folder);
+    // Immediately index the new folder so it's in cache before frontend renders.
+    // Every account in view, not just the active one: this call is also the
+    // un-hide path, and hiding cleared the folder for all of them. An account
+    // that does not have the folder re-deletes nothing and costs one stat.
+    for (const account of accountsInView()) refreshFolder(folder, account);
+    invalidateProjectAccounts();
     notifyRendererProjectsChanged();
     // Kick off du -sk once on add; subsequent refreshes use the long random TTL
     cacheProjectSize(projectPath);
@@ -564,11 +1253,19 @@ ipcMain.handle('remove-project', (_event, projectPath) => {
     global.hiddenProjects = hidden;
     setSetting('global', global);
 
-    // Clean up DB cache and search index for this folder
+    // Clean up DB cache and search index for this folder. The cache is keyed by
+    // account, and deleteCachedFolder defaults its second argument to 'default'
+    // — so leaving it off deleted another account's row and kept the one being
+    // hidden, which then still answered searches. Every account in view is
+    // cleared rather than only the active one: the hidden list is global, so a
+    // project hidden in the merged view is hidden for all of them, and the one
+    // being hidden need not belong to the account currently selected. The search
+    // index itself has no account column, so it is folder-wide by construction.
     const folder = encodeProjectPath(projectPath);
-    deleteCachedFolder(folder);
+    for (const account of accountsInView()) deleteCachedFolder(folder, account.id);
     deleteSearchFolder(folder);
     deleteSetting('project:' + projectPath);
+    invalidateProjectAccounts();
 
     notifyRendererProjectsChanged();
     return { ok: true };
@@ -1089,11 +1786,22 @@ ipcMain.handle('unwatch-file', (_event, filePath) => {
 
 ipcMain.handle('get-projects', (_event, showArchived) => {
   try {
-    const needsPopulate = !isCachePopulated(getActiveAccount().id) || !isSearchIndexPopulated();
+    // An empty search index means every account has to be re-read whatever its
+    // session cache says — the index is global and is rebuilt by the same scan.
+    const accounts = accountsInView();
+    const unpopulated = accounts.filter(account => !isCachePopulated(account.id));
+    const needsSearchIndex = !isSearchIndexPopulated();
 
-    if (needsPopulate) {
-      populateCacheViaWorker();
-      return [];
+    if (unpopulated.length || needsSearchIndex) {
+      for (const account of (needsSearchIndex ? accounts : unpopulated)) {
+        scanAccountOnce(account);
+      }
+      // Outside the merged view this answers empty whenever anything needs a
+      // scan, which is what it has always done. Inside it, only a cold start has
+      // nothing to show: when one account of several is still being scanned, the
+      // accounts already indexed stay on screen rather than blanking the sidebar
+      // until it finishes.
+      if (!mergedAccountView() || unpopulated.length === accounts.length) return [];
     }
 
     return buildProjectsFromCache(showArchived);
@@ -1198,6 +1906,7 @@ ipcMain.handle('refresh-stats', async () => {
   // credentials are, and a Windows shell could reach neither.
   const globalSettings = getSetting('global') || {};
   const statsDistro = activeWslDistro();
+  const statsWslConfigEnv = accountWslConfigEnv(getActiveAccount());
   const statsProfileId = globalSettings.shellProfile || SETTING_DEFAULTS.shellProfile;
   const statsShellProfile = resolveShell(statsDistro ? 'wsl:' + statsDistro : statsProfileId);
   const statsShell = statsShellProfile.path;
@@ -1219,12 +1928,24 @@ ipcMain.handle('refresh-stats', async () => {
     FORCE_COLOR: '3',
     // No ITERM_SESSION_ID: without it Claude CLI won't try to reach iTerm2 via AppleScript,
     // which avoids the macOS "would like to access data from other apps" permission prompt.
-    // CLAUDE_CONFIG_DIR is skipped for a WSL account: its configDir is the
-    // Windows view of a home that is already the default inside the distro.
-    ...(configDir !== DEFAULT_CLAUDE_DIR && !statsDistro ? { CLAUDE_CONFIG_DIR: configDir } : {}),
   };
+  // For a WSL account the Windows configDir is meaningless inside the
+  // distribution, so what crosses is the POSIX directory — and only for an
+  // account that is not the distribution's default Claude home.
+  //
+  // Deleted rather than merely left unset: cleanPtyEnv is a copy of the app's own
+  // environment, so a CLAUDE_CONFIG_DIR the user happened to export before
+  // launching would otherwise survive here and outrank the active account. For a
+  // WSL session it is worse than wrong — WSLENV names it below, so a Windows path
+  // would cross into a distribution that cannot resolve it at all.
+  delete ptyEnv.CLAUDE_CONFIG_DIR;
+  const statsConfigEnv = statsDistro
+    ? statsWslConfigEnv
+    : (configDir !== DEFAULT_CLAUDE_DIR ? configDir : null);
+  if (statsConfigEnv) ptyEnv.CLAUDE_CONFIG_DIR = statsConfigEnv;
   if (statsInWsl) {
     Object.assign(ptyEnv, withWslEnv(ptyEnv, [
+      'CLAUDE_CONFIG_DIR',
       'TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'FORCE_COLOR',
     ]));
   }
@@ -1332,7 +2053,7 @@ ipcMain.handle('refresh-stats', async () => {
 
 // --- IPC: get-usage (lightweight, API-only, no PTY) ---
 ipcMain.handle('get-usage', async () => {
-  const cacheKey = 'usage:' + ((getSetting('global') || {}).activeAccountId || 'default');
+  const cacheKey = 'usage:' + getActiveAccount().id;
   try {
     const usage = await fetchAndTransformUsage(activeConfigDir()) || {};
     if (!usage._error && !usage._rateLimited && Object.keys(usage).length) {
@@ -1350,7 +2071,7 @@ ipcMain.handle('get-usage', async () => {
 
 // --- IPC: get-cached-usage (DB-only, no Keychain/API access) ---
 ipcMain.handle('get-cached-usage', () => {
-  const cacheKey = 'usage:' + ((getSetting('global') || {}).activeAccountId || 'default');
+  const cacheKey = 'usage:' + getActiveAccount().id;
   const cached = getSetting(cacheKey);
   return cached ? { ...cached, _cached: true } : {};
 });
@@ -1546,7 +2267,18 @@ ipcMain.handle('get-setting', (_event, key) => {
 });
 
 ipcMain.handle('set-setting', (_event, key, value) => {
+  // Turning the merged view on or off changes which accounts are read and
+  // watched, and nothing else tells the main process that it happened.
+  const wasMerged = key === 'global' ? mergedAccountView() : null;
   setSetting(key, value);
+  if (key === 'global' && mergedAccountView() !== wasMerged) {
+    invalidateProjectAccounts();
+    restartProjectsWatcher();
+    for (const account of accountsInView()) {
+      if (!isCachePopulated(account.id)) scanAccountOnce(account);
+    }
+    notifyRendererProjectsChanged();
+  }
   return { ok: true };
 });
 
@@ -1560,10 +2292,16 @@ ipcMain.handle('delete-setting', (_event, key) => {
 ipcMain.handle('get-accounts', () => getAccounts());
 
 ipcMain.handle('save-accounts', (_event, accounts) => {
-  const withDefault = accounts.find(a => a.id === 'default')
-    ? accounts
-    : [DEFAULT_ACCOUNT, ...accounts];
-  setSetting('accounts', withDefault);
+  // The default account is no longer forced back into the list — an install
+  // running everything inside WSL is allowed not to have one. What is not
+  // allowed is an empty list, which would leave the app with nothing to show.
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    return { ok: false, error: 'At least one account is required' };
+  }
+  setSetting('accounts', accounts);
+  // This call can add or remove accounts wholesale, so the merged view's watchers
+  // and caches have to follow it exactly as they follow create/delete.
+  accountsChanged();
   return { ok: true };
 });
 
@@ -1575,32 +2313,87 @@ ipcMain.handle('create-account', (_event, name) => {
   const account = { id, name, configDir };
   const existing = getAccounts();
   setSetting('accounts', [...existing, account]);
+  accountsChanged();
   return account;
 });
 
-// Distributions that hold a reachable Claude home, for the "add account" UI.
+// Claude homes reachable inside WSL, for the "add account" UI. One entry per
+// config directory, so a distribution holding several accounts contributes one
+// row each rather than only its default home.
 ipcMain.handle('discover-wsl-claude-homes', async () => {
   try { return await discoverWslClaudeHomes(); } catch { return []; }
 });
 
-// Attach an account to the Claude home inside a WSL distribution. Additive:
-// accounts without `wslDistro` keep behaving exactly as before.
-ipcMain.handle('create-wsl-account', async (_event, distro, name) => {
-  const existingForDistro = getAccounts().find(a => a.wslDistro === distro);
-  if (existingForDistro) return existingForDistro;
-  const probe = await probeWslClaudeHome(distro);
-  if (!probe) return { error: `No reachable Claude home in WSL distribution "${distro}"` };
+// Installed distributions, so a config directory discovery cannot see — one
+// outside $HOME, or one Claude has not written a projects/ into yet — can still
+// be named by hand. Read off the cached shell profiles rather than by calling
+// listWslDistros() again: that is a *synchronous* `wsl.exe --list` with a five
+// second timeout, and the renderer asks for this alongside
+// discover-wsl-claude-homes, which runs the same exec of its own. Two blocking
+// child processes on the main process freeze every terminal in the window.
+ipcMain.handle('list-wsl-distros', () => {
+  try {
+    return getShellProfiles()
+      .filter(p => p.id.startsWith('wsl:'))
+      .map(p => p.id.slice('wsl:'.length));
+  } catch { return []; }
+});
+
+// The account already attached to a config directory inside a distribution, if
+// there is one. Identity is the directory rather than the distribution: several
+// Claude accounts can live in one distribution, told apart only by which config
+// directory they read.
+function findWslAccount(distro, claudePosix) {
+  return getAccounts().find(a => a.wslDistro === distro && a.wslClaudePosix === claudePosix);
+}
+
+// A second account in the same distribution needs a name that says which one it
+// is; the default home keeps the plain distribution name it has always had.
+function wslAccountName(probe) {
+  return probe.isDefault
+    ? `WSL — ${probe.distro}`
+    : `WSL — ${probe.distro} (${probe.claudePosix.split('/').pop()})`;
+}
+
+// Attach an account to a Claude home inside a WSL distribution. `claudePosix`
+// names which config directory; without it the distribution's default ~/.claude
+// is used, which is what the single-account form of this call always meant.
+ipcMain.handle('create-wsl-account', async (_event, distro, name, claudePosix) => {
+  // Re-attaching a directory already known costs no exec, which is what the UI
+  // does every time the accounts list is redrawn behind a stale button.
+  if (claudePosix) {
+    const known = findWslAccount(distro, claudePosix);
+    if (known) return known;
+  }
+  const probe = claudePosix
+    ? await probeWslClaudeDir(distro, claudePosix)
+    : await probeWslClaudeHome(distro);
+  if (!probe) {
+    return {
+      error: claudePosix
+        ? `No directory "${claudePosix}" in WSL distribution "${distro}"`
+        : `No reachable Claude home in WSL distribution "${distro}"`,
+    };
+  }
+  const existing = findWslAccount(probe.distro, probe.claudePosix);
+  if (existing) return existing;
+
   const { randomUUID } = require('crypto');
   const id = 'wsl-' + randomUUID().replace(/-/g, '').slice(0, 12);
   const account = {
     id,
-    name: name || `WSL — ${distro}`,
+    name: name || wslAccountName(probe),
     configDir: probe.configDir,
     wslDistro: probe.distro,
     wslUncPrefix: probe.uncPrefix,
     wslHome: probe.home,
+    // What CLAUDE_CONFIG_DIR has to say inside the distribution. `configDir`
+    // above is the Windows view of this same directory and cannot stand in for
+    // it — the distribution has no idea what a UNC path is.
+    wslClaudePosix: probe.claudePosix,
   };
   setSetting('accounts', [...getAccounts(), account]);
+  accountsChanged();
   return account;
 });
 
@@ -1610,39 +2403,116 @@ ipcMain.handle('rename-account', (_event, id, name) => {
   return { ok: true };
 });
 
+// Any account can go, including the default one — an install that only ever
+// uses Claude inside WSL has no reason to keep a Windows home it never opens.
+// The one thing that cannot happen is having nothing to look at, so the last
+// account stays. Only the settings row is removed; no Claude directory on disk
+// is touched, and re-attaching the same directory brings the sessions back.
 ipcMain.handle('delete-account', (_event, id) => {
-  if (id === 'default') return { ok: false };
-  const updated = getAccounts().filter(a => a.id !== id);
-  setSetting('accounts', updated);
-  return { ok: true };
+  // Read before the list shrinks, and through getActiveAccount() rather than off
+  // the stored id: that id can name an account that is not there, in which case
+  // the account actually in effect is the first survivor — and that is the id the
+  // renderer is holding, so it is the one the answer has to be comparable with.
+  const activeId = getActiveAccount().id;
+  const remaining = getAccounts().filter(a => a.id !== id);
+  if (!remaining.length) {
+    return { ok: false, error: 'The last account cannot be removed' };
+  }
+  setSetting('accounts', remaining);
+
+  // Deleting the account on screen would otherwise leave every per-account
+  // directory pointing at one that no longer exists. activateAccount() restarts
+  // the watchers itself, which is what drops the deleted account's own.
+  if (activeId === id) {
+    activateAccount(remaining[0].id);
+    return { ok: true, activeAccountId: remaining[0].id };
+  }
+  accountsChanged();
+  return { ok: true, activeAccountId: activeId };
+});
+
+// Put the local Claude home back after it has been deleted. Without this the
+// removal is a one-way door: create-account makes a fresh empty config under
+// ~/.wootonpad rather than re-attaching ~/.claude.
+ipcMain.handle('restore-default-account', () => {
+  const existing = getAccounts();
+  const already = existing.find(a => a.id === 'default');
+  if (already) return already;
+  setSetting('accounts', [DEFAULT_ACCOUNT, ...existing]);
+  accountsChanged();
+  return DEFAULT_ACCOUNT;
 });
 
 ipcMain.handle('get-homedir', () => os.homedir());
 
-ipcMain.handle('get-active-account-id', () => {
-  return (getSetting('global') || {}).activeAccountId || 'default';
-});
+// Reports the account actually in effect rather than the stored id, which can
+// name an account that is no longer there — getActiveAccount() resolves that to
+// the first survivor and the renderer has to agree with it.
+ipcMain.handle('get-active-account-id', () => getActiveAccount().id);
 
-ipcMain.handle('set-active-account-id', (_event, accountId) => {
+// Point everything that holds a per-account directory at `accountId`. Shared
+// with delete-account, which has to do exactly this when the account being
+// removed is the one on screen.
+function activateAccount(accountId) {
   const global = getSetting('global') || {};
   global.activeAccountId = accountId;
   setSetting('global', global);
+  invalidateProjectAccounts();
 
-  // Re-init session cache for new account and trigger re-scan. Fork/plan-accept
-  // detection holds its own copy of the projects directory, so it has to be
-  // re-pointed too — otherwise it keeps watching the previous account's folder.
-  initSessionCache();
+  // The session cache resolves its account per call, so there is nothing to
+  // re-point there. Fork/plan-accept detection holds its own copy of the
+  // projects directory, so it has to follow the switch — otherwise it keeps
+  // watching the previous account's folder. The watchers are restarted for the
+  // same reason: which of them may run transition detection has just changed.
   require('./session-transitions').init({
     PROJECTS_DIR: activeProjectsDir(), activeSessions, getMainWindow: () => mainWindow, log, rekeyMcpServer,
   });
   restartProjectsWatcher();
-  populateCacheViaWorker();
+
+  // Outside the merged view the account being switched to went unwatched for as
+  // long as it was not active, so its cache has to catch up. In it, every
+  // account is watched and indexed continuously and the rescan would only
+  // repeat work already done.
+  if (!mergedAccountView() || !isCachePopulated(accountId)) {
+    const account = accountById(accountId) || getActiveAccount();
+    autoScannedAccounts.add(account.id);
+    populateCacheViaWorker(account);
+  }
+}
+
+ipcMain.handle('set-active-account-id', (_event, accountId) => {
+  activateAccount(accountId);
   return { ok: true };
 });
 
-ipcMain.handle('get-accounts-usage', async () => {
+// --- Account usage (limits) ---
+// One fetch loop for the whole app. Every account costs a network call, the API
+// answers 429 with a retry-after, and both the tray and the renderer want the same
+// numbers — so they share this result rather than each asking for their own.
+const USAGE_POLL_MS = 5 * 60 * 1000;
+// How stale a result the renderer will accept before a request refreshes it.
+const USAGE_FRESH_MS = 2 * 60 * 1000;
+// A 429 does not have to carry a usable retry-after, and without a floor of its own
+// the poll would keep asking a limited API every interval.
+const USAGE_RATE_LIMIT_MIN_MS = 60 * 1000;
+
+let usageByAccount = {};
+let usageFetchedAt = 0;
+let usageInFlight = null;
+let usagePollTimer = null;
+// Set from a 429's retry-after: no fetch is attempted before this moment.
+let usageBlockedUntil = 0;
+
+function accountsUsageSnapshot() {
+  return usageByAccount;
+}
+
+async function fetchAccountsUsage() {
   const accounts = getAccounts();
   const results = {};
+  let rateLimited = false;
+  let retryAfterSeconds = 0;
+
   await Promise.all(accounts.map(async (account) => {
     const cacheKey = 'usage:' + account.id;
     try {
@@ -1651,6 +2521,10 @@ ipcMain.handle('get-accounts-usage', async () => {
         setSetting(cacheKey, usage);
         results[account.id] = usage;
       } else {
+        if (usage?._rateLimited) {
+          rateLimited = true;
+          retryAfterSeconds = Math.max(retryAfterSeconds, usage.retryAfterSeconds || 0);
+        }
         const cached = getSetting(cacheKey);
         results[account.id] = cached ? { ...cached, _cached: true } : (usage || {});
       }
@@ -1659,7 +2533,67 @@ ipcMain.handle('get-accounts-usage', async () => {
       results[account.id] = cached ? { ...cached, _cached: true } : {};
     }
   }));
+
+  usageByAccount = results;
+  usageFetchedAt = Date.now();
+  // A rate limit applies to the token, not to one call, so hold off every account.
+  if (rateLimited) {
+    const holdMs = Math.max(retryAfterSeconds * 1000 || 0, USAGE_RATE_LIMIT_MIN_MS);
+    usageBlockedUntil = Date.now() + holdMs;
+    log.warn(`[usage] rate limited; not fetching again for ${Math.round(holdMs / 1000)}s`);
+  }
   return results;
+}
+
+// Never runs two fetches at once: a slow request would otherwise pile up behind the
+// poll interval and the renderer's own request.
+function refreshAccountsUsage() {
+  if (usageInFlight) return usageInFlight;
+  if (Date.now() < usageBlockedUntil) return Promise.resolve(usageByAccount);
+
+  usageInFlight = fetchAccountsUsage()
+    .catch((err) => {
+      log.error('[usage] refresh failed:', err?.message || String(err));
+      return usageByAccount;
+    })
+    .finally(() => { usageInFlight = null; });
+
+  usageInFlight.then(() => refreshTray()).catch(() => {});
+  return usageInFlight;
+}
+
+let resumeWatchInstalled = false;
+
+function startUsagePolling() {
+  if (usagePollTimer) return;
+  refreshAccountsUsage();
+  usagePollTimer = setInterval(() => refreshAccountsUsage(), USAGE_POLL_MS);
+  // Numbers from before a suspend are worthless, and the interval does not fire
+  // while the machine is asleep. Installed once: the tray can be switched off and
+  // on again, and a listener per switch would stack up.
+  if (!resumeWatchInstalled) {
+    try {
+      const { powerMonitor } = require('electron');
+      powerMonitor.on('resume', () => refreshAccountsUsage());
+      resumeWatchInstalled = true;
+    } catch {}
+  }
+}
+
+function stopUsagePolling() {
+  if (!usagePollTimer) return;
+  clearInterval(usagePollTimer);
+  usagePollTimer = null;
+}
+
+ipcMain.handle('get-accounts-usage', async () => {
+  // The last result only counts as fresh while it still covers every account: an
+  // account added since then has no figures in it, and the renderer asks precisely
+  // because it has just added one.
+  const ids = getAccounts().map((account) => account.id);
+  const covers = ids.length > 0 && ids.every((id) => id in usageByAccount);
+  if (covers && Date.now() - usageFetchedAt < USAGE_FRESH_MS) return usageByAccount;
+  return refreshAccountsUsage();
 });
 
 // --- Scheduled tasks ---
@@ -1718,7 +2652,7 @@ ipcMain.handle('get-active-terminals', () => {
   const terminals = [];
   for (const [sessionId, session] of activeSessions) {
     if (!session.exited && session.isPlainTerminal) {
-      terminals.push({ sessionId, projectPath: session.projectPath });
+      terminals.push({ sessionId, projectPath: session.projectPath, accountId: session.accountId });
     }
   }
   return terminals;
@@ -1750,9 +2684,15 @@ ipcMain.handle('rename-session', (_event, sessionId, name) => {
 
 // --- IPC: archive-session ---
 ipcMain.handle('read-session-jsonl', (_event, sessionId) => {
-  const folder = getCachedFolder(sessionId);
-  if (!folder) return { error: 'Session not found in cache' };
-  const jsonlPath = path.join(activeProjectsDir(), folder, sessionId + '.jsonl');
+  const cached = getCachedSession(sessionId);
+  if (!cached?.folder) return { error: 'Session not found in cache' };
+  const folder = cached.folder;
+  // The file lives in the projects directory of the account that recorded it,
+  // which in the merged view is not necessarily the active one. Outside it the
+  // active account is the only one the sidebar can offer a session from, and
+  // reading anywhere else is behaviour this view never had.
+  const account = (mergedAccountView() && accountById(cached.accountId)) || getActiveAccount();
+  const jsonlPath = path.join(getProjectsDir(account), folder, sessionId + '.jsonl');
   try {
     const content = fs.readFileSync(jsonlPath, 'utf-8');
     const entries = [];
@@ -1776,29 +2716,82 @@ ipcMain.handle('archive-session', (_event, sessionId, archived) => {
 ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, sessionOptions) => {
   if (!mainWindow) return { ok: false, error: 'no window' };
 
+  // The account a session runs under travels with the launch. The merged view
+  // shows every account's projects side by side, so which account is on screen
+  // says nothing about where this session belongs — the caller names it, for a
+  // new session from the dialog and for a resume from the session's own record.
+  // It is activated rather than merely bound to the spawn: everything the
+  // session touches afterwards — fork detection, the diffs arriving over MCP,
+  // the file panel reading its files — resolves through the active account, and
+  // those have to agree with the shell that is running.
+  //
+  // Reattaching counts as a launch for exactly the same reason, and it is the
+  // running session's own account that decides — not whatever the caller passed
+  // — which is also why this sits above the reattach branch: the reply carries
+  // the account back to the renderer, and it would otherwise report a switch
+  // that never happened.
+  //
+  // Outside the merged view the named account is ignored entirely. The list on
+  // screen is one account's own, so every launch is already that account's, and
+  // honouring the field would let a stale record in the renderer move the whole
+  // app somewhere the user never asked to go. The renderer still sends it — it
+  // is this handler, not each caller, that decides whether it counts.
+  const running = activeSessions.get(sessionId);
+  const requestedAccount = mergedAccountView()
+    ? accountById(running?.accountId || sessionOptions?.accountId)
+    : null;
+  if (requestedAccount && requestedAccount.id !== getActiveAccount().id) {
+    log.info(`[account] launch in "${requestedAccount.name || requestedAccount.id}" — activating it for session ${sessionId}`);
+    activateAccount(requestedAccount.id);
+  }
+
   // Reattach to existing session
   if (activeSessions.has(sessionId)) {
     const session = activeSessions.get(sessionId);
     session.rendererAttached = true;
-    session.firstResize = !session.isPlainTerminal;
 
-    // If TUI is in alternate screen mode, send escape to switch into it
-    if (session.altScreen && !session.isPlainTerminal) {
-      mainWindow.webContents.send('terminal-data', sessionId, '\x1b[?1049h');
+    // Hand over the screen rather than the bytes that produced it. The renderer
+    // creates the terminal before it calls this, and always a fresh one, so this
+    // lands on an empty grid — which is what the serialized form is written to be
+    // restored into. It carries the alt buffer and the cursor itself, so neither
+    // has to be arranged around it.
+    //
+    // That grid is still at xterm's default size: the renderer fits it in
+    // showSession, after this returns. Writing the screen narrow and reflowing it
+    // wide is not what SerializeAddon recommends, and it is nonetheless exact —
+    // test/terminal-mirror.test.js is what keeps that true.
+    //
+    // Live output is held for the length of the serialization rather than racing
+    // it. Serializing waits for the mirror's own parse to drain, so it is not
+    // instantaneous, and whatever arrives meanwhile belongs after the screen.
+    //
+    // The queue is held by hand rather than read back off the session: a second reattach for
+    // the same session would install a queue of its own, and this one would then
+    // flush — or null — something that is no longer its.
+    const replayQueue = [];
+    session._replayQueue = replayQueue;
+    try {
+      const screen = await serializeMirror(session.screen);
+      if (session.screen && !screen) {
+        // Nothing to restore from a screen that exists is a serialization that
+        // failed. Worth saying so: there is no repaint nudge left to cover it, so
+        // what the user sees is an empty terminal until the CLI writes again.
+        log.warn(`[mirror] session=${sessionId} serialized to nothing — reattaching with a blank screen`);
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (screen) mainWindow.webContents.send('terminal-data', sessionId, screen);
+        for (const [id, chunk] of replayQueue) {
+          mainWindow.webContents.send('terminal-data', id, chunk);
+        }
+      }
+    } finally {
+      if (session._replayQueue === replayQueue) session._replayQueue = null;
     }
 
-    // Send buffered output for reattach
-    for (const chunk of session.outputBuffer) {
-      mainWindow.webContents.send('terminal-data', sessionId, chunk);
-    }
-
-    if (!session.isPlainTerminal) {
-      // Hide cursor after buffer replay — the live PTY stream or resize nudge
-      // will re-show it at the correct position, avoiding a stale cursor artifact
-      mainWindow.webContents.send('terminal-data', sessionId, '\x1b[?25l');
-    }
-
-    return { ok: true, reattached: true, mcpActive: !!session.mcpServer };
+    // The account actually in effect, not the one the session was started under:
+    // the two differ whenever the activation above was declined, and the renderer
+    // uses this to follow a switch that really happened.
+    return { ok: true, reattached: true, mcpActive: !!session.mcpServer, accountId: getActiveAccount().id };
   }
 
   // Spawn new PTY
@@ -1879,19 +2872,39 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       // Plain terminal: interactive login shell, no claude command
       // Inject a shell function to override `claude` with a helpful message
       const claudeShim = 'claude() { echo "\\033[33mTo start a Claude session, use the + button in the sidebar.\\033[0m"; return 1; }; export -f claude 2>/dev/null;';
+      const plainEnv = {
+        ...cleanPtyEnv,
+        TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'iTerm.app', TERM_PROGRAM_VERSION: '3.6.6', FORCE_COLOR: '3', ITERM_SESSION_ID: '1',
+        CLAUDECODE: '1',
+        // ZDOTDIR trick won't work reliably; instead inject via ENV (sh/bash) or precmd
+        ENV: claudeShim,
+        BASH_ENV: claudeShim,
+      };
+      // A terminal names the account it was launched under, so the CLI run by
+      // hand in it — and everything around it that reads the variable — lands
+      // where the tab says rather than on whatever Claude home the shell would
+      // have resolved on its own.
+      //
+      // Deleted before it is set, for the reason the Claude branch below deletes
+      // it: cleanPtyEnv is a copy of the app's own environment, so a
+      // CLAUDE_CONFIG_DIR exported before launching would otherwise survive here
+      // — a Windows path that resolves to nothing inside a distribution, and
+      // another account's directory outside one. An account that cannot name a
+      // directory leaves it unset rather than inheriting that.
+      delete plainEnv.CLAUDE_CONFIG_DIR;
+      const shellConfigDir = accountShellConfigDir(activeAccount);
+      if (shellConfigDir) plainEnv.CLAUDE_CONFIG_DIR = shellConfigDir;
+      // wsl.exe hands the distribution nothing but WSLENV-listed names, so
+      // without this the assignment above is dropped at the boundary — which is
+      // where it matters most, a WSL account's tools being the ones that cannot
+      // resolve the directory any other way.
+      if (isWsl) Object.assign(plainEnv, withWslEnv(plainEnv, ['CLAUDE_CONFIG_DIR']));
       ptyProcess = pty.spawn(shell, shellArgs(shell, undefined, shellExtraArgs), {
         name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
+        cols: PTY_INITIAL_COLS,
+        rows: PTY_INITIAL_ROWS,
         cwd: isWsl ? os.homedir() : projectPath,
-        env: {
-          ...cleanPtyEnv,
-          TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'iTerm.app', TERM_PROGRAM_VERSION: '3.6.6', FORCE_COLOR: '3', ITERM_SESSION_ID: '1',
-          CLAUDECODE: '1',
-          // ZDOTDIR trick won't work reliably; instead inject via ENV (sh/bash) or precmd
-          ENV: claudeShim,
-          BASH_ENV: claudeShim,
-        },
+        env: plainEnv,
       });
       // For zsh, ENV/BASH_ENV don't apply — write the function after shell starts
       setTimeout(() => {
@@ -1990,11 +3003,22 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
         TERM: 'xterm-256color', COLORTERM: 'truecolor',
         TERM_PROGRAM: 'iTerm.app', TERM_PROGRAM_VERSION: '3.6.6', FORCE_COLOR: '3', ITERM_SESSION_ID: '1',
       };
-      // A WSL account's configDir is the Windows view of ~/.claude inside the
-      // distribution — meaningless as CLAUDE_CONFIG_DIR there, where that home
-      // is already the default. Setting it would point Claude at a path it
-      // cannot resolve.
-      if (activeAccount.id !== 'default' && !accountWslDistro(activeAccount)) {
+      // A WSL account's configDir is the Windows view of a directory inside the
+      // distribution — meaningless as CLAUDE_CONFIG_DIR there, and setting it
+      // would point Claude at a path it cannot resolve. What crosses instead is
+      // the POSIX directory, and only when it is not the ~/.claude the
+      // distribution would have picked on its own.
+      //
+      // Deleted rather than merely left unset: cleanPtyEnv is a copy of the app's
+      // own environment, so a CLAUDE_CONFIG_DIR the user happened to export before
+      // launching would otherwise survive here and outrank the active account. For
+      // a WSL session it is worse than wrong — WSLENV names it below, so a Windows
+      // path would cross into a distribution that cannot resolve it at all.
+      delete ptyEnv.CLAUDE_CONFIG_DIR;
+      const wslConfigEnv = accountWslConfigEnv(activeAccount);
+      if (wslConfigEnv) {
+        ptyEnv.CLAUDE_CONFIG_DIR = wslConfigEnv;
+      } else if (activeAccount.id !== 'default' && !accountWslDistro(activeAccount)) {
         ptyEnv.CLAUDE_CONFIG_DIR = activeAccount.configDir;
       }
       if (mcpServer) {
@@ -2009,14 +3033,17 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
       if (isWsl) {
         Object.assign(ptyEnv, withWslEnv(ptyEnv, [
           'CLAUDE_CODE_SSE_PORT',
+          // Only present for an account that is not the distribution's default
+          // Claude home; withWslEnv skips a name the environment does not carry.
+          'CLAUDE_CONFIG_DIR',
           'TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'FORCE_COLOR', 'ITERM_SESSION_ID',
         ]));
       }
 
       ptyProcess = pty.spawn(shell, shellArgs(shell, claudeCmd, shellExtraArgs), {
         name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
+        cols: PTY_INITIAL_COLS,
+        rows: PTY_INITIAL_ROWS,
         cwd: isWsl ? os.homedir() : projectPath,
         // TERM_PROGRAM=iTerm.app: Claude Code checks this to decide whether to emit
         // OSC 9 notifications (e.g. "needs your attention"). Without it, the packaged
@@ -2031,100 +3058,63 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
 
   const session = {
     pty: ptyProcess, rendererAttached: true, exited: false,
-    outputBuffer: [], outputBufferSize: 0, altScreen: false,
-    projectPath, firstResize: true,
+    screen: null,
+    projectPath,
     projectFolder, knownJsonlFiles, sessionSlug,
     isPlainTerminal, forkFrom: sessionOptions?.forkFrom || null,
+    // The account this session runs under. It outlives the active selection: a
+    // plain terminal is listed from here, and an account switch must not move it.
+    accountId: activeAccount.id,
     mcpServer, _openedAt: Date.now(),
   };
+  // Started at the size the PTY was spawned with, and resized with it, so the two
+  // never disagree about where a line wrapped. It is also where the CLI's title
+  // and notifications are read from — the id is resolved per call, since a fork or
+  // plan-accept re-keys the session under a new one while this object stays.
+  session.screen = createMirror(PTY_INITIAL_COLS, PTY_INITIAL_ROWS, {
+    osc: {
+      0: (payload) => handleOscTitle(session, session.realSessionId || sessionId, payload.slice(0, 120)),
+      9: (payload) => handleOscNotification(session, session.realSessionId || sessionId, payload),
+    },
+  });
   activeSessions.set(sessionId, session);
 
   ptyProcess.onData(data => {
     const currentId = session.realSessionId || sessionId;
 
-    // Parse OSC sequences (title changes, progress, notifications, etc.)
-    if (data.includes('\x1b]')) {
-      const oscMatches = data.matchAll(/\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
-      for (const m of oscMatches) {
-        const code = m[1];
-        const payload = m[2].slice(0, 120);
-        // Detect Claude CLI busy state from OSC 0 title (spinner chars = busy, ✳ = idle)
-        if (code === '0') {
-          const firstChar = payload.charAt(0);
-          const isBusy = firstChar.charCodeAt(0) >= 0x2800 && firstChar.charCodeAt(0) <= 0x28FF;
-          const isIdle = firstChar === '\u2733'; // ✳
-          log.debug(`[OSC 0] session=${currentId} char=U+${firstChar.charCodeAt(0).toString(16).toUpperCase()} busy=${isBusy} idle=${isIdle} wasBusy=${!!session._cliBusy}`);
-          if (isBusy && !session._cliBusy) {
-            session._cliBusy = true;
-            session._oscIdle = false;
-            log.debug(`[OSC 0] session=${currentId} → BUSY`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, true);
-            }
-          } else if (isIdle && session._cliBusy) {
-            session._cliBusy = false;
-            session._oscIdle = true;
-            log.debug(`[OSC 0] session=${currentId} → IDLE`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, false);
-            }
-          }
-        }
-      }
-      // Parse iTerm2 OSC 9 sequences (terminated by BEL \x07 or ST \x1b\\)
-      const osc9Matches = data.matchAll(/\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
-      for (const osc9 of osc9Matches) {
-        const payload = osc9[1];
-        // OSC 9;4 progress: 4;0; = clear/done, 4;1;N = running at N%, 4;2;N = error, 4;3; = indeterminate
-        if (payload.startsWith('4;')) {
-          const level = payload.split(';')[1];
-          if (level === '0') continue; // 4;0 is also used for clearing, making it unreliable as an idle signal
-          log.debug(`[OSC 9;4] session=${currentId} level=${level} payload="${payload}" wasBusy=${!!session._cliBusy}`);
-          if ((level === '1' || level === '2' || level === '3') && !session._cliBusy) {
-            session._cliBusy = true;
-            session._oscIdle = false;
-            log.debug(`[OSC 9;4] session=${currentId} → BUSY`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, true);
-            }
-          }
-        } else {
-          // Regular notification (attention, permission, etc.)
-          log.info(`[OSC 9] session=${currentId} message="${payload}"`);
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('terminal-notification', currentId, payload);
-          }
-        }
-      }
-    }
+    // OSC sequences are not read from this chunk. They used to be, by matching a
+    // whole sequence inside one PTY read, which silently dropped any that a read
+    // boundary fell inside — and a dropped OSC 9 is a permission prompt the tray
+    // never hears about. The mirror parses the same bytes with a real VT parser,
+    // which holds a partial sequence across reads and calls back once it is whole:
+    // handleOscTitle and handleOscNotification, wired in where the mirror is made.
 
     // Standalone BEL (not part of an OSC sequence)
     if (data.includes('\x07') && !data.includes('\x1b]')) {
       log.info(`[BEL] session=${currentId}`);
     }
 
-    // Track alternate screen mode (only if data contains the marker)
-    if (data.includes('\x1b[?')) {
-      if (data.includes('\x1b[?1049h') || data.includes('\x1b[?47h')) {
-        session.altScreen = true;
-        log.info(`[altscreen] session=${currentId} ON`);
-      }
-      if (data.includes('\x1b[?1049l') || data.includes('\x1b[?47l')) {
-        session.altScreen = false;
-        log.info(`[altscreen] session=${currentId} OFF`);
-      }
+    // Alternate-screen mode is not tracked from this chunk either. It was, to
+    // decide whether a reattach had to be sent \x1b[?1049h before the replay; the
+    // serialized screen carries the alt buffer itself, so nothing read the flag
+    // any more and scanning every chunk for it bought a log line.
+
+    // Every byte, unconditionally: the mirror is a copy of the screen, and a
+    // screen with a hole in it is not a smaller screen but a wrong one. It can
+    // still refuse them — xterm discards rather than buffer without bound — and
+    // the refusal must not stop the same bytes reaching the renderer below.
+    if (!writeMirror(session.screen, data) && !session._mirrorLostOutput) {
+      session._mirrorLostOutput = true;
+      log.warn(`[mirror] session=${currentId} refused output — the screen a reattach restores may be incomplete`);
     }
 
-    // Buffer output (skip resize-triggered redraws for plain terminals)
-    if (!session._suppressBuffer) {
-      session.outputBuffer.push(data);
-      session.outputBufferSize += data.length;
-      while (session.outputBufferSize > MAX_BUFFER_SIZE && session.outputBuffer.length > 1) {
-        session.outputBufferSize -= session.outputBuffer.shift().length;
-      }
-    }
-
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    // A reattach in progress is serializing the screen these bytes are part of,
+    // and it has to reach the renderer before them — a frame delivered ahead of
+    // the screen it was drawn against is the desync this whole change removes.
+    // The queue is short by construction: it drains as soon as the screen is sent.
+    if (session._replayQueue) {
+      session._replayQueue.push([currentId, data]);
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('terminal-data', currentId, data);
     }
   });
@@ -2149,19 +3139,36 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     activeSessions.delete(realId);
     // Clean up the original key too in case transition detection hasn't run yet
     activeSessions.delete(sessionId);
+    // Nothing can reattach to a session that has left the map, so the screen it
+    // was holding open has no reader left.
+    disposeMirror(session.screen);
+    session.screen = null;
+    // An exited session cannot be waiting for anything, and traySnapshot skips it
+    // on both counts now — it is gone from the map and marked exited.
+    session._attention = false;
+    refreshTray();
   });
 
   if (sessionOptions?.forkFrom) {
     log.info(`[fork-spawn] tempId=${sessionId} forkFrom=${sessionOptions.forkFrom} folder=${projectFolder} knownFiles=${knownJsonlFiles.size}`);
   }
 
-  return { ok: true, reattached: false, mcpActive: !!mcpServer };
+  return { ok: true, reattached: false, mcpActive: !!mcpServer, accountId: activeAccount.id };
 });
 
 // --- IPC: terminal-input (fire-and-forget) ---
 ipcMain.on('terminal-input', (_event, sessionId, data) => {
   const session = activeSessions.get(sessionId);
   if (session && !session.exited) {
+    // Typing into a session is the user answering it, and it is the earliest and
+    // most direct sign of that. The CLI resuming work is the other one, and it is
+    // not enough on its own: an answer that ends the turn rather than continuing
+    // it — a denied tool, a session the user then leaves — never produces one, and
+    // the mark would outlive it and claim the session is still waiting.
+    if (session._attention) {
+      session._attention = false;
+      refreshTray();
+    }
     session.pty.write(data);
   }
 });
@@ -2170,28 +3177,13 @@ ipcMain.on('terminal-input', (_event, sessionId, data) => {
 ipcMain.on('terminal-resize', (_event, sessionId, cols, rows) => {
   const session = activeSessions.get(sessionId);
   if (session && !session.exited) {
-    // For plain terminals, suppress buffering during resize to avoid
-    // accumulating prompt redraws that pollute reattach replay
-    if (session.isPlainTerminal) session._suppressBuffer = true;
-
+    // The PTY and its mirror move together. There used to be a nudge here that
+    // resized the PTY to cols + 1 and back to force a TUI to repaint on reattach:
+    // the renderer was never told about the intermediate width, so for as long as
+    // it lasted the CLI drew frames for a screen wider than the one they landed
+    // on. A reattach is handed the real screen now and has nothing to force.
     session.pty.resize(cols, rows);
-
-    if (session.isPlainTerminal) {
-      setTimeout(() => { session._suppressBuffer = false; }, 200);
-    }
-
-    // First resize: nudge to force TUI redraw on reattach (skip for plain terminals — causes duplicate prompts)
-    if (session.firstResize && !session.isPlainTerminal) {
-      session.firstResize = false;
-      setTimeout(() => {
-        try {
-          session.pty.resize(cols + 1, rows);
-          setTimeout(() => {
-            try { session.pty.resize(cols, rows); } catch {}
-          }, 50);
-        } catch {}
-      }, 50);
-    }
+    resizeMirror(session.screen, cols, rows);
   }
 });
 
@@ -2212,8 +3204,18 @@ sessionTransitions.init({ PROJECTS_DIR: activeProjectsDir(), activeSessions, get
 const { detectSessionTransitions } = sessionTransitions;
 
 // --- fs.watch on projects directory ---
-let projectsWatcher = null;
-let projectsPoller = null;
+// One watcher per account on screen. In the standard view that is a single
+// entry, exactly as before; the merged view has to hear about every account,
+// because a session it does not watch is a session the sidebar shows stale.
+let projectsWatchers = [];
+let projectsPollers = [];
+// The directories actually being watched, and a cancel for each watcher's
+// pending debounce. Both exist so a restart that would rebuild the very same set
+// can be skipped: tearing a poller down resets its mtime baseline, and every
+// change made across the gap is lost with it. In the merged view every account
+// is watched whoever is active, so an account switch asks for exactly this set.
+let watchedDirs = [];
+let watcherCancels = [];
 
 // How often the polling fallback sweeps the projects directory. Only used when
 // a recursive fs.watch cannot be trusted — see startProjectsWatcher.
@@ -2268,11 +3270,25 @@ function startProjectsPolling(watchDir, queueFolder) {
 }
 
 function startProjectsWatcher() {
-  const watchDir = activeProjectsDir();
+  for (const account of accountsInView()) {
+    startAccountWatcher(account);
+  }
+}
+
+function startAccountWatcher(account) {
+  const watchDir = getProjectsDir(account);
   if (!fs.existsSync(watchDir)) return;
+  watchedDirs.push(watchDir);
 
   const pendingFolders = new Set();
   let debounceTimer = null;
+  // A flush still queued when the watchers are torn down would refresh folders
+  // for an account that may no longer be in view.
+  watcherCancels.push(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = null;
+    pendingFolders.clear();
+  });
 
   function flushChanges() {
     debounceTimer = null;
@@ -2283,15 +3299,20 @@ function startProjectsWatcher() {
     for (const folder of folders) {
       const folderPath = path.join(watchDir, folder);
       if (fs.existsSync(folderPath)) {
-        detectSessionTransitions(folder);
-        refreshFolder(folder);
+        // Fork/plan-accept detection is bound to one projects directory — the
+        // active account's — because that is where a running session's new
+        // .jsonl appears. A watcher for another account has no session of its
+        // own to re-key.
+        if (account.id === getActiveAccount().id) detectSessionTransitions(folder);
+        refreshFolder(folder, account);
       } else {
-        deleteCachedFolder(folder, getActiveAccount().id);
+        deleteCachedFolder(folder, account.id);
       }
       changed = true;
     }
 
     if (changed) {
+      invalidateProjectAccounts();
       notifyRendererProjectsChanged();
     }
   }
@@ -2303,14 +3324,15 @@ function startProjectsWatcher() {
     debounceTimer = setTimeout(flushChanges, 500);
   }
 
-  if (activeWslDistro()) {
-    projectsPoller = startProjectsPolling(watchDir, queueFolder);
-    log.info(`[watcher] WSL-backed account: polling ${watchDir} every ${PROJECTS_POLL_MS}ms`);
+  if (accountWslDistro(account)) {
+    projectsPollers.push(startProjectsPolling(watchDir, queueFolder));
+    log.info(`[watcher] WSL-backed account "${account.name || account.id}": polling ${watchDir} every ${PROJECTS_POLL_MS}ms`);
     return;
   }
 
+  let poller = null;
   try {
-    projectsWatcher = fs.watch(watchDir, { recursive: true }, (_eventType, filename) => {
+    const watcher = fs.watch(watchDir, { recursive: true }, (_eventType, filename) => {
       if (!filename) return;
 
       // filename is relative, e.g. "folder-name/sessions-index.json" or "folder-name/abc.jsonl"
@@ -2324,25 +3346,45 @@ function startProjectsWatcher() {
       queueFolder(folder);
     });
 
-    projectsWatcher.on('error', (err) => {
+    watcher.on('error', (err) => {
       console.error('Projects watcher error:', err);
-      if (!projectsPoller) projectsPoller = startProjectsPolling(watchDir, queueFolder);
+      if (!poller) {
+        poller = startProjectsPolling(watchDir, queueFolder);
+        projectsPollers.push(poller);
+      }
     });
+    projectsWatchers.push(watcher);
   } catch (err) {
     console.error('Failed to start projects watcher:', err);
-    projectsPoller = startProjectsPolling(watchDir, queueFolder);
+    poller = startProjectsPolling(watchDir, queueFolder);
+    projectsPollers.push(poller);
   }
 }
 
+function stopProjectsWatchers() {
+  for (const cancel of watcherCancels) {
+    try { cancel(); } catch {}
+  }
+  watcherCancels = [];
+  for (const watcher of projectsWatchers) {
+    try { watcher.close(); } catch {}
+  }
+  projectsWatchers = [];
+  for (const poller of projectsPollers) {
+    clearInterval(poller);
+  }
+  projectsPollers = [];
+  watchedDirs = [];
+}
+
 function restartProjectsWatcher() {
-  if (projectsWatcher) {
-    projectsWatcher.close();
-    projectsWatcher = null;
-  }
-  if (projectsPoller) {
-    clearInterval(projectsPoller);
-    projectsPoller = null;
-  }
+  // Nothing to do when the set is already the one being asked for. An account
+  // switch inside the merged view is the case this exists for: it happens on
+  // every cross-account launch, and each restart would cost every WSL account
+  // its polling baseline.
+  const wanted = accountsInView().map(getProjectsDir).filter(d => fs.existsSync(d));
+  if (wanted.length === watchedDirs.length && wanted.every(d => watchedDirs.includes(d))) return;
+  stopProjectsWatchers();
   startProjectsWatcher();
 }
 
@@ -2391,7 +3433,9 @@ app.whenReady().then(() => {
     const profileId = globalSettings.shellProfile || SETTING_DEFAULTS.shellProfile;
     // A scheduled command belongs to its project, so one in a distribution runs
     // there — the shell setting cannot chdir into a POSIX path from Windows.
-    const distro = activeWslDistro();
+    // Which distribution follows from the project, not from whoever is active
+    // when the timer fires.
+    const distro = accountWslDistro(accountForPath(cwd));
     const inWsl = Boolean(distro) && isPosixAbsolutePath(cwd);
     const profile = resolveShell(inWsl ? 'wsl:' + distro : profileId);
     const shell = profile.path;
@@ -2424,8 +3468,16 @@ app.whenReady().then(() => {
   scheduleIpc.init(log, runScheduleCommand);
   startScheduler(log, runScheduleCommand);
 
-  // Re-index search if FTS table was recreated (e.g. tokenizer config change)
-  if (searchFtsRecreated) populateCacheViaWorker();
+  // Re-index search if FTS table was recreated (e.g. tokenizer config change).
+  // The index is global and has just been emptied, so every account on screen
+  // has to be re-read — scanning only the active one would leave the others
+  // unsearchable until something else happened to rescan them.
+  if (searchFtsRecreated) {
+    for (const account of accountsInView()) {
+      autoScannedAccounts.add(account.id);
+      populateCacheViaWorker(account);
+    }
+  }
 
   // Check for updates after launch
   if (autoUpdater) {
@@ -2434,24 +3486,33 @@ app.whenReady().then(() => {
     setInterval(() => autoUpdater.checkForUpdates().catch(e => log.error('[updater] check failed:', e?.message || String(e))), 4 * 60 * 60 * 1000);
   }
 
+  if (trayEnabledSetting()) startTray();
+
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    // A hidden window is still a window, so getAllWindows() cannot decide this.
+    showMainWindow();
   });
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // With a tray icon the app deliberately outlives its window on every platform;
+  // quitting is the tray's Quit item.
+  if (process.platform !== 'darwin' && !trayIcon.isTrayActive()) app.quit();
 });
 
+// A quit started by autoUpdater.quitAndInstall() closes the windows first and only
+// emits before-quit afterwards, so without this the close handler would hide the
+// window and the update would never be installed.
+app.on('before-quit-for-update', () => { isQuitting = true; });
+
 app.on('before-quit', () => {
+  isQuitting = true;
+  stopTray();
   // Shut down all MCP servers
   shutdownAllMcp();
 
-  // Close filesystem watcher
-  if (projectsWatcher) {
-    projectsWatcher.close();
-    projectsWatcher = null;
-  }
+  // Close filesystem watchers
+  stopProjectsWatchers();
 
 
   // Kill all PTY processes on quit

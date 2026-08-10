@@ -6,7 +6,7 @@
 // --- New session dialog ---
 async function resolveDefaultSessionOptions(project) {
   const effective = await window.api.getEffectiveSettings(project.projectPath);
-  const options = {};
+  const options = { accountId: defaultAccountIdForProject(project) };
   if (effective.dangerouslySkipPermissions) {
     options.dangerouslySkipPermissions = true;
   } else if (effective.permissionMode) {
@@ -26,11 +26,18 @@ async function resolveDefaultSessionOptions(project) {
 async function forkSession(session, project) {
   const options = await resolveDefaultSessionOptions(project);
   options.forkFrom = session.sessionId;
+  // `claude --resume <id>` only finds the session in the Claude home that
+  // recorded it, so a fork runs under the forked session's account — which in a
+  // project two accounts share is not the project's default.
+  options.accountId = session.accountId || options.accountId;
   launchNewSession(project, options);
 }
 
 async function launchScheduleCreator(project) {
   const options = await resolveDefaultSessionOptions(project);
+  // create-schedule-session seeds the .jsonl in the active account's projects
+  // directory, so that is the account the session has to be resumed under.
+  options.accountId = activeAccountId;
   // Pre-create a JSONL session with the schedule creation prompt, then resume into it
   const result = await window.api.createScheduleSession(project.projectPath);
   if (!result || !result.sessionId) return;
@@ -46,6 +53,7 @@ async function launchScheduleCreator(project) {
     messageCount: 1,
     modified: new Date().toISOString(),
     created: new Date().toISOString(),
+    accountId: options.accountId,
   };
 
   // Inject into sidebar
@@ -71,6 +79,7 @@ async function launchScheduleCreator(project) {
     entry.closed = true;
     return;
   }
+  noteLaunchedAccount(openResult);
   if (typeof setSessionMcpActive === 'function') setSessionMcpActive(result.sessionId, !!openResult.mcpActive);
   showSession(result.sessionId);
   pollActiveSessions();
@@ -88,6 +97,9 @@ async function showNewSessionPopover(project, anchorEl) {
 async function launchTerminalSession(project) {
   const sessionId = crypto.randomUUID();
   const projectPath = project.projectPath;
+  // A terminal opens in the project's own account: on a WSL-backed one that is
+  // what decides which distribution the shell runs in.
+  const accountId = project.accountId || defaultAccountIdForProject(project);
   const session = {
     sessionId,
     summary: 'Terminal',
@@ -100,6 +112,7 @@ async function launchTerminalSession(project) {
     modified: new Date().toISOString(),
     created: new Date().toISOString(),
     type: 'terminal',
+    accountId,
   };
 
   // Track as pending
@@ -120,12 +133,16 @@ async function launchTerminalSession(project) {
 
   const entry = createTerminalEntry(session);
 
-  const result = await window.api.openTerminal(sessionId, projectPath, true, { type: 'terminal' });
+  const result = await window.api.openTerminal(sessionId, projectPath, true, { type: 'terminal', accountId });
   if (!result.ok) {
     entry.terminal.write(`\r\nError: ${result.error}\r\n`);
     entry.closed = true;
     return;
   }
+  noteLaunchedAccount(result);
+  // Which account it actually got — the request can be declined, and the
+  // sidebar entry injected above must not keep claiming otherwise.
+  if (result.accountId) session.accountId = result.accountId;
 
   showSession(sessionId);
   pollActiveSessions();
@@ -133,7 +150,14 @@ async function launchTerminalSession(project) {
 
 async function showNewSessionDialog(project) {
   const effective = await window.api.getEffectiveSettings(project.projectPath);
-  window.vueDialogs?.openNewSession(project, effective, (options) => launchNewSession(project, options));
+  // Which account the session runs under is a launch decision like the
+  // permission mode, so the dialog offers it — reading the account list off the
+  // store, and showing the field only where there is something to choose.
+  window.vueDialogs?.openNewSession(
+    project, effective,
+    (options) => launchNewSession(project, options),
+    defaultAccountIdForProject(project),
+  );
 }
 
 async function showResumeSessionDialog(session) {
