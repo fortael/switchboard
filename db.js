@@ -154,6 +154,18 @@ const migrations = [
       )
     `);
   },
+  // v8: Summaries were cut to 120 characters before their markup was stripped,
+  // so any first message wrapped in tags kept whatever tag the cut landed inside
+  // — a session started with /clear was titled "/clear clear </com". The cut now
+  // happens last, in read-session-file.js, but every summary already in the cache
+  // was written by the old order. Clear it so a re-index rewrites them.
+  (db) => {
+    try { db.exec('DELETE FROM session_cache'); } catch {}
+    try { db.exec('DELETE FROM cache_meta'); } catch {}
+    try { db.exec('DELETE FROM search_map'); } catch {}
+    try { db.exec('DROP TABLE IF EXISTS search_fts'); } catch {}
+    searchFtsRecreated = true;
+  },
 ];
 
 const currentDbVersion = (() => {

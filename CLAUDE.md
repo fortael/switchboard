@@ -61,6 +61,7 @@ Switchboard is an **Electron app** that acts as a session manager and IDE emulat
 | `session-cache.js`                       | In-memory + DB cache management; incremental folder refresh                                                                                                |
 | `session-transitions.js`                 | Detects fork/plan-accept transitions in active PTY sessions by watching for new `.jsonl` files                                                             |
 | `terminal-mirror.js`                     | Headless xterm per live PTY in the main process — the screen a reattach is restored from                                                                   |
+| `read-session-file.js`                   | Parses one `.jsonl` into a session row; the only place a session's title is derived. Strip markup **before** cutting to length, never after                 |
 | `mcp-bridge.js`                          | Per-session WebSocket MCP server — registers Switchboard as a VS Code–compatible IDE so Claude CLI sends diffs/file-opens here instead of to a real editor |
 | `derive-project-path.js`                 | Decodes encoded folder names back to filesystem paths                                                                                                      |
 | `encode-project-path.js`                 | Encodes a filesystem path to the `~/.claude/projects/<folder>` naming convention                                                                           |
