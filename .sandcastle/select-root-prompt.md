@@ -32,10 +32,10 @@ A root is the unit of one pull request: an epic whose children are the work, or 
 
 # OUTPUT
 
-`branch` is the root's `branchName` from Linear, verbatim. `prTitle` is a conventional-commit style title ending with the root id, e.g. `feat(session): descriptive Session title (VIN-126)`. `prBody` is three lines: the Linear URL, the goal in one sentence, and `Draft — built by sandcastle, body rewritten at the end of the run.` Write both in the language of the root issue.
+`branch` is the root's `branchName` from Linear, verbatim. `prTitle` is a conventional-commit style title ending with the root id, e.g. `feat(session): descriptive Session title (VIN-XXX)`. `prBody` is three lines: the Linear URL, the goal in one sentence, and `Draft — built by sandcastle, body rewritten at the end of the run.` Write both in the language of the root issue.
 
 <root>
-{"id":"VIN-126","title":"…","branch":"feature/vin-126","prTitle":"…","prBody":"…"}
+{"id":"VIN-XXX","title":"…","branch":"feature/VIN-XXX","prTitle":"…","prBody":"…"}
 </root>
 
 Always emit the `<root>` tag.
