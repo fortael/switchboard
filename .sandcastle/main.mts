@@ -1,75 +1,132 @@
-// Parallel Planner with Review — four-phase orchestration loop
+// Epic orchestrator: `npm run sandcastle [VIN-XXX]` drives one Linear epic to a single draft PR.
+// Every decision (root, plan, code, verdicts, merge, summary) is made by an agent through a
+// prompt in this folder; this file only sequences them and does host-side git/gh transport.
 //
-// This template drives a multi-phase workflow:
-//   Phase 1 (Plan):             An opus agent analyzes open issues, builds a
-//                               dependency graph, and outputs a <plan> JSON
-//                               listing unblocked issues with branch names.
-//   Phase 2 (Execute + Review): For each issue, a sandbox is created via
-//                               createSandbox(). The implementer runs first
-//                               (100 iterations). If it produces commits, a
-//                               reviewer runs in the same sandbox on the same
-//                               branch (1 iteration). All issue pipelines run
-//                               concurrently via Promise.allSettled().
-//   Phase 3 (Merge):            A single agent merges all completed branches
-//                               into the current branch.
-//   Phase 4 (Summary):          After the loop, one agent writes an end-of-run
-//                               report (what landed, what failed, next steps)
-//                               to .sandcastle/logs/summary-<timestamp>.md.
-//
-// The outer loop repeats up to MAX_ITERATIONS times so that newly unblocked
-// issues are picked up after each round of merges.
-//
-// Usage:
-//   npx tsx .sandcastle/main.mts
-// Or add to package.json:
-//   "scripts": { "sandcastle": "npx tsx .sandcastle/main.mts" }
+// Flow: select-root → bootstrap integration branch + draft PR → loop { plan → issues in
+// parallel (implement → review/fix) → merge } → epic review/fix → summary → PR body.
+// Idempotent: branches, worktrees and Linear state survive a crash, the next run resumes.
 
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
-import { execSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { z } from "zod";
 
-// The planner emits its plan as JSON inside <plan> tags; Output.object extracts
-// and validates it against this schema. We use Zod here, but any Standard
-// Schema validator works just as well — Valibot, ArkType, etc. See
-// https://standardschema.dev.
+const MODEL = "claude-opus-4-8";
+const MAX_ITERATIONS = 10;
+const MAX_REVIEW_ROUNDS = 3;
+const IMPLEMENT_ITERATIONS = 100;
+const FIX_ITERATIONS = 20;
+const DIR = ".sandcastle";
+const LOCK = `${DIR}/run.lock`;
+
+const agent = sandcastle.claudeCode(MODEL);
+const hooks = { sandbox: { onSandboxReady: [{ command: "npm install" }] } };
+const copyToWorktree = ["node_modules"];
+const promptFile = (name: string) => `${DIR}/${name}-prompt.md`;
+
+const rootSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  branch: z.string(),
+  prTitle: z.string(),
+  prBody: z.string(),
+}).nullable();
 const planSchema = z.object({
   issues: z.array(
     z.object({ id: z.string(), title: z.string(), branch: z.string() }),
   ),
+  done: z.boolean(),
+  notes: z.string().optional(),
+});
+const reviewSchema = z.object({
+  verdict: z.enum(["approve", "changes"]),
+  notes: z.string(),
 });
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Host helpers
 // ---------------------------------------------------------------------------
 
-// Maximum number of plan→execute→merge cycles before stopping.
-// Raise this if your backlog is large; lower it for a quick smoke-test run.
-const MAX_ITERATIONS = 10;
+function run(cmd: string, args: string[], input?: string): string {
+  return execFileSync(cmd, args, {
+    encoding: "utf8",
+    input,
+    stdio: ["pipe", "pipe", "inherit"],
+  }).trim();
+}
 
-// Hooks run inside the sandbox before the agent starts each iteration.
-// npm install ensures the sandbox always has fresh dependencies.
-const hooks = {
-  sandbox: { onSandboxReady: [{ command: "npm install" }] },
-};
+function ok(cmd: string, args: string[]): boolean {
+  try {
+    execFileSync(cmd, args, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-// Copy node_modules from the host into the worktree before each sandbox
-// starts. Avoids a full npm install from scratch; the hook above handles
-// platform-specific binaries and any packages added since the last copy.
-const copyToWorktree = ["node_modules"];
+const git = (...args: string[]) => run("git", args);
+const gitOk = (...args: string[]) => ok("git", args);
+
+function commitsAhead(base: string, branch: string): number {
+  try {
+    return Number(git("rev-list", "--count", `${base}..${branch}`));
+  } catch {
+    return 0;
+  }
+}
+
+// Same rules as sandcastle's Output helpers: last tag wins, code fences unwrapped.
+function lastTag(stdout: string, tag: string): string {
+  const matches = [
+    ...stdout.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g")),
+  ];
+  const raw = matches.at(-1)?.[1];
+  if (raw === undefined) throw new Error(`<${tag}> missing in agent output`);
+  return raw.trim().replace(/^```\w*\n?/, "").replace(/\n?```$/, "").trim();
+}
+
+function parseTag<T>(stdout: string, tag: string, schema: z.ZodType<T>): T {
+  return schema.parse(JSON.parse(lastTag(stdout, tag)));
+}
+
+const list = (items: string[]) => items.map((i) => `- ${i}`).join("\n");
+
+// launchd fires hourly; a run can outlast that, so refuse to overlap.
+function acquireLock(): void {
+  if (existsSync(LOCK)) {
+    const pid = Number(readFileSync(LOCK, "utf8"));
+    let alive = false;
+    try {
+      process.kill(pid, 0);
+      alive = true;
+    } catch {}
+    if (alive) {
+      console.log(`Another run is active (pid ${pid}). Exiting.`);
+      process.exit(0);
+    }
+  }
+  writeFileSync(LOCK, String(process.pid));
+  process.on("exit", () => rmSync(LOCK, { force: true }));
+}
 
 // ---------------------------------------------------------------------------
-// Run log — fed to the final summary agent
+// Run log — fed to the summary agent
 // ---------------------------------------------------------------------------
 
-type IssueOutcome = "committed" | "no-commits" | "failed";
 type IssueRecord = {
   id: string;
   title: string;
   branch: string;
-  outcome: IssueOutcome;
-  commits: string[];
+  outcome: "progress" | "no-progress" | "failed";
+  ahead: number;
+  reviews: string[];
   error?: string;
 };
 type IterationRecord = {
@@ -78,206 +135,274 @@ type IterationRecord = {
   merged: boolean;
 };
 
-const startSha = execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
 const runLog: IterationRecord[] = [];
 let stopReason = `reached MAX_ITERATIONS (${MAX_ITERATIONS})`;
+let childrenDone = false;
+let epicVerdict: "approve" | "changes" | "skipped" = "skipped";
+let epicNotes = "";
+
+function formatRunLog(): string {
+  const iterations =
+    runLog.length === 0
+      ? "_No iteration ran any issue._"
+      : runLog
+          .map(({ iteration, issues, merged }) =>
+            [
+              `- Iteration ${iteration} (${merged ? "merged" : "not merged"}):`,
+              ...issues.map((i) => {
+                const detail =
+                  i.outcome === "failed"
+                    ? ` — ${i.error}`
+                    : ` — ${i.ahead} commit(s) ahead, reviews: ${i.reviews.join(", ") || "none"}`;
+                return `  - ${i.id} (${i.branch}) [${i.outcome}] ${i.title}${detail}`;
+              }),
+            ].join("\n"),
+          )
+          .join("\n");
+  return [
+    `Stop reason: ${stopReason}`,
+    `All children done: ${childrenDone}`,
+    `Epic review: ${epicVerdict}${epicNotes ? ` — ${epicNotes}` : ""}`,
+    "",
+    iterations,
+  ].join("\n");
+}
 
 // ---------------------------------------------------------------------------
-// Main loop
-//
-// Wrapped in try/catch so an aborted run (planner output invalid, merger
-// crash, ...) still ends with the summary phase.
+// Phase 0: select root + bootstrap integration branch and draft PR (host)
+// ---------------------------------------------------------------------------
+
+acquireLock();
+const rootArg = process.argv[2] ?? "";
+console.log(`\n=== select-root ${rootArg || "(discover)"} ===\n`);
+
+const rootRun = await sandcastle.run({
+  sandbox: docker(),
+  agent,
+  name: "select-root",
+  promptFile: promptFile("select-root"),
+  promptArgs: { ROOT_ARG: rootArg },
+  output: sandcastle.Output.object({
+    tag: "root",
+    schema: rootSchema,
+    maxRetries: 1,
+  }),
+});
+if (rootRun.output === null) {
+  console.log("Nothing workable in the tracker. Exiting.");
+  process.exit(0);
+}
+const root = rootRun.output;
+const integration = root.branch;
+console.log(`Root ${root.id}: ${root.title} → ${integration}`);
+
+git("fetch", "origin", "--prune");
+const localExists = gitOk("show-ref", "--verify", "--quiet", `refs/heads/${integration}`);
+const remoteExists = gitOk("show-ref", "--verify", "--quiet", `refs/remotes/origin/${integration}`);
+if (!localExists && remoteExists) {
+  git("branch", "--track", integration, `origin/${integration}`);
+} else if (!localExists) {
+  // Empty seed commit without checkout: gh refuses a PR with zero commits over main.
+  const sha = git(
+    "commit-tree", "origin/main^{tree}", "-p", "origin/main",
+    "-m", `chore(${root.id.toLowerCase()}): open integration branch ${integration}`,
+  );
+  git("update-ref", `refs/heads/${integration}`, sha);
+} else if (remoteExists && gitOk("merge-base", "--is-ancestor", integration, `origin/${integration}`)) {
+  // Refused when checked out in a stale worktree; createSandbox fast-forwards that case.
+  gitOk("branch", "-f", integration, `origin/${integration}`);
+}
+
+const integ = await sandcastle.createSandbox({
+  branch: integration,
+  baseBranch: "origin/main",
+  sandbox: docker(),
+  hooks,
+  copyToWorktree,
+});
+const pushIntegration = () => git("push", "-u", "origin", integration);
+pushIntegration();
+
+if (!ok("gh", ["pr", "view", integration, "--json", "number"])) {
+  run(
+    "gh",
+    ["pr", "create", "--draft", "--base", "main", "--head", integration,
+      "--title", root.prTitle, "--body-file", "-"],
+    root.prBody,
+  );
+}
+const prUrl = run("gh", ["pr", "view", integration, "--json", "url", "--jq", ".url"]);
+console.log(`PR: ${prUrl}`);
+
+// ---------------------------------------------------------------------------
+// Per-issue pipeline: implement → (review → fix)* on its own branch/sandbox
+// ---------------------------------------------------------------------------
+
+async function runIssue(issue: {
+  id: string;
+  title: string;
+  branch: string;
+}): Promise<{ reviews: string[] }> {
+  const sandbox = await sandcastle.createSandbox({
+    branch: issue.branch,
+    baseBranch: integration,
+    sandbox: docker(),
+    hooks,
+    copyToWorktree,
+  });
+  const reviews: string[] = [];
+  try {
+    await sandbox.run({
+      name: "implementer",
+      agent,
+      maxIterations: IMPLEMENT_ITERATIONS,
+      promptFile: promptFile("implement"),
+      promptArgs: {
+        TASK_ID: issue.id,
+        ISSUE_TITLE: issue.title,
+        BRANCH: issue.branch,
+        INTEGRATION_BRANCH: integration,
+        ROOT_ID: root.id,
+      },
+    });
+    if (commitsAhead(integration, issue.branch) === 0) return { reviews };
+
+    for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
+      const result = await sandbox.run({
+        name: "reviewer",
+        agent,
+        promptFile: promptFile("review"),
+        promptArgs: {
+          TASK_ID: issue.id,
+          BRANCH: issue.branch,
+          TARGET_BRANCH: integration,
+        },
+      });
+      const review = parseTag(result.stdout, "review", reviewSchema);
+      reviews.push(review.verdict);
+      if (review.verdict === "approve") break;
+      await sandbox.run({
+        name: "fixer",
+        agent,
+        maxIterations: FIX_ITERATIONS,
+        promptFile: promptFile("fix-review"),
+        promptArgs: {
+          TASK_ID: issue.id,
+          BRANCH: issue.branch,
+          NOTES: review.notes,
+        },
+      });
+    }
+    return { reviews };
+  } finally {
+    await sandbox.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main loop: plan → issues → merge
 // ---------------------------------------------------------------------------
 
 try {
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
-    // -------------------------------------------------------------------------
-    // Phase 1: Plan
-    //
-    // The planning agent (opus, for deeper reasoning) reads the open issue list,
-    // builds a dependency graph, and selects the issues that can be worked in
-    // parallel right now (i.e., no blocking dependencies on other open issues).
-    //
-    // It outputs a <plan> JSON block — Output.object parses and validates it.
-    // -------------------------------------------------------------------------
-    const plan = await sandcastle.run({
-      hooks,
-      sandbox: docker(),
+    const planRun = await integ.run({
       name: "planner",
-      // One iteration is enough: the planner just needs to read and reason,
-      // not write code. (Structured output requires maxIterations: 1.)
-      maxIterations: 1,
-      // Opus for planning: dependency analysis benefits from deeper reasoning.
-      agent: sandcastle.claudeCode("claude-opus-4-8"),
-      promptFile: "./.sandcastle/plan-prompt.md",
-      // Extract and validate the <plan> JSON into a typed object. Throws
-      // StructuredOutputError if the tag is missing, the JSON is malformed, or
-      // validation fails — which aborts the loop.
-      output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
+      agent,
+      promptFile: promptFile("plan"),
+      promptArgs: { ROOT_ID: root.id, INTEGRATION_BRANCH: integration },
     });
+    const plan = parseTag(planRun.stdout, "plan", planSchema);
+    if (plan.notes) console.log(`Planner: ${plan.notes}`);
 
-    const issues = plan.output.issues;
-
-    if (issues.length === 0) {
-      // No unblocked work — either everything is done or everything is blocked.
-      console.log("No unblocked issues to work on. Exiting.");
-      stopReason = "no unblocked issues left";
+    if (plan.done || plan.issues.length === 0) {
+      childrenDone = plan.done;
+      stopReason = plan.done ? "all children done" : "no workable issue";
       break;
     }
-
-    console.log(
-      `Planning complete. ${issues.length} issue(s) to work in parallel:`,
-    );
-    for (const issue of issues) {
+    for (const issue of plan.issues) {
       console.log(`  ${issue.id}: ${issue.title} → ${issue.branch}`);
     }
 
-    // -------------------------------------------------------------------------
-    // Phase 2: Execute + Review
-    //
-    // For each issue, create a sandbox via createSandbox() so the implementer
-    // and reviewer share the same sandbox instance per branch. The implementer
-    // runs first; if it produces commits, the reviewer runs in the same sandbox.
-    //
-    // Promise.allSettled means one failing pipeline doesn't cancel the others.
-    // -------------------------------------------------------------------------
-
-    const settled = await Promise.allSettled(
-      issues.map(async (issue) => {
-        const sandbox = await sandcastle.createSandbox({
-          branch: issue.branch,
-          sandbox: docker(),
-          hooks,
-          copyToWorktree,
-        });
-
-        try {
-          // Run the implementer
-          const implement = await sandbox.run({
-            name: "implementer",
-            maxIterations: 100,
-            agent: sandcastle.claudeCode("claude-opus-4-8"),
-            promptFile: "./.sandcastle/implement-prompt.md",
-            promptArgs: {
-              TASK_ID: issue.id,
-              ISSUE_TITLE: issue.title,
-              BRANCH: issue.branch,
-            },
-          });
-
-          // Only review if the implementer produced commits
-          if (implement.commits.length > 0) {
-            const review = await sandbox.run({
-              name: "reviewer",
-              maxIterations: 1,
-              agent: sandcastle.claudeCode("claude-opus-4-8"),
-              promptFile: "./.sandcastle/review-prompt.md",
-              promptArgs: {
-                BRANCH: issue.branch,
-              },
-            });
-
-            // Merge commits from both runs so the merge phase sees all of them.
-            // Each sandbox.run() only returns commits from its own run.
-            return {
-              ...review,
-              commits: [...implement.commits, ...review.commits],
-            };
-          }
-
-          return implement;
-        } finally {
-          await sandbox.close();
-        }
-      }),
-    );
-
-    // Log any agents that threw (network error, sandbox crash, etc.).
-    for (const [i, outcome] of settled.entries()) {
-      if (outcome.status === "rejected") {
-        console.error(
-          `  ✗ ${issues[i]!.id} (${issues[i]!.branch}) failed: ${outcome.reason}`,
-        );
-      }
-    }
+    const settled = await Promise.allSettled(plan.issues.map(runIssue));
 
     const record: IterationRecord = {
       iteration,
       merged: false,
       issues: settled.map((outcome, i) => {
-        const issue = issues[i]!;
+        const issue = plan.issues[i]!;
+        const ahead = commitsAhead(integration, issue.branch);
+        const base = { ...issue, ahead, reviews: [] as string[] };
         if (outcome.status === "rejected") {
-          return {
-            ...issue,
-            outcome: "failed",
-            commits: [],
-            error: String(outcome.reason),
-          };
+          console.error(`  ✗ ${issue.id} failed: ${outcome.reason}`);
+          return { ...base, outcome: "failed", error: String(outcome.reason) };
         }
-        const commits = outcome.value.commits.map((c) => c.sha.slice(0, 7));
         return {
-          ...issue,
-          outcome: commits.length > 0 ? "committed" : "no-commits",
-          commits,
+          ...base,
+          reviews: outcome.value.reviews,
+          outcome: ahead > 0 ? "progress" : "no-progress",
         };
       }),
     };
     runLog.push(record);
 
-    // Only pass branches that actually produced commits to the merge phase.
-    // An agent that ran successfully but made no commits has nothing to merge.
-    const completedIssues = settled
-      .map((outcome, i) => ({ outcome, issue: issues[i]! }))
-      .filter(
-        (entry) =>
-          entry.outcome.status === "fulfilled" &&
-          entry.outcome.value.commits.length > 0,
-      )
-      .map((entry) => entry.issue);
-
-    const completedBranches = completedIssues.map((i) => i.branch);
-
-    console.log(
-      `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
-    );
-    for (const branch of completedBranches) {
-      console.log(`  ${branch}`);
+    if (settled.every((s) => s.status === "rejected")) {
+      stopReason = "every pipeline failed (credits exhausted?)";
+      break;
     }
 
-    if (completedBranches.length === 0) {
-      // All agents ran but none made commits — nothing to merge this cycle.
-      console.log("No commits produced. Nothing to merge.");
-      continue;
+    // Progress = commits on the branch not yet in integration, whatever run produced them.
+    const mergeable = record.issues.filter((i) => i.ahead > 0);
+    if (mergeable.length === 0) {
+      stopReason = "no branch progressed this iteration";
+      break;
     }
 
-    // -------------------------------------------------------------------------
-    // Phase 3: Merge
-    //
-    // One agent merges all completed branches into the current branch,
-    // resolving any conflicts and running tests to confirm everything works.
-    //
-    // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
-    // uses to know which branches to merge and which issues to close.
-    // -------------------------------------------------------------------------
-    await sandcastle.run({
-      hooks,
-      sandbox: docker(),
+    await integ.run({
       name: "merger",
-      maxIterations: 1,
-      agent: sandcastle.claudeCode("claude-opus-4-8"),
-      promptFile: "./.sandcastle/merge-prompt.md",
+      agent,
+      promptFile: promptFile("merge"),
       promptArgs: {
-        // A markdown list of branch names, one per line.
-        BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
-        // A markdown list of issue IDs and titles, one per line.
-        ISSUES: completedIssues.map((i) => `- ${i.id}: ${i.title}`).join("\n"),
+        ROOT_ID: root.id,
+        INTEGRATION_BRANCH: integration,
+        BRANCHES: list(mergeable.map((i) => i.branch)),
+        ISSUES: list(mergeable.map((i) => `${i.id}: ${i.title}`)),
       },
     });
-
+    pushIntegration();
     record.merged = true;
-    console.log("\nBranches merged.");
+  }
+
+  // -------------------------------------------------------------------------
+  // Epic review: only once every child landed; fixes go straight on integration.
+  // -------------------------------------------------------------------------
+  if (childrenDone) {
+    for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
+      console.log(`\n=== Epic review ${round}/${MAX_REVIEW_ROUNDS} ===\n`);
+      const result = await integ.run({
+        name: "epic-reviewer",
+        agent,
+        promptFile: promptFile("epic-review"),
+        promptArgs: { ROOT_ID: root.id, INTEGRATION_BRANCH: integration },
+      });
+      const review = parseTag(result.stdout, "review", reviewSchema);
+      epicVerdict = review.verdict;
+      epicNotes = review.notes;
+      if (review.verdict === "approve") break;
+      await integ.run({
+        name: "epic-fixer",
+        agent,
+        maxIterations: FIX_ITERATIONS,
+        promptFile: promptFile("fix-review"),
+        promptArgs: {
+          TASK_ID: root.id,
+          BRANCH: integration,
+          NOTES: review.notes,
+        },
+      });
+      pushIntegration();
+    }
   }
 } catch (error) {
   stopReason = `aborted: ${error}`;
@@ -285,60 +410,42 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4: Summary
-//
-// One read-only agent turns the run log + git history + tracker state into a
-// human-facing report: what landed, what failed and why, what to do next.
+// Summary → PR body, Linear comment on the root, log file
 // ---------------------------------------------------------------------------
-function formatIssueRecord(i: IssueRecord): string {
-  let detail = "";
-  if (i.outcome === "failed") detail = ` — ${i.error}`;
-  else if (i.outcome === "committed") detail = ` — ${i.commits.join(", ")}`;
-  return `  - ${i.id} (${i.branch}) [${i.outcome}] ${i.title}${detail}`;
-}
 
-const runLogMarkdown =
-  runLog.length === 0
-    ? "_No iteration executed any issue._"
-    : runLog
-        .map(({ iteration, issues, merged }) => {
-          const hasCommits = issues.some((i) => i.outcome === "committed");
-          let status = "nothing to merge";
-          if (hasCommits)
-            status = merged ? "merged into current branch" : "NOT merged";
-          return [
-            `- Iteration ${iteration} (${status}):`,
-            ...issues.map(formatIssueRecord),
-          ].join("\n");
-        })
-        .join("\n");
-
-const rawRunLog = `Stop reason: ${stopReason}\n\n${runLogMarkdown}`;
-
-// Fall back to the raw run log if the summarizer itself fails.
-let summaryText: string;
+const rawRunLog = formatRunLog();
+let summaryText: string | undefined;
 try {
-  const summary = await sandcastle.run({
-    hooks,
-    sandbox: docker(),
+  const result = await integ.run({
     name: "summarizer",
-    maxIterations: 1,
-    agent: sandcastle.claudeCode("claude-opus-4-8"),
-    promptFile: "./.sandcastle/summary-prompt.md",
-    promptArgs: { RUN_LOG: rawRunLog, START_SHA: startSha },
-    output: sandcastle.Output.string({ tag: "summary" }),
+    agent,
+    promptFile: promptFile("summary"),
+    promptArgs: {
+      ROOT_ID: root.id,
+      INTEGRATION_BRANCH: integration,
+      PR_URL: prUrl,
+      EPIC_VERDICT: epicVerdict,
+      RUN_LOG: rawRunLog,
+    },
   });
-  summaryText = summary.output;
+  summaryText = lastTag(result.stdout, "summary");
 } catch (error) {
   console.error(`\nSummarizer failed: ${error}`);
-  summaryText = `# Run log (summarizer failed)\n\n${rawRunLog}`;
+} finally {
+  await integ.close();
 }
 
-const summaryPath = `.sandcastle/logs/summary-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
-mkdirSync(".sandcastle/logs", { recursive: true });
-writeFileSync(summaryPath, summaryText);
-
-console.log(
-  `\n=== Run summary ===\n\n${summaryText}\n\nSaved to ${summaryPath}`,
+const summaryPath = `${DIR}/logs/summary-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
+mkdirSync(`${DIR}/logs`, { recursive: true });
+writeFileSync(
+  summaryPath,
+  summaryText ?? `# Run log (summarizer failed)\n\n${rawRunLog}`,
 );
-console.log("\nAll done.");
+
+if (summaryText) {
+  run("gh", ["pr", "edit", integration, "--body-file", "-"], summaryText);
+  if (epicVerdict === "approve") ok("gh", ["pr", "ready", integration]);
+}
+
+console.log(`\n=== Run summary ===\n\n${summaryText ?? rawRunLog}\n\nSaved to ${summaryPath}`);
+console.log(`PR (${epicVerdict === "approve" ? "ready for review" : "draft"}): ${prUrl}`);

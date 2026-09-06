@@ -1,55 +1,37 @@
 # TASK
 
-Review the code changes on branch `{{BRANCH}}` and improve code clarity, consistency, and maintainability while preserving exact functionality.
+Review branch `{{BRANCH}}` for {{TASK_ID}} against `{{TARGET_BRANCH}}` and return a verdict. Read-only: a fixer applies your notes.
 
 # CONTEXT
 
-## Branch diff
+## Issue
+
+!`linear issue view {{TASK_ID}} --json --no-pager | jq '{identifier,title,description}'`
+
+## Diff
 
 !`git diff {{TARGET_BRANCH}}...{{BRANCH}}`
 
-## Commits on this branch
+## Commits
 
 !`git log {{TARGET_BRANCH}}..{{BRANCH}} --oneline`
 
-# REVIEW PROCESS
+# REVIEW
 
-1. **Understand the change**: Read the diff and commits above to understand the intent.
+Run `npm test`. Then check, in order:
 
-2. **Analyze for improvements**: Look for opportunities to:
-   - Reduce unnecessary complexity and nesting
-   - Eliminate redundant code and abstractions
-   - Improve readability through clear variable and function names
-   - Consolidate related logic
-   - Remove unnecessary comments that describe obvious code
-   - Avoid nested ternary operators - prefer switch statements or if/else chains
-   - Choose clarity over brevity - explicit code is often better than overly compact code
+1. **Spec** — every acceptance criterion of the issue is met; nothing outside the issue's scope changed.
+2. **Correctness** — edge cases, unsafe casts or `any`, injection, credential leaks, behaviour without a test.
+3. **Clarity** — needless complexity or nesting, duplication, naming, nested ternaries, comments that paraphrase the code. Standards: @.sandcastle/CODING_STANDARDS.md.
 
-3. **Check correctness**:
-   - Does the implementation match the intent? Are edge cases handled?
-   - Are new/changed behaviours covered by tests?
-   - Are there unsafe casts, `any` types, or unchecked assumptions?
-   - Does the change introduce injection vulnerabilities, credential leaks, or other security issues?
+`changes` is for what must land before merge. A nit that hurts nothing goes in the notes of an `approve`.
 
-4. **Maintain balance**: Avoid over-simplification that could:
-   - Reduce code clarity or maintainability
-   - Create overly clever solutions that are hard to understand
-   - Combine too many concerns into single functions or components
-   - Remove helpful abstractions that improve code organization
-   - Make the code harder to debug or extend
+# OUTPUT
 
-5. **Apply project standards**: Follow the coding standards defined in @.sandcastle/CODING_STANDARDS.md
+<review>
+{"verdict":"approve","notes":"…"}
+</review>
 
-6. **Preserve functionality**: Never change what the code does - only how it does it. All original features, outputs, and behaviors must remain intact.
+`verdict` is `approve` or `changes`. For `changes`, `notes` is a numbered list — file, what is wrong, what to do — the fixer works from it alone. For `approve`, one line.
 
-# EXECUTION
-
-If you find improvements to make:
-
-1. Make the changes directly on this branch
-2. Run tests and type checking to ensure nothing is broken
-3. Commit describing the refinements
-
-If the code is already clean and well-structured, do nothing.
-
-Once complete, output <promise>COMPLETE</promise>.
+Then output <promise>COMPLETE</promise>.

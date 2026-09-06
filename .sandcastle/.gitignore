@@ -1,3 +1,4 @@
 .env
 logs/
 worktrees/
+run.lock

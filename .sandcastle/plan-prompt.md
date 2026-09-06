@@ -1,37 +1,39 @@
-# ISSUES
-
-Here are the open issues in the repo:
-
-<issues-json>
-
-!`issues=$(linear api 'query{issues(first:250,filter:{project:{name:{eq:"Wooton"}},labels:{name:{eq:"ready-for-agent"}},state:{type:{nin:["completed","canceled","duplicate"]}}}){nodes{identifier title description state{name} parent{identifier} children{nodes{identifier}} inverseRelations{nodes{type issue{identifier state{type}}}}}}}') && printf '%s' "$issues" | jq '[.data.issues.nodes[] | {id:.identifier,title,body:(.description//""),state:.state.name,parent:(.parent.identifier//null),children:[.children.nodes[].identifier],blockedBy:[.inverseRelations.nodes[]|select(.type=="blocks" and ((.issue.state.type|IN("completed","canceled","duplicate"))|not))|.issue.identifier]}]'`
-
-</issues-json>
-
-The list above has already been filtered to issues ready for work. `blockedBy` lists the still-open issues the tracker declares as blocking that one — always honour it. `parent`/`children` show the spec tree: work the leaves, not a parent that still has open children.
-
 # TASK
 
-Analyze the open issues and build a dependency graph. For each issue, determine whether it **blocks** or **is blocked by** any other open issue.
+Decide which children of {{ROOT_ID}} the orchestrator works next, in parallel, on top of `{{INTEGRATION_BRANCH}}` (the current branch).
 
-An issue B is **blocked by** issue A if:
+# CONTEXT
 
-- B requires code or infrastructure that A introduces
-- B and A modify overlapping files or modules, making concurrent work likely to produce merge conflicts
-- B's requirements depend on a decision or API shape that A will establish
+## Root and children
 
-An issue is **unblocked** if it has zero blocking dependencies on other open issues.
+<root-json>
 
-For each unblocked issue, assign a branch name using the exact format `sandcastle/issue-{id}` (no slug or other suffix). This must be deterministic so that re-planning the same issue always produces the same branch name and accumulated progress is preserved.
+!`linear api 'query{issue(id:"{{ROOT_ID}}"){identifier title description state{name} children{nodes{identifier title description state{name type} labels{nodes{name}} inverseRelations{nodes{type issue{identifier state{type}}}}}}}}' | jq '.data.issue | {id:.identifier,title,body:(.description//""),state:.state.name,children:[.children.nodes[]|{id:.identifier,title,body:(.description//""),state:.state.name,done:(.state.type|IN("completed","canceled","duplicate")),labels:[.labels.nodes[].name],blockedBy:[.inverseRelations.nodes[]|select(.type=="blocks" and ((.issue.state.type|IN("completed","canceled","duplicate"))|not))|.issue.identifier]}]}'`
+
+</root-json>
+
+## Landed on `{{INTEGRATION_BRANCH}}`
+
+!`git log --oneline origin/main..{{INTEGRATION_BRANCH}}`
+
+## Issue branches and their unmerged commits
+
+!`for b in $(git for-each-ref --format='%(refname:short)' 'refs/heads/sandcastle/issue-*'); do echo "$b: $(git rev-list --count {{INTEGRATION_BRANCH}}..$b) unmerged commit(s)"; done`
+
+# PLAN
+
+Scope is the children listed above (a root without children is worked as a single issue, id = root). Branch name is always `sandcastle/issue-<ID>` so a resumed issue lands on its previous branch.
+
+Include a child when it is not done and none of its `blockedBy` is still open. Then split the remainder so branches merge cleanly: two children touching the same modules run serially — keep the one the other depends on. `blockedBy` from the tracker is always honoured; the file-overlap rule is your judgement.
+
+Resume: an issue whose branch carries unmerged commits is picked up where it stopped — include it, the implementer inspects the branch. An issue whose branch has no unmerged commits but whose work is already in the landed log (a merge that closed no ticket) is closed here — `linear issue update <ID> --state Done` plus a one-line comment — and left out. That is the only write this step makes.
+
+`done` is true when every child is done and nothing is left to plan; `issues` is then empty. An empty `issues` with `done: false` means everything left is blocked or needs a human — say why in `notes`.
 
 # OUTPUT
 
-Output your plan as a JSON object wrapped in `<plan>` tags:
-
 <plan>
-{"issues": [{"id": "42", "title": "Fix auth bug", "branch": "sandcastle/issue-42"}]}
+{"issues":[{"id":"VIN-145","title":"…","branch":"sandcastle/issue-VIN-145"}],"done":false,"notes":"one line"}
 </plan>
 
-Include only unblocked issues. If every issue is blocked, include the single highest-priority candidate (the one with the fewest or weakest dependencies).
-
-Always emit the `<plan>` tags, even when there is nothing to do. If there are no issues to work on at all, output `<plan>{"issues": []}</plan>` so the run can exit cleanly.
+Always emit the `<plan>` tag.

@@ -1,62 +1,53 @@
 # TASK
 
-Fix issue {{TASK_ID}}: {{ISSUE_TITLE}}
+Deliver {{TASK_ID}} — {{ISSUE_TITLE}} — on branch `{{BRANCH}}` (checked out). It is a child of {{ROOT_ID}} and will be merged into `{{INTEGRATION_BRANCH}}`.
 
-Pull in the issue using `linear issue view {{TASK_ID}} --json --no-pager`. If it has a parent PRD, pull that in too with the same command on the parent's identifier.
-
-Only work on the issue specified.
-
-Work on branch {{BRANCH}}. Make commits and run tests.
+Only this issue. Siblings and the parent are context, not scope.
 
 # CONTEXT
 
-Here are the last 10 commits:
+## Issue
 
-<recent-commits>
+!`linear issue view {{TASK_ID}} --json --no-pager`
 
-!`git log -n 10 --format="%H%n%ad%n%B---" --date=short`
+## Comments (earlier runs report here)
 
-</recent-commits>
+!`linear issue comment list {{TASK_ID}} --json 2>/dev/null || true`
 
-# EXPLORATION
+## Parent
 
-Explore the repo and fill your context window with relevant information that will allow you to complete the task.
+!`linear issue view {{ROOT_ID}} --json --no-pager | jq '{identifier,title,description}'`
 
-Pay extra attention to test files that touch the relevant parts of the code.
+## Branch state
+
+Commits here, not yet in `{{INTEGRATION_BRANCH}}`:
+
+!`git log --oneline {{INTEGRATION_BRANCH}}..HEAD`
+
+Commits in `{{INTEGRATION_BRANCH}}` missing here: !`git rev-list --count HEAD..{{INTEGRATION_BRANCH}}`
+
+Working tree:
+
+!`git status --short`
+
+# RESUME
+
+The branch may carry work from an earlier run. Before writing code:
+
+1. Read the commits and comments above against the acceptance criteria. Keep what holds and continue from there.
+2. If `{{INTEGRATION_BRANCH}}` has commits missing here: `git merge {{INTEGRATION_BRANCH}} --no-edit`, resolve conflicts, `npm test`.
+3. Uncommitted changes are a crashed run: review them, then commit or discard.
 
 # EXECUTION
 
-If applicable, use RGR to complete the task.
+Explore first: read the modules and tests the issue touches until you can name every file you will change.
 
-1. RED: write one test
-2. GREEN: write the implementation to pass that test
-3. REPEAT until done
-4. REFACTOR the code
+Test-first where it applies — RED (one failing test), GREEN, repeat, then refactor. `npm test` before every commit. Commit small and often, conventional format with the issue id: `type(scope): subject (VIN-XXX)`.
 
-# FEEDBACK LOOPS
+A user-facing feature also updates the `## What this fork adds` section of `README.md`, in the same run — only that section.
 
-Before committing, run `npm run typecheck` and `npm run test` to ensure the tests pass.
+# COMPLETION
 
-# COMMIT
+Complete when every acceptance criterion holds, `npm test` is green and the tree is clean. Then `linear issue comment add {{TASK_ID}} --body "<what landed, key decisions, what the reviewer should look at>"` and output <promise>COMPLETE</promise>.
 
-Make a git commit. The commit message must:
-
-1. Start with `RALPH:` prefix
-2. Include task completed + PRD reference
-3. Key decisions made
-4. Files changed
-5. Blockers or notes for next iteration
-
-Keep it concise.
-
-# THE ISSUE
-
-If the task is not complete, leave a comment on the issue with what was done: `linear issue comment add {{TASK_ID}} --body "<what was done>"`.
-
-Do not close the issue - this will be done later.
-
-Once complete, output <promise>COMPLETE</promise>.
-
-# FINAL RULES
-
-ONLY WORK ON A SINGLE TASK.
+Blocked or out of budget: commit what holds, comment the remaining work and the blocker, and output <promise>COMPLETE</promise> as well. The issue state is set by the merger, never here.

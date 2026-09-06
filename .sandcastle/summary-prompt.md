@@ -1,6 +1,8 @@
 # TASK
 
-The orchestration run is over. Write a concise end-of-run report for the human who will pick up the work next.
+The run for {{ROOT_ID}} is over. Write the body of the pull request {{PR_URL}} — it doubles as the report for the human who picks the work up next.
+
+Epic review verdict: `{{EPIC_VERDICT}}` — `approve` means the PR is marked ready for review; anything else keeps it draft.
 
 # RUN LOG
 
@@ -10,27 +12,28 @@ Per-iteration outcome recorded by the orchestrator:
 
 # CONTEXT
 
-## Commits landed on the current branch during this run
+## Root and children
 
-!`git log --oneline {{START_SHA}}..HEAD`
+!`linear api 'query{issue(id:"{{ROOT_ID}}"){identifier title description url children{nodes{identifier title state{name}}}}}' | jq '.data.issue'`
 
-## Issues still open for agents
+## Commits on `{{INTEGRATION_BRANCH}}`
 
-!`linear api 'query{issues(first:100,filter:{project:{name:{eq:"Wooton"}},labels:{name:{eq:"ready-for-agent"}},state:{type:{nin:["completed","canceled","duplicate"]}}}){nodes{identifier title state{name} inverseRelations{nodes{type issue{identifier state{type}}}}}}}' | jq -r '.data.issues.nodes[] | "- \(.identifier): \(.title) [\(.state.name)] blockedBy=\([.inverseRelations.nodes[]|select(.type=="blocks" and ((.issue.state.type|IN("completed","canceled","duplicate"))|not))|.issue.identifier]|join(","))"'`
+!`git log --oneline origin/main..{{INTEGRATION_BRANCH}}`
 
-## Issues waiting on a human
+## Files changed
 
-!`linear api 'query{issues(first:100,filter:{project:{name:{eq:"Wooton"}},labels:{name:{in:["needs-info","ready-for-human","needs-triage"]}},state:{type:{nin:["completed","canceled","duplicate"]}}}){nodes{identifier title labels{nodes{name}}}}}' | jq -r '.data.issues.nodes[] | "- \(.identifier): \(.title) [\([.labels.nodes[].name]|join(","))]"'`
+!`git diff --stat origin/main...{{INTEGRATION_BRANCH}}`
 
 # REPORT
 
-Do not modify any file or issue. Read-only. If a failed or no-commit issue needs more context, check its latest comments with `linear issue view <ID> --json --no-pager`.
+Read-only on the repo. For a failed or partial issue, read its latest comments with `linear issue comment list <ID> --json`. Write in the language of the root issue, under 80 lines, with exactly these sections:
 
-Output the report in markdown inside `<summary>` tags, with exactly these sections:
+1. **Summary** — what this PR delivers, three lines max, with the Linear URL of the root.
+2. **Changes** — one line per child issue: id, title, status (merged / partial / not started), commits (short SHA + subject).
+3. **How to test** — the manual checks a human runs, derived from the acceptance criteria: action → expected result.
+4. **Not done** — failed, partial or unmerged issues with the likely cause and whether an agent can retry or a human is needed. Epic review remarks go here too.
+5. **Next steps** — an ordered checklist.
 
-1. **What happened** — per iteration: issues planned, committed, failed, or left without commits, and whether the iteration was merged. Mention the stop reason. One line each, no fluff.
-2. **Merged** — each committed issue whose iteration was merged, with its commits (short SHA + subject).
-3. **Not done** — each failed / no-commit / unmerged issue with the likely cause (from the run log and issue comments) and whether it is retryable by an agent or needs a human.
-4. **Next steps** — an ordered checklist: issues to retry, issues to unblock, issues needing human input, anything to verify manually (tests, deployment, launchd, etc.).
+Post the same text on the root: write it to `/tmp/summary.md`, then `linear issue comment add {{ROOT_ID}} --body-file /tmp/summary.md`.
 
-Keep it under 60 lines. Then output <promise>COMPLETE</promise>.
+Output the report inside `<summary>` tags, then output <promise>COMPLETE</promise>.

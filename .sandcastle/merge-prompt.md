@@ -1,28 +1,23 @@
 # TASK
 
-Merge the following branches into the current branch:
+Merge these branches into `{{INTEGRATION_BRANCH}}` (the current branch), then close their issues.
 
 {{BRANCHES}}
 
-For each branch:
-
-1. Run `git merge <branch> --no-edit`
-2. If there are merge conflicts, resolve them intelligently by reading both sides and choosing the correct resolution
-3. After resolving conflicts, run `npm run typecheck` and `npm run test` to verify everything works
-4. If tests fail, fix the issues before proceeding to the next branch
-
-After all branches are merged, make a single commit summarizing the merge.
-
-# CLOSE ISSUES
-
-For each branch that was merged, close its issue using the following command:
-
-`linear issue update <ID> --state Done`
-
-Then leave a short comment saying what was merged: `linear issue comment add <ID> --body "<merge summary>"`.
-
-Here are all the issues:
+Issues:
 
 {{ISSUES}}
 
-Once you've merged everything you can, output <promise>COMPLETE</promise>.
+# MERGE
+
+For each branch: `git merge <branch> --no-edit`. Resolve conflicts by reading both sides and keeping the behaviour each issue asks for. After each merge, `npm test`; fix failures before the next branch. A branch that cannot be made green: `git merge --abort`, leave it out, and explain in a comment on its issue — it stays open.
+
+The push is done by the orchestrator.
+
+# CLOSE
+
+For each merged branch: `linear issue update <ID> --state Done`, then `linear issue comment add <ID> --body "<one-line merge summary>"`.
+
+{{ROOT_ID}} is never updated here: GitHub drives its state through the pull request.
+
+Output <promise>COMPLETE</promise>.
