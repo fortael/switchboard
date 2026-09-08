@@ -35,6 +35,10 @@ export const store = reactive({
   // App layout state
   activeTab: 'sessions',
   sidebarCollapsed: false,
+  theme: 'dark',                 // 'dark' | 'light' — mirrored onto <html data-theme>
+  sessionFilterTab: 'recent',    // FilterTabs selection: recent | running | pinned
+  sidebarViewMode: 'list',       // 'list' | 'grid'
+  attentionProject: null,        // projectPath highlighted in the active-sessions rail
   loadingStatus: '',
   accountSwitching: false,
   searchQuery: '',

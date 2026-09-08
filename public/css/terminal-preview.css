@@ -1,0 +1,55 @@
+/* ── Terminal preview (settings) ─────────────────────────────────────────
+   Wraps a real, read-only xterm instance so the swatch cannot drift from
+   what a session actually renders. The frame is app chrome; everything
+   inside .sbx-termpreview__host is painted by xterm from the theme. */
+
+.sbx-termpreview {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-input);
+}
+
+.sbx-termpreview__chrome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--surface-card-hover);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sbx-termpreview__label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.sbx-termpreview__meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* xterm sizes itself from cols/rows and the measured character box, so the
+   host only has to hold it and clip the overflow on narrow panels. */
+.sbx-termpreview__host {
+  padding: 10px 12px;
+  overflow: hidden;
+}
+
+.sbx-termpreview__host .xterm .xterm-viewport {
+  overflow: hidden;
+}
+
+.sbx-termpreview__fallback {
+  padding: 16px 12px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}

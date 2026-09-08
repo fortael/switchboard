@@ -1,41 +1,57 @@
 <template>
-  <div v-if="store.headerSession" class="vue-session-header">
-    <div class="vsh-top">
-      <div class="vsh-identity">
-        <ProjectAvatar class="vsh-avatar" :project-path="session.projectPath" />
-        <div class="vsh-info">
-          <div class="vsh-title-row">
-            <span class="vsh-project-path" :title="session.projectPath">{{ projectShortPath }}</span>
-            <span class="vsh-sep">›</span>
-            <span class="vsh-session-name" :title="sessionName">{{ sessionName }}</span>
-          </div>
-          <div class="vsh-status-row">
-            <span class="vsh-status-dot" :class="statusClass"></span>
-            <span class="vsh-status-label">{{ statusLabel }}</span>
-            <template v-if="messageCount">
-              <span class="vsh-dot-sep">·</span>
-              <span class="vsh-msg-count">{{ messageCount }} msgs</span>
-            </template>
-            <template v-if="timeStr">
-              <span class="vsh-dot-sep">·</span>
-              <span class="vsh-time">{{ timeStr }}</span>
-            </template>
-            <template v-if="sessionId">
-              <span class="vsh-dot-sep">·</span>
-              <span class="vsh-session-id">{{ shortId }}</span>
-            </template>
-          </div>
-          <div v-if="aiTitle || store.headerPtyTitle" class="vsh-subtitle-row">
-            <span v-if="aiTitle" class="vsh-ai-title">{{ aiTitle }}</span>
-            <span v-if="store.headerPtyTitle" class="vsh-pty-title">{{ store.headerPtyTitle }}</span>
-          </div>
-        </div>
-      </div>
-      <div class="vsh-controls">
-        <span v-if="store.headerAccount" class="terminal-account-badge">{{ store.headerAccount }}</span>
-        <span v-if="store.headerShellProfile" class="vsh-shell-badge">{{ store.headerShellProfile }}</span>
-        <button class="session-stop-btn vsh-stop" data-tooltip="Stop session" @click="stop" v-html="stopSvg"></button>
-      </div>
+  <div v-if="store.headerSession" class="sbx-sesshead">
+    <div class="sbx-sesshead__identity">
+      <ProjectAvatar class="sbx-sesshead__avatar" :project-path="session.projectPath" />
+
+      <span class="sbx-sesshead__title" :title="sessionName">{{ sessionName }}</span>
+
+      <span class="sbx-sesshead__sep">·</span>
+
+      <span class="sbx-sesshead__project" :title="session.projectPath">{{ projectShortPath }}</span>
+
+      <span v-if="sessionId" class="sbx-sesshead__id" :title="sessionId">{{ shortId }}</span>
+
+      <span v-if="aiTitle" class="sbx-sesshead__ai" :title="aiTitle">{{ aiTitle }}</span>
+    </div>
+
+    <div class="sbx-sesshead__controls">
+      <span v-if="messageCount || timeStr" class="sbx-sesshead__meta">
+        <span v-if="messageCount">{{ messageCount }} msgs</span>
+        <span v-if="messageCount && timeStr" class="sbx-sesshead__meta-sep">·</span>
+        <span v-if="timeStr">{{ timeStr }}</span>
+      </span>
+
+      <span class="sbx-sesshead__badge" :class="statusClass">
+        <span class="sbx-sesshead__dot"></span>
+        <span class="sbx-sesshead__badge-label">{{ statusLabel }}</span>
+      </span>
+
+      <span
+        v-if="store.headerAccount"
+        class="sbx-sesshead__chip"
+        :title="store.headerAccount"
+      >{{ store.headerAccount }}</span>
+
+      <span
+        v-if="store.headerShellProfile"
+        class="sbx-sesshead__chip sbx-sesshead__chip--mono"
+        :title="store.headerShellProfile"
+      >{{ store.headerShellProfile }}</span>
+
+      <span
+        v-if="store.headerPtyTitle"
+        class="sbx-sesshead__chip sbx-sesshead__chip--mono sbx-sesshead__chip--pty"
+        :title="store.headerPtyTitle"
+      >{{ store.headerPtyTitle }}</span>
+
+      <button
+        type="button"
+        class="sbx-sesshead__iconbtn sbx-sesshead__iconbtn--danger"
+        data-tooltip="Stop session"
+        @click="stop"
+      >
+        <SbIcon name="square" :size="14" />
+      </button>
     </div>
   </div>
 </template>
@@ -44,6 +60,7 @@
 import { computed } from 'vue';
 import { store } from '../store.js';
 import ProjectAvatar from './ProjectAvatar.vue';
+import SbIcon from './SbIcon.vue';
 
 const session = computed(() => store.headerSession);
 const sessionId = computed(() => session.value?.sessionId);
@@ -72,9 +89,9 @@ const isBusy = computed(() => store.sessionBusyState?.get(sessionId.value) || fa
 const isAttention = computed(() => store.attentionSessions?.has(sessionId.value));
 
 const statusClass = computed(() => ({
-  running: isRunning.value,
-  busy: isBusy.value,
-  attention: isAttention.value,
+  'is-running': isRunning.value,
+  'is-busy': isBusy.value,
+  'is-attention': isAttention.value,
 }));
 
 const statusLabel = computed(() => {
@@ -103,6 +120,4 @@ function stop() {
     window.confirmAndStopSession(sessionId.value);
   }
 }
-
-const stopSvg = '<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="2" width="8" height="8" rx="1"/></svg>';
 </script>

@@ -1677,7 +1677,7 @@ const SETTING_DEFAULTS = {
   addDirs: '',
   visibleSessionCount: 5,
   sidebarWidth: 340,
-  terminalTheme: 'switchboard',
+  terminalTheme: 'wootonpadDark',
   mcpEmulation: false,
   shellProfile: 'auto',
   showAvatars: true,

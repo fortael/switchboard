@@ -3,6 +3,12 @@ import { store } from '../vue/store.js';
 import LandingApp from './LandingApp.vue';
 import { MOCK_PROJECTS, MOCK_ACCOUNTS, MOCK_ACTIVE_PTY_IDS, MOCK_WAITING_PTY_IDS, MOCK_PROJECT_INFO, MOCK_PROJECT_DETAIL, getProjectAvatar } from './mock-data.js';
 import '../../public/style.css';
+// Redesign layer — same order as public/index.html loads it.
+import '../../public/css/shell.css';
+import '../../public/css/sidebar-redesign.css';
+import '../../public/css/session-view.css';
+import '../../public/css/terminal-preview.css';
+import '../../public/css/theme-light.css';
 
 const MOCK_DIFF_CONTENT = `const { RateLimiterMemory } = require('rate-limiter-flexible');
 

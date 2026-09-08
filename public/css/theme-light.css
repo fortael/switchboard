@@ -1,0 +1,135 @@
+/* Switchboard — Light theme
+   Port of design/tokens/theme-light.css, adapted to this app.
+
+   Overrides only the semantic aliases; the base palette inlined at the top
+   of style.css is untouched. Scope with data-theme="light" (or .theme-light)
+   on <html>, the app shell, or any subtree you want inverted.
+
+   Contrast rule: the dark theme's -500 accents are tuned for near-black
+   surfaces and go washed out on white, so light mode steps them down
+   (green-600, darker amber/red/orange) wherever they carry text or meaning.
+
+   Loaded last in index.html, so it wins over the redesign layer at equal
+   specificity. */
+
+[data-theme='light'], .theme-light {
+  /* Extra light-only neutrals — warm-neutral paper, not pure white */
+  --paper-0: #ffffff;
+  --paper-50: #fafafb;
+  --paper-100: #f4f4f6;
+  --paper-200: #ecedf0;
+  --paper-300: #e2e3e8;
+  --paper-400: #d4d5dc;
+  --paper-500: #bfc0ca;
+  --ink-900: #15161a;
+  --ink-700: #3d3f48;
+  --ink-500: #63656f;
+  --ink-400: #8d8f99;
+
+  /* Accents, stepped down for light surfaces */
+  --amber-600: #b57d0a;
+  --red-600: #d3423c;
+  --orange-600: #d96b25;
+  --purple-600: #7146c4;
+  --blue-600: #2e6fd6;
+  --indigo-600: #4f56dd;
+
+  /* Semantic surfaces — workspace is grey, panels are paper */
+  --surface-app: var(--paper-200);
+  --surface-panel: var(--paper-50);
+  --surface-panel-raised: var(--paper-0);
+  --surface-card: var(--paper-0);
+  --surface-card-hover: var(--paper-100);
+  --surface-selected: color-mix(in srgb, var(--green-600) 12%, var(--paper-0));
+  --surface-selected-accent: color-mix(in srgb, var(--indigo-600) 12%, var(--paper-0));
+  --surface-overlay: rgba(21, 22, 26, 0.34);
+  --surface-input: var(--paper-0);
+
+  /* Semantic borders */
+  --border-subtle: var(--paper-300);
+  --border-default: var(--paper-400);
+  --border-strong: var(--paper-500);
+  --border-focus: var(--orange-600);
+
+  /* Semantic text */
+  --text-primary: var(--ink-900);
+  --text-secondary: var(--ink-700);
+  --text-tertiary: var(--ink-500);
+  --text-disabled: var(--ink-400);
+  /* Ink on accent fills, same as dark mode: the light gradients are mid-tone,
+     so white labels fall under 4.5:1 while ink clears 5:1. */
+  --text-on-accent: var(--ink-900);
+  --text-link: var(--blue-600);
+  --text-code-emphasis: var(--purple-600);
+
+  /* Semantic status */
+  --status-running: var(--green-600);
+  --status-idle: var(--ink-400);
+  --status-warning: var(--amber-600);
+  --status-danger: var(--red-600);
+  --status-info: var(--ink-500);
+
+  /* Diff — these are rendered as small mono TEXT (ProjectRow counts, GitPanel
+     A/M/D letters), so they are tuned for text contrast on paper, not as fills. */
+  --diff-added: #0f7d58;
+  --diff-modified: #8a5f06;
+  --diff-deleted: var(--red-600);
+
+  /* Containers */
+  --container-healthy: var(--green-600);
+  --container-starting: var(--amber-600);
+  --container-unhealthy: var(--red-600);
+  --container-stopped: var(--ink-400);
+
+  /* Elevation — light mode needs real drop shadows, but shallow ones */
+  --shadow-xs: 0 1px 2px rgba(21, 22, 26, 0.06);
+  --shadow-sm: 0 2px 6px rgba(21, 22, 26, 0.08);
+  --shadow-md: 0 6px 18px rgba(21, 22, 26, 0.10);
+  --shadow-lg: 0 14px 36px rgba(21, 22, 26, 0.13);
+  --shadow-modal: 0 24px 60px rgba(21, 22, 26, 0.20);
+
+  /* Buttons — same gradient language, one step deeper so white text holds up */
+  --gradient-primary: linear-gradient(180deg, var(--orange-500), var(--orange-600));
+  --gradient-danger: linear-gradient(180deg, var(--red-500), #de5f57);
+  --gradient-success: linear-gradient(180deg, var(--green-500), var(--green-600));
+  --glow-orange: 0 0 0 1px color-mix(in srgb, var(--orange-600) 55%, transparent), 0 2px 8px color-mix(in srgb, var(--orange-600) 26%, transparent);
+  --glow-red: 0 0 0 1px color-mix(in srgb, var(--red-600) 55%, transparent), 0 2px 8px color-mix(in srgb, var(--red-600) 24%, transparent);
+  --glow-green: 0 0 0 1px color-mix(in srgb, var(--green-600) 55%, transparent), 0 2px 8px color-mix(in srgb, var(--green-600) 22%, transparent);
+
+  /* Project avatars — the dark palette is mid-tone and reads fine on paper,
+     but initials need to stay dark-on-color, so nothing changes here. */
+}
+
+/* Icon tones.
+   The design system dims/tints its icons with `filter:` because it renders
+   them as <img>. SbIcon.vue renders an inline <svg stroke="currentColor">,
+   so the light theme sets a plain colour instead — same tones, no filters.
+   Dark defaults live next to the token block in style.css.
+
+   The default tone keeps inheriting from its parent (buttons colour their
+   own icons on hover); only the accent tone genuinely needs a light-mode
+   value, since orange-500 washes out on paper. */
+[data-theme='light'] .sb-icon,
+.theme-light .sb-icon { color: inherit; }
+
+[data-theme='light'] .sb-icon--muted,
+.theme-light .sb-icon--muted { color: var(--text-disabled); }
+
+[data-theme='light'] .sb-icon--bright,
+.theme-light .sb-icon--bright { color: var(--text-primary); }
+
+[data-theme='light'] .sb-icon--accent,
+.theme-light .sb-icon--accent { color: var(--orange-600); }
+
+[data-theme='light'] .sb-icon--running,
+.theme-light .sb-icon--running { color: var(--status-running); }
+
+[data-theme='light'] .sb-icon--danger,
+.theme-light .sb-icon--danger { color: var(--status-danger); }
+
+[data-theme='light'] ::-webkit-scrollbar-thumb, .theme-light ::-webkit-scrollbar-thumb {
+  background: var(--paper-400); background-clip: padding-box;
+}
+[data-theme='light'] ::-webkit-scrollbar-thumb:hover, .theme-light ::-webkit-scrollbar-thumb:hover {
+  background: var(--paper-500); background-clip: padding-box;
+}

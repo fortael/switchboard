@@ -135,23 +135,35 @@
               </div>
               <div class="settings-field-control">
                 <select class="settings-select" v-model="form.terminalTheme">
-                  <option v-for="(theme, key) in terminalThemes" :key="key" :value="key">{{ theme.label }}</option>
+                  <optgroup label="Dark">
+                    <option v-for="(theme, key) in darkTerminalThemes" :key="key" :value="key">{{ theme.label }}</option>
+                  </optgroup>
+                  <optgroup label="Light">
+                    <option v-for="(theme, key) in lightTerminalThemes" :key="key" :value="key">{{ theme.label }}</option>
+                  </optgroup>
+                </select>
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <div class="settings-field-info">
+                <span class="settings-label">Terminal Font</span>
+                <div class="settings-description">Monospace font for terminal sessions</div>
+              </div>
+              <div class="settings-field-control">
+                <select class="settings-select" v-model="form.monoFont">
+                  <option v-for="(font, key) in terminalFonts" :key="key" :value="key">{{ font.label }}</option>
                 </select>
               </div>
             </div>
 
             <div class="settings-field settings-field-wide">
               <div class="settings-field-info">
-                <span class="settings-label">Terminal Font</span>
-                <div class="settings-description">Monospace font for terminal sessions</div>
+                <span class="settings-label">Preview</span>
+                <div class="settings-description">Live — theme and font exactly as a session will render them</div>
               </div>
-              <div class="settings-field-control settings-font-control">
-                <select class="settings-select" v-model="form.monoFont">
-                  <option v-for="(font, key) in terminalFonts" :key="key" :value="key">{{ font.label }}</option>
-                </select>
-                <span class="settings-font-preview" :style="{ fontFamily: terminalFonts[form.monoFont]?.family }">
-                  fn main() { println!("Hello, 世界"); }
-                </span>
+              <div class="settings-field-control">
+                <TerminalPreview :theme-key="form.terminalTheme" :font-key="form.monoFont" />
               </div>
             </div>
 
@@ -310,6 +322,7 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { store } from '../store.js';
 import SbSwitch from './SbSwitch.vue';
 import SbButton from './SbButton.vue';
+import TerminalPreview from './TerminalPreview.vue';
 
 // ── Derived from store ────────────────────────────────────────────
 const isProject = computed(() => store.settingsScope === 'project');
@@ -333,6 +346,16 @@ const shellProfiles = ref([]);
 const terminalThemes = computed(() => window.TERMINAL_THEMES || {});
 const terminalFonts = computed(() => window.TERMINAL_FONTS || {});
 
+// Themes carry a `mode` so the dropdown can group them; anything without one
+// predates the split and is dark.
+function themesByMode(mode) {
+  return Object.fromEntries(
+    Object.entries(terminalThemes.value).filter(([, t]) => (t.mode || 'dark') === mode)
+  );
+}
+const darkTerminalThemes = computed(() => themesByMode('dark'));
+const lightTerminalThemes = computed(() => themesByMode('light'));
+
 const COMMIT_MSG_PROMPT_DEFAULT = `Write a concise git commit message (max 72 chars for first line) for these changes. Use conventional commit format (feat/fix/refactor/docs/chore). Output ONLY the commit message, no explanation:`;
 const commitMsgPromptDefault = COMMIT_MSG_PROMPT_DEFAULT;
 
@@ -345,7 +368,7 @@ const form = reactive({
   addDirs: '',
   visibleSessionCount: 10,
   sessionMaxAgeDays: 3,
-  terminalTheme: 'switchboard',
+  terminalTheme: 'wootonpadDark',
   mcpEmulation: true,
   shellProfile: 'auto',
   showAvatars: true,
@@ -395,7 +418,7 @@ async function loadSettings() {
   if (!isProject.value) {
     form.visibleSessionCount = current.visibleSessionCount ?? 10;
     form.sessionMaxAgeDays = current.sessionMaxAgeDays ?? 3;
-    form.terminalTheme = current.terminalTheme ?? 'switchboard';
+    form.terminalTheme = current.terminalTheme ?? 'wootonpadDark';
     form.mcpEmulation = current.mcpEmulation !== false;
     form.shellProfile = current.shellProfile ?? 'auto';
     form.showAvatars = current.showAvatars !== false;
@@ -445,7 +468,7 @@ async function save() {
       addDirs: form.addDirs,
       visibleSessionCount: form.visibleSessionCount || 10,
       sessionMaxAgeDays: form.sessionMaxAgeDays || 3,
-      terminalTheme: form.terminalTheme || 'switchboard',
+      terminalTheme: form.terminalTheme || 'wootonpadDark',
       mcpEmulation: form.mcpEmulation,
       shellProfile: form.shellProfile || 'auto',
       showAvatars: form.showAvatars,
