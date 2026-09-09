@@ -1,0 +1,45 @@
+/* ── Usage ring ──────────────────────────────────────────────────────────
+   Small donut used wherever a "how full is it" number appears: the account's
+   5-hour limit in the top nav, and a session's context window in the list.
+   Colour is a three-step warning scale, not a gradient — at 14px a hue ramp
+   is unreadable. */
+
+.sbx-ring {
+  flex: none;
+  display: block;
+  overflow: visible;
+}
+
+.sbx-ring__track {
+  stroke: var(--border-default);
+}
+
+.sbx-ring__fill {
+  transition: stroke-dashoffset var(--duration-slow) var(--ease-standard),
+              stroke var(--duration-base) var(--ease-standard);
+}
+
+.sbx-ring--ok .sbx-ring__fill { stroke: var(--status-running); }
+.sbx-ring--warn .sbx-ring__fill { stroke: var(--status-warning); }
+.sbx-ring--danger .sbx-ring__fill { stroke: var(--status-danger); }
+
+/* Inside the account chip in the top nav. */
+.account-chip .sbx-ring {
+  margin-right: var(--space-1);
+}
+
+.account-chip {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* In a session row's meta line, next to "3h ago · 1014 msgs". */
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.session-context-ring {
+  flex: none;
+}

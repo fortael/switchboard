@@ -12,7 +12,7 @@
     "dev": "npm run bundle:codemirror && npm run bundle:vue && (vite build --watch & electron .) && wait",
     "bundle:codemirror": "esbuild public/codemirror-setup.js --bundle --outfile=public/codemirror-bundle.js --format=iife --platform=browser --minify",
     "bundle:vue": "vite build",
-    "build:landing": "vite build --config vite.landing.config.js && cp build/icon.png docs/icon.png",
+    "build:landing": "vite build --config vite.landing.config.js && cp build/icon.png docs/icon.png && node scripts/copy-landing-fonts.js",
     "dev:landing": "node scripts/dev-landing.mjs",
     "preview:landing": "node scripts/serve-docs.mjs",
     "generate-icons": "node scripts/generate-icons.js && node scripts/generate-dmg-background.js",
@@ -22,7 +22,8 @@
     "build:win": "npm run bundle:codemirror && npm run bundle:vue && electron-builder --win",
     "build:linux": "npm run bundle:codemirror && npm run bundle:vue && electron-builder --linux",
     "release": "npm run bundle:codemirror && npm run bundle:vue && electron-builder --publish always",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "fonts:generate": "node scripts/generate-brand-fonts.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -51,6 +52,8 @@
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.16",
     "@ddietr/codemirror-themes": "^1.5.2",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@napi-rs/canvas": "^0.1.62",
     "@vitejs/plugin-vue": "^6.0.8",
     "codemirror": "^6.0.2",
@@ -58,6 +61,7 @@
     "electron-builder": "^26.15.3",
     "electron-reloader": "^1.2.3",
     "esbuild": "^0.28.1",
+    "lucide-static": "^1.43.0",
     "png2icons": "^2.0.1",
     "vite": "^8.1.5",
     "vue": "^3.5.40"

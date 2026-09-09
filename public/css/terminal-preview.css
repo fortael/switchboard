@@ -1,0 +1,130 @@
+/* ── Terminal preview (settings) ─────────────────────────────────────────
+   Wraps a real, read-only xterm instance so the swatch cannot drift from
+   what a session actually renders. The frame is app chrome; everything
+   inside .sbx-termpreview__host is painted by xterm from the theme. */
+
+.sbx-termpreview {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-input);
+}
+
+.sbx-termpreview__chrome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--surface-card-hover);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sbx-termpreview__label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.sbx-termpreview__meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* xterm sizes itself from cols/rows and the measured character box, so the
+   host only has to hold it and clip the overflow on narrow panels. */
+.sbx-termpreview__host {
+  padding: 10px 12px;
+  overflow: hidden;
+}
+
+.sbx-termpreview__host .xterm .xterm-viewport {
+  overflow: hidden;
+}
+
+.sbx-termpreview__fallback {
+  padding: 16px 12px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* ── Metric sliders (settings) ───────────────────────────────────────────
+   Font size / line height pairs. Two per row on wide panels, stacked when
+   the settings panel is narrow. */
+.sbx-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-2) var(--space-5);
+  width: 100%;
+}
+
+.sbx-metric {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.sbx-metric__label {
+  flex: none;
+  width: 72px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.sbx-metric__value {
+  flex: none;
+  min-width: 44px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.sbx-metric__range {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.sbx-metric__range::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--border-default);
+}
+
+.sbx-metric__range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  border-radius: var(--radius-full);
+  background: var(--orange-500);
+  border: none;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-metric__range:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+.sbx-metric__range:focus-visible {
+  outline: none;
+}
+
+.sbx-metric__range:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--shadow-focus-ring);
+}

@@ -22,7 +22,7 @@ if (!app.isPackaged) {
 const log = require('electron-log');
 // getFolderIndexMtimeMs moved to session-cache.js
 const { startMcpServer, shutdownMcpServer, shutdownAll: shutdownAllMcp, resolvePendingDiff, rekeyMcpServer, cleanStaleLockFiles } = require('./mcp-bridge');
-const { fetchAndTransformUsage } = require('./claude-auth');
+const { fetchAndTransformUsage, getOAuthToken, probeUsage } = require('./claude-auth');
 log.transports.file.level = app.isPackaged ? 'info' : 'debug';
 log.transports.console.level = app.isPackaged ? 'info' : 'debug';
 
@@ -198,6 +198,20 @@ function projectExecFile(argv, cwd, options = {}) {
   }
   const { cwd: _cwd, env: _env, ...rest } = options;
   return ['wsl.exe', wslExecArgs(distro, cwd, argv), rest];
+}
+
+// Env additions a `claude` child needs to run as the *active* account rather
+// than whatever ~/.claude happens to hold. Without this every headless CLI
+// call authenticates as the default account, which fails outright once that
+// one is signed out.
+//
+// WSL accounts are excluded on purpose, matching the PTY spawn: their
+// configDir is the Windows view of a home that is already the default inside
+// the distribution, so exporting it points the CLI at an unresolvable path.
+function activeAccountClaudeEnv() {
+  const account = getActiveAccount();
+  if (accountWslDistro(account) || account.configDir === DEFAULT_CLAUDE_DIR) return {};
+  return { CLAUDE_CONFIG_DIR: account.configDir };
 }
 
 // Build stats in the same format as stats-cache.json using Switchboard's own DB.
@@ -922,7 +936,8 @@ ipcMain.handle('git-generate-commit-msg', async (_event, projectPath, style = 's
       // The claude binary lives wherever the project does — inside the
       // distribution for a WSL-backed one, so this call is routed there too.
       const [file, args, options] = projectExecFile(
-        ['claude', '-p', prompt, '--no-session-persistence'], projectPath, {}
+        ['claude', '-p', prompt, '--no-session-persistence'], projectPath,
+        { env: { ...process.env, ...activeAccountClaudeEnv() } }
       );
       const child = spawn(file, args, options);
       let stdout = '', stderr = '';
@@ -1141,6 +1156,15 @@ ipcMain.handle('get-plans', () => {
   }
 });
 
+// --- IPC: get-plans-dir ---
+// The plans list is account-scoped; the renderer needs the resolved path so an
+// empty list can say which directory it actually looked in.
+ipcMain.handle('get-plans-dir', () => {
+  const account = getActiveAccount();
+  const dir = activePlansDir();
+  return { dir, exists: fs.existsSync(dir), accountName: account.name, accountId: account.id };
+});
+
 // --- IPC: read-plan ---
 ipcMain.handle('read-plan', (_event, filename) => {
   try {
@@ -1169,11 +1193,14 @@ ipcMain.handle('save-plan', (_event, filePath, content) => {
 });
 
 // --- IPC: get-stats ---
-ipcMain.handle('get-stats', () => {
-  const activeAccount = getActiveAccount();
-  const dbStats = computeStatsFromDb(activeAccount.id);
+// Stats for one account: its own rows in the session cache, enriched with the
+// stats-cache.json `claude /stats` wrote into that account's config dir. Both
+// the active-account handler and the accounts panel go through here so there is
+// only ever one stats data path.
+function buildStatsForAccount(account) {
+  const dbStats = computeStatsFromDb(account.id);
   try {
-    const statsPath = path.join(activeConfigDir(), 'stats-cache.json');
+    const statsPath = path.join(account.configDir, 'stats-cache.json');
     if (fs.existsSync(statsPath)) {
       const fileStats = JSON.parse(fs.readFileSync(statsPath, 'utf8'));
       // Prefer file stats (has rich token data) but fall back to DB for activity data
@@ -1189,7 +1216,9 @@ ipcMain.handle('get-stats', () => {
   }
   // No file cache — return DB-computed stats so charts always render
   return dbStats;
-});
+}
+
+ipcMain.handle('get-stats', () => buildStatsForAccount(getActiveAccount()));
 
 // --- IPC: refresh-stats (run /stats + /usage via PTY) ---
 ipcMain.handle('refresh-stats', async () => {
@@ -1662,6 +1691,208 @@ ipcMain.handle('get-accounts-usage', async () => {
   return results;
 });
 
+// --- Account detail panel ---
+// Everything below reads one account's own Claude home. An account's configDir
+// is already host-usable (the WSL flavour stores the UNC view), so plain fs
+// calls are correct here — but nothing composes a project path, and nothing
+// builds a shell string, so rules 2 and 3 of the WSL contract stay intact.
+
+// Files the panel is willing to open, all directly inside configDir. This is an
+// allowlist, not a hint: `.credentials.json` deliberately never appears, and no
+// name here contains a separator. `.claude.json` only lives in configDir for a
+// non-default account — for the default one Claude keeps it at ~/.claude.json,
+// outside the config dir, so it is surfaced as a path and never read here.
+const ACCOUNT_CONFIG_FILES = ['settings.json', 'settings.local.json', '.claude.json', '.mcp.json'];
+const ACCOUNT_FILE_MAX_BYTES = 2 * 1024 * 1024;
+
+function findAccount(accountId) {
+  return getAccounts().find(a => a.id === accountId) || null;
+}
+
+// Resolve `name` inside the account's config dir, or null if it escapes it.
+// The allowlist already forbids separators; the resolve check is the backstop
+// that makes that guarantee independent of the list.
+function resolveAccountFile(account, name) {
+  if (!ACCOUNT_CONFIG_FILES.includes(name)) return null;
+  const root = path.resolve(account.configDir);
+  const resolved = path.resolve(root, name);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
+  return resolved;
+}
+
+function statAccountFile(account, name) {
+  const filePath = resolveAccountFile(account, name);
+  if (!filePath) return null;
+  try {
+    const st = fs.statSync(filePath);
+    if (!st.isFile()) return null;
+    return { name, path: filePath, size: st.size, mtime: st.mtime.toISOString() };
+  } catch {
+    return null;
+  }
+}
+
+// The OAuth record, minus anything secret. accessToken/refreshToken never leave
+// the main process — the renderer only needs to know a token is there and when
+// it lapses.
+function accountTokenInfo(account) {
+  let oauth = null;
+  try { oauth = getOAuthToken(account.configDir); } catch { oauth = null; }
+  if (!oauth?.accessToken) return { present: false };
+  const expiresAt = typeof oauth.expiresAt === 'number'
+    ? (oauth.expiresAt > 1e12 ? oauth.expiresAt : oauth.expiresAt * 1000)
+    : null;
+  return {
+    present: true,
+    // Where the credential came from, so the panel can explain a missing file.
+    source: fs.existsSync(path.join(account.configDir, '.credentials.json'))
+      ? 'credentials file'
+      : (process.platform === 'darwin' ? 'macOS Keychain' : 'credentials file'),
+    expiresAt,
+    expired: expiresAt != null ? expiresAt <= Date.now() : false,
+    scopes: Array.isArray(oauth.scopes) ? oauth.scopes : [],
+    subscriptionType: oauth.subscriptionType || null,
+  };
+}
+
+// One round trip for the panel's static half: paths, which config files exist,
+// whether a token is on file, and the last usage figures already in the DB.
+// Nothing here touches the network.
+// The panel offers a copy-paste command for running the CLI against one
+// account, so a bare `claude` is only the fallback — resolve the real binary
+// through a login shell, which is where nvm/mise/asdf put it.
+let _claudeBinary;
+function resolveClaudeBinary() {
+  if (_claudeBinary !== undefined) return _claudeBinary;
+  const { execFileSync } = require('child_process');
+  _claudeBinary = 'claude';
+  try {
+    const opts = { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] };
+    const out = process.platform === 'win32'
+      ? execFileSync('where', ['claude'], opts)
+      : execFileSync(process.env.SHELL || '/bin/sh', ['-lc', 'command -v claude'], opts);
+    const first = out.split(/\r?\n/).map(s => s.trim()).find(Boolean);
+    if (first) _claudeBinary = first;
+  } catch {}
+  return _claudeBinary;
+}
+
+function posixQuote(value) {
+  return /^[A-Za-z0-9_./:@%+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+// Mirrors what the PTY spawn actually does (see the CLAUDE_CONFIG_DIR block in
+// open-terminal): inside a WSL distribution that home is already the default
+// and the Windows view of it is not a path Claude could resolve there.
+function accountLaunchCommand(account) {
+  const distro = accountWslDistro(account);
+  if (distro) return `wsl.exe -d ${distro} -- claude`;
+  return `CLAUDE_CONFIG_DIR=${posixQuote(account.configDir)} ${posixQuote(resolveClaudeBinary())}`;
+}
+
+ipcMain.handle('get-account-detail', (_event, accountId) => {
+  const account = findAccount(accountId);
+  if (!account) return { ok: false, error: 'unknown account' };
+
+  let configDirExists = false;
+  try { configDirExists = fs.statSync(account.configDir).isDirectory(); } catch {}
+
+  const files = ACCOUNT_CONFIG_FILES.map(n => statAccountFile(account, n)).filter(Boolean);
+
+  // ~/.claude.json for the default account: outside configDir, so read-only as
+  // a path. Offered because it is the file people actually want to point at.
+  const externalFiles = [];
+  if (account.configDir === DEFAULT_CLAUDE_DIR) {
+    const homeJson = path.join(os.homedir(), '.claude.json');
+    try {
+      const st = fs.statSync(homeJson);
+      if (st.isFile()) {
+        externalFiles.push({ name: '.claude.json', path: homeJson, size: st.size, mtime: st.mtime.toISOString() });
+      }
+    } catch {}
+  }
+
+  const cached = getSetting('usage:' + account.id);
+
+  return {
+    ok: true,
+    account: {
+      id: account.id,
+      name: account.name,
+      configDir: account.configDir,
+      wslDistro: account.wslDistro || null,
+      wslHome: account.wslHome || null,
+    },
+    isActive: getActiveAccount().id === account.id,
+    configDirExists,
+    launchCommand: accountLaunchCommand(account),
+    files,
+    externalFiles,
+    token: accountTokenInfo(account),
+    usage: cached ? { ...cached, _cached: true } : {},
+  };
+});
+
+// Read one allowlisted config file out of the account's own config dir.
+ipcMain.handle('read-account-config-file', (_event, accountId, name) => {
+  const account = findAccount(accountId);
+  if (!account) return { ok: false, error: 'unknown account' };
+  const filePath = resolveAccountFile(account, name);
+  if (!filePath) return { ok: false, error: 'file not readable for this account' };
+  try {
+    const st = fs.statSync(filePath);
+    if (!st.isFile()) return { ok: false, error: 'not a file' };
+    const truncated = st.size > ACCOUNT_FILE_MAX_BYTES;
+    const content = truncated
+      ? fs.readFileSync(filePath, 'utf8').slice(0, ACCOUNT_FILE_MAX_BYTES)
+      : fs.readFileSync(filePath, 'utf8');
+    return { ok: true, name, path: filePath, size: st.size, truncated, content };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// "Am I still signed in?" — asks the usage API and reports what the status code
+// means. 401/403 is the reachable case the CLI logs today: the token is on disk
+// but the server has stopped accepting it.
+ipcMain.handle('check-account-auth', async (_event, accountId) => {
+  const account = findAccount(accountId);
+  if (!account) return { ok: false, state: 'unknown', message: 'unknown account' };
+  try {
+    const probe = await probeUsage(account.configDir);
+    if (!probe.tokenPresent) {
+      return { ok: true, state: 'missing', status: 0, message: 'No OAuth token found for this account.' };
+    }
+    if (probe.ok) {
+      const usage = probe.usage || {};
+      if (Object.keys(usage).length) setSetting('usage:' + account.id, usage);
+      return { ok: true, state: 'authorized', status: probe.status, message: 'Token accepted by the usage API.', usage };
+    }
+    if (probe.status === 401 || probe.status === 403) {
+      return { ok: true, state: 'expired', status: probe.status, message: 'The API rejected this token — sign in again with `claude` in this account.' };
+    }
+    if (probe.status === 429) {
+      const mins = Math.ceil((probe.retryAfterSeconds || 0) / 60);
+      return {
+        ok: true,
+        state: 'rate-limited',
+        status: 429,
+        message: mins > 0 ? `Usage API rate limited — retry in ~${mins} min.` : 'Usage API rate limited — retry later.',
+      };
+    }
+    return { ok: true, state: 'error', status: probe.status, message: `Usage API returned ${probe.status}.` };
+  } catch (err) {
+    return { ok: true, state: 'network', status: 0, message: err.message || 'Could not reach the usage API.' };
+  }
+});
+
+// Same stats data path as the active-account Stats tab, pointed at one account.
+ipcMain.handle('get-account-stats', (_event, accountId) => {
+  const account = findAccount(accountId);
+  if (!account) return null;
+  return buildStatsForAccount(account);
+});
+
 // --- Scheduled tasks ---
 const scheduleIpc = require('./schedule-ipc');
 
@@ -1677,7 +1908,7 @@ const SETTING_DEFAULTS = {
   addDirs: '',
   visibleSessionCount: 5,
   sidebarWidth: 340,
-  terminalTheme: 'switchboard',
+  terminalTheme: 'wootonpadDark',
   mcpEmulation: false,
   shellProfile: 'auto',
   showAvatars: true,
@@ -1708,7 +1939,9 @@ ipcMain.handle('get-effective-settings', (_event, projectPath) => {
 ipcMain.handle('get-active-sessions', () => {
   const active = [];
   for (const [sessionId, session] of activeSessions) {
-    if (!session.exited) active.push(sessionId);
+    // Ephemeral shells belong to the session side panel, which owns their whole
+    // lifecycle. They are not sessions the sidebar or the grid may know about.
+    if (!session.exited && !session.isEphemeral) active.push(sessionId);
   }
   return active;
 });
@@ -1717,7 +1950,7 @@ ipcMain.handle('get-active-sessions', () => {
 ipcMain.handle('get-active-terminals', () => {
   const terminals = [];
   for (const [sessionId, session] of activeSessions) {
-    if (!session.exited && session.isPlainTerminal) {
+    if (!session.exited && session.isPlainTerminal && !session.isEphemeral) {
       terminals.push({ sessionId, projectPath: session.projectPath });
     }
   }
@@ -1807,6 +2040,18 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
   }
 
   const isPlainTerminal = sessionOptions?.type === 'terminal';
+  // The session side panel's scratch shell: created when the panel opens,
+  // killed when it closes. Exactly one may exist, so a renderer reload — which
+  // never gets to run the panel's own teardown — cannot leak a PTY: the next
+  // panel to open reaps whatever the previous document left behind.
+  const isEphemeral = !!sessionOptions?.ephemeral;
+  if (isEphemeral) {
+    for (const [, s] of activeSessions) {
+      if (s.isEphemeral && !s.exited) {
+        try { s.pty.kill(); } catch {}
+      }
+    }
+  }
 
   // Resolve shell profile from effective settings
   const effectiveProfileId = (() => {
@@ -2034,7 +2279,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     outputBuffer: [], outputBufferSize: 0, altScreen: false,
     projectPath, firstResize: true,
     projectFolder, knownJsonlFiles, sessionSlug,
-    isPlainTerminal, forkFrom: sessionOptions?.forkFrom || null,
+    isPlainTerminal, isEphemeral, forkFrom: sessionOptions?.forkFrom || null,
     mcpServer, _openedAt: Date.now(),
   };
   activeSessions.set(sessionId, session);

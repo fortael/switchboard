@@ -14,8 +14,29 @@ function readSessionFile(filePath, folder, projectPath) {
     let slug = null;
     let customTitle = null;
     let aiTitle = null;
+    // How full the model's context window was on the last assistant turn.
+    // Everything the request carried as input counts: fresh tokens, tokens
+    // written to the cache, and tokens read back from it. This reproduces the
+    // percentage the CLI prints in its own status line.
+    let contextTokens = 0;
+    // The window size is not stated anywhere as a number, but the model ids in
+    // a `cost-state` entry's modelUsage carry a `[1m]` suffix when the long
+    // context is in play — e.g. "claude-opus-5[1m]". That beats guessing from
+    // how many tokens a session happened to reach.
+    let contextLimit = 0;
     for (const line of lines) {
       const entry = JSON.parse(line);
+      const usage = entry.message?.usage;
+      if (usage) {
+        contextTokens = (usage.input_tokens || 0)
+          + (usage.cache_creation_input_tokens || 0)
+          + (usage.cache_read_input_tokens || 0);
+      }
+      if (entry.type === 'cost-state' && entry.modelUsage) {
+        for (const model of Object.keys(entry.modelUsage)) {
+          if (/\[1m\]/i.test(model)) contextLimit = 1000000;
+        }
+      }
       if (entry.slug && !slug) slug = entry.slug;
       if (entry.type === 'custom-title' && entry.customTitle) {
         customTitle = entry.customTitle;
@@ -49,7 +70,7 @@ function readSessionFile(filePath, folder, projectPath) {
       summary, firstPrompt: summary,
       created: stat.birthtime.toISOString(),
       modified: stat.mtime.toISOString(),
-      messageCount, textContent, slug, customTitle, aiTitle,
+      messageCount, textContent, slug, customTitle, aiTitle, contextTokens, contextLimit,
     };
   } catch {
     return null;

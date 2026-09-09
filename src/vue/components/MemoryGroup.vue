@@ -54,7 +54,9 @@ const props = defineProps({
 
 const emit = defineEmits(['open']);
 
-const collapsed = ref(false);
+// Collapsed by default: the agent-files list is a reference shelf, not a
+// working list — most projects contribute a CLAUDE.md nobody needs open.
+const collapsed = ref(true);
 
 function toggle() { collapsed.value = !collapsed.value; }
 function fmtDate(d) { return window.formatDate ? window.formatDate(new Date(d)) : d; }

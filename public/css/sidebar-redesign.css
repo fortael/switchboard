@@ -1,0 +1,417 @@
+/* Sidebar redesign chrome — CommandBar, FilterTabs, AttentionRail.
+   Ported from design/ui_kits/switchboard/SwitchboardScreen.jsx.
+
+   Every class is prefixed `sbx-` so nothing here collides with style.css.
+   Colours, radii and durations are always design tokens (already inlined at
+   the top of public/style.css); a few geometry literals (22px monogram, 34px
+   pill height, 13px badge) have no token and are kept verbatim from the
+   mockup. Never write a literal hex in this file. */
+
+/* ------------------------------------------------------------------ *
+ * CommandBar
+ * ------------------------------------------------------------------ */
+
+.sbx-commandbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) 0;
+}
+
+.sbx-commandbar__field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--hit-sm);
+  padding: 0 var(--space-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  transition:
+    background var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard);
+}
+
+.sbx-commandbar__field:focus-within {
+  background: var(--surface-card-hover);
+  border-color: var(--orange-500);
+}
+
+.sbx-commandbar__field .sb-icon {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.sbx-commandbar__input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-family: var(--font-ui);
+}
+
+.sbx-commandbar__input::placeholder {
+  color: var(--text-disabled);
+}
+
+.sbx-commandbar__chip {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1;
+  color: var(--text-disabled);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  transition:
+    color var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard);
+}
+
+@media (hover: hover) {
+  .sbx-commandbar__chip:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-default);
+  }
+}
+
+.sbx-commandbar__add {
+  width: var(--hit-sm);
+  height: var(--hit-sm);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  background: var(--surface-card-hover);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  transition:
+    background var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard),
+    color var(--duration-base) var(--ease-standard);
+}
+
+@media (hover: hover) {
+  .sbx-commandbar__add:hover {
+    background: var(--orange-500);
+    border-color: var(--orange-500);
+    color: var(--text-on-accent);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * FilterTabs
+ * ------------------------------------------------------------------ */
+
+/* Two children: a scrolling tab track and a fixed action cluster. Both keep
+   the same bottom padding so `center` alignment lines the icons up with the
+   tab text rather than with the box that carries the underline. */
+.sbx-filtertabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sbx-filtertabs__track {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.sbx-filtertabs__track::-webkit-scrollbar { height: 0; }
+
+.sbx-filtertabs__tab {
+  position: relative;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-family: var(--font-ui);
+  font-weight: var(--weight-medium);
+  color: var(--text-tertiary);
+  transition: color var(--duration-base) var(--ease-standard);
+}
+
+@media (hover: hover) {
+  .sbx-filtertabs__tab:hover {
+    color: var(--text-secondary);
+  }
+}
+
+.sbx-filtertabs__tab--active {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+@media (hover: hover) {
+  .sbx-filtertabs__tab--active:hover {
+    color: var(--text-primary);
+  }
+}
+
+.sbx-filtertabs__underline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  transition: background var(--duration-base) var(--ease-standard);
+}
+
+.sbx-filtertabs__tab--active .sbx-filtertabs__underline {
+  background: var(--orange-500);
+}
+
+.sbx-filtertabs__views {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  padding-bottom: var(--space-2);
+}
+
+.sbx-filtertabs__view {
+  width: var(--hit-xs);
+  height: var(--hit-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: transparent;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-filtertabs__view .sb-icon {
+  color: var(--text-tertiary);
+}
+
+@media (hover: hover) {
+  .sbx-filtertabs__view:hover {
+    background: var(--surface-card);
+  }
+}
+
+.sbx-filtertabs__view--active {
+  background: var(--surface-card-hover);
+}
+
+.sbx-filtertabs__view--active .sb-icon {
+  color: var(--orange-500);
+}
+
+@media (hover: hover) {
+  .sbx-filtertabs__view--active:hover {
+    background: var(--surface-card-hover);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * AttentionRail
+ * ------------------------------------------------------------------ */
+
+.sbx-attention {
+  margin: var(--space-3) var(--space-3) 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+}
+
+.sbx-attention__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding-left: 2px;
+}
+
+.sbx-attention__dot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--amber-500);
+}
+
+.sbx-attention__label {
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-weight: var(--weight-semibold);
+}
+
+.sbx-attention__spacer {
+  flex: 1;
+}
+
+.sbx-attention__count {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+.sbx-attention__rail {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.sbx-attention__rail::-webkit-scrollbar {
+  display: none;
+}
+
+/* Each avatar carries its status colour as --sbx-tone so the monogram and
+   the count badge can both read it without an inline style. */
+.sbx-attention__avatar {
+  --sbx-tone: var(--gray-500);
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 30px;
+  width: 30px;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--radius-full);
+  background: transparent;
+  border: 1px solid transparent;
+  transition:
+    background var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard),
+    padding var(--duration-base) var(--ease-standard);
+}
+
+.sbx-attention__avatar--running { --sbx-tone: var(--green-500); }
+.sbx-attention__avatar--waiting { --sbx-tone: var(--amber-500); }
+.sbx-attention__avatar--done    { --sbx-tone: var(--blue-500); }
+.sbx-attention__avatar--idle    { --sbx-tone: var(--gray-500); }
+
+/* ProjectAvatar renders an <img> when the project has an icon and a
+   colour-filled <span> of initials when it does not — the same avatar the
+   session list and the collapsed rail use, so a project looks identical
+   everywhere. Status is a ring around it rather than a tint, which would
+   fight the avatar's own colour. */
+.sbx-attention__monogram {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--radius-xs);
+  box-shadow: 0 0 0 var(--border-width-thick) color-mix(in srgb, var(--sbx-tone) 65%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  color: var(--text-on-accent);
+  letter-spacing: var(--tracking-normal);
+}
+
+.sbx-attention__monogram:is(img) {
+  display: block;
+  object-fit: cover;
+}
+
+/* Open state (active or hovered) reveals the meta column and hides the
+   badge. Width intentionally snaps 30px → auto, matching the mockup, which
+   transitions only background, border-color and padding. */
+.sbx-attention__meta {
+  display: none;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.sbx-attention__name {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+
+.sbx-attention__reason {
+  font-size: 9px;
+  color: var(--text-tertiary);
+}
+
+/* Sized to ride the monogram's corner, not cover it: the button is only
+   30px wide, so content-box padding + border has to stay tiny. */
+.sbx-attention__badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 9px;
+  height: 11px;
+  padding: 0 2px;
+  border-radius: var(--radius-full);
+  background: var(--sbx-tone);
+  color: var(--surface-panel);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1;
+  font-weight: var(--weight-bold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--surface-panel);
+  box-sizing: content-box;
+}
+
+.sbx-attention__avatar--open {
+  width: auto;
+  padding: 0 10px 0 var(--space-1);
+  background: var(--surface-card-hover);
+  border-color: var(--border-default);
+}
+
+.sbx-attention__avatar--open .sbx-attention__meta {
+  display: flex;
+}
+
+.sbx-attention__avatar--open .sbx-attention__badge {
+  display: none;
+}
+
+@media (hover: hover) {
+  .sbx-attention__avatar:hover {
+    width: auto;
+    padding: 0 10px 0 var(--space-1);
+    background: var(--surface-card-hover);
+    border-color: var(--border-default);
+  }
+
+  .sbx-attention__avatar:hover .sbx-attention__meta {
+    display: flex;
+  }
+
+  .sbx-attention__avatar:hover .sbx-attention__badge {
+    display: none;
+  }
+}

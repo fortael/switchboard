@@ -14,6 +14,20 @@
       <span class="arrow" @click.stop="toggle">&#9660;</span>
       <ProjectAvatar class="project-header-avatar" :project-path="project.projectPath" @click.stop="toggle" />
       <span class="project-name" @click.stop="toggle">{{ shortName }}</span>
+      <!-- Jumps to the project view. Lives on the group header, not on the
+           session rows: the target is the same for every row in the group,
+           and this is where the other project-scoped controls already are.
+           Goes through the global bridge so no callback prop has to be
+           threaded down from App.vue. -->
+      <button
+        type="button"
+        class="project-open-btn"
+        data-tooltip="Open project"
+        aria-label="Open project"
+        @click.stop="openProject"
+      >
+        <SbIcon name="square-arrow-out-up-right" :size="13" tone="muted" />
+      </button>
       <button class="project-settings-btn" data-tooltip="Project settings" @click.stop="$emit('settings', project.projectPath)" v-html="gearSvg"></button>
       <button class="project-archive-btn" data-tooltip="Archive all sessions" @click.stop="archiveAll" v-html="archiveSvg"></button>
       <button class="project-new-btn" data-tooltip="New session" @click.stop="$emit('new-session', project, $event.currentTarget)" v-html="plusSvg"></button>
@@ -151,6 +165,7 @@ import { computed, ref } from 'vue';
 import SessionItem from './SessionItem.vue';
 import SlugGroup from './SlugGroup.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
+import SbIcon from './SbIcon.vue';
 
 const props = defineProps({
   project: { type: Object, required: true },
@@ -194,15 +209,19 @@ const worktreeName = computed(() => {
   return match?.[1] || props.project.projectPath.split('/').pop();
 });
 
-// Initial collapse state: auto-collapse stale or project-name-only matches
-const collapsed = ref(() => {
+// Initial collapse state: auto-collapse stale or project-name-only matches.
+// This used to be `ref(() => {...})`, which stored the function itself — always
+// truthy, so every group mounted collapsed and the heuristic never ran.
+function initialCollapsed() {
   if (props.project._projectMatchedOnly) return true;
   if (props.searchMatchIds || props.showStarredOnly || props.showRunningOnly) return false;
   const sessions = props.project.sessions || [];
   if (sessions.length === 0) return false;
   const mostRecent = sessions.reduce((a, b) => new Date(b.modified) > new Date(a.modified) ? b : a);
   return (Date.now() - new Date(mostRecent.modified)) > props.sessionMaxAgeDays * 86400000;
-});
+}
+
+const collapsed = ref(initialCollapsed());
 
 function toggle() { collapsed.value = !collapsed.value; }
 
@@ -297,6 +316,11 @@ const olderItems = computed(() => {
 
 async function archiveAll() {
   emit('archive-sessions', props.project.sessions.filter(s => !s.archived));
+}
+
+// ProjectsApp.vue reaches the project viewer the same way.
+function openProject() {
+  window.__sb?.openProject?.(props.project);
 }
 
 // SVG icons

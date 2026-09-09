@@ -3,7 +3,10 @@
     <span class="account-btn-dot"></span>
     <span class="account-btn-name">{{ activeName }}</span>
     <span class="account-btn-chips">
-      <span v-for="chip in activeChips" :key="chip" class="account-chip">{{ chip }}</span>
+      <span v-for="chip in activeChips" :key="chip.key" class="account-chip">
+        <UsageRing v-if="chip.pct != null" :value="chip.pct" :size="12" :label="chip.title" />
+        {{ chip.text }}
+      </span>
     </span>
     <svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M1 1l4 4 4-4"/>
@@ -21,7 +24,10 @@
       <span class="acct-dd-dot"></span>
       <span class="acct-dd-name">{{ acc.name }}</span>
       <span class="acct-dd-chips">
-        <span v-for="chip in chips(acc.id)" :key="chip" class="account-chip">{{ chip }}</span>
+        <span v-for="chip in chips(acc.id)" :key="chip.key" class="account-chip">
+          <UsageRing v-if="chip.pct != null" :value="chip.pct" :size="12" :label="chip.title" />
+          {{ chip.text }}
+        </span>
       </span>
     </div>
   </div>
@@ -29,6 +35,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
+import UsageRing from './UsageRing.vue';
 
 const props = defineProps({
   callbacks: { type: Object, required: true },
@@ -46,11 +53,20 @@ const activeName = computed(() => {
 
 const activeChips = computed(() => chips(activeAccountId.value));
 
+// [{ key, text, pct, title }] — pct drives the ring, text stays so the exact
+// number is readable without hovering.
 function chips(id) {
   const u = usage.value[id];
   if (!u || u._error || u._rateLimited) return [];
   const out = [];
-  if (u.session != null) out.push(`${u.session}% 5h`);
+  if (u.session != null) {
+    out.push({
+      key: 'session',
+      text: `${u.session}% 5h`,
+      pct: u.session,
+      title: `${u.session}% of the 5-hour limit used`,
+    });
+  }
   return out;
 }
 

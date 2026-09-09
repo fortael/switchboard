@@ -35,6 +35,10 @@ export const store = reactive({
   // App layout state
   activeTab: 'sessions',
   sidebarCollapsed: false,
+  theme: 'dark',                 // 'dark' | 'light' — mirrored onto <html data-theme>
+  sessionFilterTab: 'recent',    // FilterTabs selection: recent | running | pinned
+  sidebarViewMode: 'list',       // 'list' | 'grid'
+  attentionProject: null,        // projectPath highlighted in the active-sessions rail
   loadingStatus: '',
   accountSwitching: false,
   searchQuery: '',
@@ -52,6 +56,14 @@ export const store = reactive({
   memoryViewerOpen: false,
   gridViewActive: false,
   gridViewerCount: '',
+  accountViewerOpen: false,      // Accounts tab detail panel in the main area
+  accountViewerId: null,         // which account it is showing
+
+  // Session side panel — uncommitted changes / containers / scratch shell for
+  // the session that is open in the main area. Scoped to that session's own
+  // projectPath, which may be a worktree the Projects tab is not showing.
+  sidePanelOpen: false,
+  sidePanelWidth: 380,
 
   // Project avatars: projectPath → data: URL string
   avatarDataUrls: {},

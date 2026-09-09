@@ -135,23 +135,59 @@
               </div>
               <div class="settings-field-control">
                 <select class="settings-select" v-model="form.terminalTheme">
-                  <option v-for="(theme, key) in terminalThemes" :key="key" :value="key">{{ theme.label }}</option>
+                  <optgroup label="Dark">
+                    <option v-for="(theme, key) in darkTerminalThemes" :key="key" :value="key">{{ theme.label }}</option>
+                  </optgroup>
+                  <optgroup label="Light">
+                    <option v-for="(theme, key) in lightTerminalThemes" :key="key" :value="key">{{ theme.label }}</option>
+                  </optgroup>
+                </select>
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <div class="settings-field-info">
+                <span class="settings-label">Terminal Font</span>
+                <div class="settings-description">Monospace font for terminal sessions</div>
+              </div>
+              <div class="settings-field-control">
+                <select class="settings-select" v-model="form.monoFont">
+                  <option v-for="(font, key) in terminalFonts" :key="key" :value="key">{{ font.label }}</option>
                 </select>
               </div>
             </div>
 
             <div class="settings-field settings-field-wide">
               <div class="settings-field-info">
-                <span class="settings-label">Terminal Font</span>
-                <div class="settings-description">Monospace font for terminal sessions</div>
+                <span class="settings-label">Terminal Size</span>
+                <div class="settings-description">Font size and line height for terminal sessions</div>
               </div>
-              <div class="settings-field-control settings-font-control">
-                <select class="settings-select" v-model="form.monoFont">
-                  <option v-for="(font, key) in terminalFonts" :key="key" :value="key">{{ font.label }}</option>
-                </select>
-                <span class="settings-font-preview" :style="{ fontFamily: terminalFonts[form.monoFont]?.family }">
-                  fn main() { println!("Hello, 世界"); }
-                </span>
+              <div class="settings-field-control sbx-metrics">
+                <label class="sbx-metric">
+                  <span class="sbx-metric__label">Size</span>
+                  <input class="sbx-metric__range" type="range" min="8" max="24" step="1" v-model.number="form.terminalFontSize">
+                  <span class="sbx-metric__value">{{ form.terminalFontSize }}px</span>
+                </label>
+                <label class="sbx-metric">
+                  <span class="sbx-metric__label">Line height</span>
+                  <input class="sbx-metric__range" type="range" min="1" max="2.2" step="0.05" v-model.number="form.terminalLineHeight">
+                  <span class="sbx-metric__value">{{ form.terminalLineHeight.toFixed(2) }}</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-field settings-field-wide">
+              <div class="settings-field-info">
+                <span class="settings-label">Preview</span>
+                <div class="settings-description">Live — theme, font, size and line height exactly as a session will render them</div>
+              </div>
+              <div class="settings-field-control">
+                <TerminalPreview
+                  :theme-key="form.terminalTheme"
+                  :font-key="form.monoFont"
+                  :font-size="form.terminalFontSize"
+                  :line-height="form.terminalLineHeight"
+                />
               </div>
             </div>
 
@@ -164,9 +200,35 @@
                 <select class="settings-select" v-model="form.uiFont">
                   <option v-for="(font, key) in terminalFonts" :key="key" :value="key">{{ font.label }}</option>
                 </select>
-                <span class="settings-font-preview" :style="{ fontFamily: terminalFonts[form.uiFont]?.family }">
+                <span
+                  class="settings-font-preview"
+                  :style="{
+                    fontFamily: terminalFonts[form.uiFont]?.family,
+                    fontSize: form.uiFontSize + 'px',
+                    lineHeight: form.uiLineHeight,
+                  }"
+                >
                   Wooton Pad — 42 sessions
                 </span>
+              </div>
+            </div>
+
+            <div class="settings-field settings-field-wide">
+              <div class="settings-field-info">
+                <span class="settings-label">App Size</span>
+                <div class="settings-description">Scales the whole interface type scale and its line height</div>
+              </div>
+              <div class="settings-field-control sbx-metrics">
+                <label class="sbx-metric">
+                  <span class="sbx-metric__label">Size</span>
+                  <input class="sbx-metric__range" type="range" min="10" max="20" step="1" v-model.number="form.uiFontSize">
+                  <span class="sbx-metric__value">{{ form.uiFontSize }}px</span>
+                </label>
+                <label class="sbx-metric">
+                  <span class="sbx-metric__label">Line height</span>
+                  <input class="sbx-metric__range" type="range" min="1.1" max="2.2" step="0.05" v-model.number="form.uiLineHeight">
+                  <span class="sbx-metric__value">{{ form.uiLineHeight.toFixed(2) }}</span>
+                </label>
               </div>
             </div>
 
@@ -310,6 +372,7 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { store } from '../store.js';
 import SbSwitch from './SbSwitch.vue';
 import SbButton from './SbButton.vue';
+import TerminalPreview from './TerminalPreview.vue';
 
 // ── Derived from store ────────────────────────────────────────────
 const isProject = computed(() => store.settingsScope === 'project');
@@ -333,6 +396,16 @@ const shellProfiles = ref([]);
 const terminalThemes = computed(() => window.TERMINAL_THEMES || {});
 const terminalFonts = computed(() => window.TERMINAL_FONTS || {});
 
+// Themes carry a `mode` so the dropdown can group them; anything without one
+// predates the split and is dark.
+function themesByMode(mode) {
+  return Object.fromEntries(
+    Object.entries(terminalThemes.value).filter(([, t]) => (t.mode || 'dark') === mode)
+  );
+}
+const darkTerminalThemes = computed(() => themesByMode('dark'));
+const lightTerminalThemes = computed(() => themesByMode('light'));
+
 const COMMIT_MSG_PROMPT_DEFAULT = `Write a concise git commit message (max 72 chars for first line) for these changes. Use conventional commit format (feat/fix/refactor/docs/chore). Output ONLY the commit message, no explanation:`;
 const commitMsgPromptDefault = COMMIT_MSG_PROMPT_DEFAULT;
 
@@ -345,15 +418,24 @@ const form = reactive({
   addDirs: '',
   visibleSessionCount: 10,
   sessionMaxAgeDays: 3,
-  terminalTheme: 'switchboard',
+  terminalTheme: 'wootonpadDark',
   mcpEmulation: true,
   shellProfile: 'auto',
   showAvatars: true,
   monoFont: 'default',
   uiFont: 'default',
+  uiFontSize: 13,
+  uiLineHeight: 1.55,
+  terminalFontSize: 12,
+  terminalLineHeight: 1.25,
   commitMessagePrompt: '',
   gitlabToken: '',
 });
+
+// Mirrors UI_METRIC_DEFAULTS in public/ui-metrics.js.
+const METRIC_DEFAULTS = window.UI_METRIC_DEFAULTS || {
+  uiFontSize: 13, uiLineHeight: 1.55, terminalFontSize: 12, terminalLineHeight: 1.25,
+};
 
 const useGlobal = reactive({
   permissionMode: true,
@@ -395,12 +477,16 @@ async function loadSettings() {
   if (!isProject.value) {
     form.visibleSessionCount = current.visibleSessionCount ?? 10;
     form.sessionMaxAgeDays = current.sessionMaxAgeDays ?? 3;
-    form.terminalTheme = current.terminalTheme ?? 'switchboard';
+    form.terminalTheme = current.terminalTheme ?? 'wootonpadDark';
     form.mcpEmulation = current.mcpEmulation !== false;
     form.shellProfile = current.shellProfile ?? 'auto';
     form.showAvatars = current.showAvatars !== false;
     form.monoFont = current.monoFont ?? 'default';
     form.uiFont = current.uiFont ?? 'default';
+    form.uiFontSize = current.uiFontSize ?? METRIC_DEFAULTS.uiFontSize;
+    form.uiLineHeight = current.uiLineHeight ?? METRIC_DEFAULTS.uiLineHeight;
+    form.terminalFontSize = current.terminalFontSize ?? METRIC_DEFAULTS.terminalFontSize;
+    form.terminalLineHeight = current.terminalLineHeight ?? METRIC_DEFAULTS.terminalLineHeight;
     form.commitMessagePrompt = current.commitMessagePrompt || COMMIT_MSG_PROMPT_DEFAULT;
     form.gitlabToken = current.gitlabToken || '';
     originalMcpEmulation = form.mcpEmulation;
@@ -445,12 +531,16 @@ async function save() {
       addDirs: form.addDirs,
       visibleSessionCount: form.visibleSessionCount || 10,
       sessionMaxAgeDays: form.sessionMaxAgeDays || 3,
-      terminalTheme: form.terminalTheme || 'switchboard',
+      terminalTheme: form.terminalTheme || 'wootonpadDark',
       mcpEmulation: form.mcpEmulation,
       shellProfile: form.shellProfile || 'auto',
       showAvatars: form.showAvatars,
       monoFont: form.monoFont || 'default',
       uiFont: form.uiFont || 'default',
+      uiFontSize: Number(form.uiFontSize) || METRIC_DEFAULTS.uiFontSize,
+      uiLineHeight: Number(form.uiLineHeight) || METRIC_DEFAULTS.uiLineHeight,
+      terminalFontSize: Number(form.terminalFontSize) || METRIC_DEFAULTS.terminalFontSize,
+      terminalLineHeight: Number(form.terminalLineHeight) || METRIC_DEFAULTS.terminalLineHeight,
       commitMessagePrompt: form.commitMessagePrompt === COMMIT_MSG_PROMPT_DEFAULT ? '' : (form.commitMessagePrompt || ''),
       gitlabToken: form.gitlabToken || '',
     };
@@ -467,6 +557,7 @@ async function save() {
       window._applyTerminalFont?.(window.TERMINAL_FONTS[settings.monoFont].family);
     }
     window._applyUiFont?.(settings.uiFont);
+    window._applyUiMetrics?.(settings);
     if (typeof refreshSidebar === 'function') refreshSidebar();
 
     if (settings.mcpEmulation !== originalMcpEmulation) {

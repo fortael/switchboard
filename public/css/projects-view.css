@@ -1,0 +1,141 @@
+/* Projects tab chrome + the sessions-sidebar "open project" control.
+
+   Loaded after style.css and the redesign layer, before theme-light.css.
+   Every colour, radius, spacing and font-size here is a design token — a
+   literal px font-size would opt the control out of the App Font Size knob
+   (--ui-scale), and a literal hex would not follow the light theme. */
+
+/* ------------------------------------------------------------------ *
+ * FilterTabs: instances with no view switch
+ *
+ * The projects tab reuses the sessions tab's FilterTabs verbatim, but a
+ * list/grid switch means nothing for a project list. Hiding the built-in
+ * pair here (rather than branching inside FilterTabs.vue) keeps the
+ * component identical for the sessions tab. Only the `--builtin` buttons
+ * go: whatever the instance passes through the `actions` slot stays.
+ * ------------------------------------------------------------------ */
+
+.sbx-filtertabs--no-views .sbx-filtertabs__view--builtin {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ *
+ * Projects tab layout
+ *
+ * The sessions tab pins its FilterTabs above the scrolling list because
+ * the row lives outside #sidebar-content. The projects tab renders its
+ * own instance inside the panel, so the panel becomes the flex column and
+ * the list below it does the scrolling — same result, same geometry.
+ * (#projects-content still honours v-show: an inline `display:none` beats
+ * this rule.)
+ * ------------------------------------------------------------------ */
+
+#projects-content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.projects-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.projects-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Matches .sbx-sidebar-panel's own gutter, which #projects-content gave up
+     above so the tab row could sit flush under the command bar. */
+  padding: var(--space-2) 0 var(--space-4);
+}
+
+.projects-scroll .project-group:first-child {
+  margin-top: 0;
+}
+
+/* style.css thins the scrollbar on #projects-content; the scrolling element
+   moved down a level, so the same skin has to follow it. Matches
+   #sidebar-content on the sessions tab. */
+.projects-scroll::-webkit-scrollbar { width: 5px; }
+.projects-scroll::-webkit-scrollbar-track { background: transparent; }
+.projects-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: var(--radius-xs);
+}
+.projects-scroll::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* Project count, in the FilterTabs actions slot. Sits at the same weight as
+   the sessions tab's loading status in the same slot. */
+.projects-count {
+  align-self: center;
+  padding: 0 var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* ------------------------------------------------------------------ *
+ * Jump-to-project control (sessions sidebar, project group header)
+ *
+ * style.css normalises every in-row icon button to a 26px box by naming it
+ * in the CANONICAL CONTROL ROLES selector lists. This class is new and that
+ * file is not ours to edit, so the same role is reproduced here, verbatim:
+ * --hit-xs square, --radius-sm, transparent, hover to --surface-card.
+ * ------------------------------------------------------------------ */
+
+.project-open-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--hit-xs);
+  height: var(--hit-xs);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  line-height: 1;
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  /* Quiet until the header is hovered, like the settings/archive/new trio. */
+  opacity: 0;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    opacity var(--duration-fast) var(--ease-standard);
+}
+
+.project-header:hover .project-open-btn {
+  opacity: 0.7;
+}
+
+/* Keyboard users never hover, so the reveal has to answer to focus too. */
+.project-open-btn:focus-visible {
+  opacity: 1;
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+@media (hover: hover) {
+  .project-open-btn:hover {
+    background: var(--surface-card);
+    color: var(--text-secondary);
+    opacity: 1;
+  }
+}
+
+/* SbIcon pins its own colour per tone, so the button's hover tint has to be
+   handed to the glyph explicitly. */
+.project-open-btn:hover .sb-icon,
+.project-open-btn:focus-visible .sb-icon {
+  color: var(--text-secondary);
+}

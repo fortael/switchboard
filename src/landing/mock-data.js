@@ -3,8 +3,18 @@ const mins = (n) => new Date(now - n * 60 * 1000).toISOString();
 const hours = (n) => new Date(now - n * 60 * 60 * 1000).toISOString();
 const days = (n) => new Date(now - n * 24 * 60 * 60 * 1000).toISOString();
 
+// Live PTYs. Three of the projects below own at least one, so AttentionRail
+// renders a row per project and CollapsedRailApp has avatars to show.
 export const MOCK_ACTIVE_PTY_IDS = new Set(['sess-001', 'sess-004', 'sess-006', 'sess-003', 'sess-term']);
+// One project per rail status: wooton-pad waits on input, my-api is working,
+// blog-redesign has a reply ready.
 export const MOCK_WAITING_PTY_IDS = new Set(['sess-003']);
+export const MOCK_RESPONSE_READY_PTY_IDS = new Set(['sess-006']);
+
+// Session the demo opens with — drives SessionHeaderApp and the fake terminal.
+export const MOCK_SELECTED_SESSION_ID = 'sess-001';
+// Project the second demo window (ProjectViewerApp) opens.
+export const MOCK_VIEWER_PROJECT_PATH = '/Users/demo/Projects/my-api';
 
 export const MOCK_PROJECTS = [
   {
@@ -84,6 +94,15 @@ export const MOCK_PROJECTS = [
         messageCount: 33,
         starred: false, archived: false, type: 'claude', slug: null,
       },
+      // Archived, so the Archived filter tab has something the other tabs hide.
+      {
+        sessionId: 'sess-008',
+        name: 'Newsletter signup form',
+        aiTitle: 'Double opt-in flow with Mailchimp webhook',
+        modified: days(9),
+        messageCount: 21,
+        starred: false, archived: true, type: 'claude', slug: null,
+      },
     ],
   },
 ];
@@ -93,6 +112,9 @@ export const MOCK_ACCOUNTS = [
   { id: 'work', name: 'Work', configDir: '~/.claude-work' },
 ];
 
+export const MOCK_ACTIVE_ACCOUNT_ID = 'default';
+
+// Usage quota behind the account chip in the top nav ("42% 5h").
 export const MOCK_USAGE = {
   default: { session: 42, weekAll: 68, sessionResetIn: '3h', weekAllResetIn: '2d' },
   work: { session: 15, weekAll: 31, sessionResetIn: '4h', weekAllResetIn: '5d' },
@@ -328,5 +350,13 @@ export const MOCK_TERMINAL_LINES = {
     { t: 'ok', v: '✓ Added focus-trap for keyboard nav' },
     { t: 'ok', v: '✓ CSS slide animation (no JS)' },
     { t: 'done', v: '● Session ended · 33 messages' },
+  ],
+  'sess-008': [
+    { t: 'logo', logo: LOGO, info: ['Claude Code v2.1.177', 'Opus 4.8 · Claude Max', '~/Projects/blog-redesign'] },
+    { t: 'blank' },
+    { t: 'sep', v: '─'.repeat(44) },
+    { t: 'ok', v: '✓ Added double opt-in confirmation step' },
+    { t: 'ok', v: '✓ Wired Mailchimp webhook handler' },
+    { t: 'done', v: '● Session ended · 21 messages' },
   ],
 };

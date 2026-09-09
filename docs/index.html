@@ -9,6 +9,9 @@
   <meta property="og:description" content="Browse sessions, switch accounts, review diffs, and manage your AI workspace — all in one place.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="landing.css">
+  <!-- After landing.css: the bundled style.css inside it still declares these
+       families against dead gstatic URLs, and the later rules win. -->
+  <link rel="stylesheet" href="css/fonts-brand.css">
 </head>
 <body>
   <div id="landing-app"></div>

@@ -9,8 +9,8 @@
           v-for="acc in accounts"
           :key="acc.id"
           class="session-item account-item"
-          :class="{ active: acc.id === activeAccountId }"
-          @click="onSwitch(acc)"
+          :class="{ active: acc.id === activeAccountId, 'account-item--selected': acc.id === store.accountViewerId }"
+          @click="onSelect(acc)"
         >
           <div class="session-row">
             <div class="account-name-row">
@@ -36,6 +36,12 @@
                   @click.stop="startEdit(acc)"
                   v-html="editSvg"
                 ></button>
+                <button
+                  v-if="acc.id !== activeAccountId"
+                  class="account-open-btn"
+                  data-tooltip="Make this the active account"
+                  @click.stop="onSwitch(acc)"
+                >Use</button>
                 <button
                   class="account-open-btn"
                   data-tooltip="Open Claude session in home directory"
@@ -114,6 +120,7 @@
 
 <script setup>
 import { ref, nextTick } from 'vue';
+import { store } from '../store.js';
 
 const props = defineProps({
   callbacks: { type: Object, required: true },
@@ -171,6 +178,13 @@ async function saveEdit(acc) {
 
 function cancelEdit() {
   editingId.value = null;
+}
+
+// Picking a row opens its detail panel in the main area. Switching the active
+// account re-scans every project, so it stays an explicit action ("Use") rather
+// than a side effect of looking at an account.
+function onSelect(acc) {
+  props.callbacks.openAccountViewer?.(acc.id);
 }
 
 async function onSwitch(acc) {
