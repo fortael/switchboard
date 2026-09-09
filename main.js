@@ -935,9 +935,14 @@ ipcMain.handle('git-generate-commit-msg', async (_event, projectPath, style = 's
     const msg = await new Promise((resolve, reject) => {
       // The claude binary lives wherever the project does — inside the
       // distribution for a WSL-backed one, so this call is routed there too.
+      // Absolute path, not a bare name: see resolveClaudeBinary — a packaged
+      // macOS app has no shell PATH, so `claude` alone is ENOENT there. A WSL
+      // account keeps the bare name: the binary that matters lives inside the
+      // distribution, and a host path would be meaningless there.
+      const claudeBin = activeWslDistro() ? 'claude' : resolveClaudeBinary();
       const [file, args, options] = projectExecFile(
-        ['claude', '-p', prompt, '--no-session-persistence'], projectPath,
-        { env: { ...process.env, ...activeAccountClaudeEnv() } }
+        [claudeBin, '-p', prompt, '--no-session-persistence'], projectPath,
+        { env: { ...process.env, PATH: claudeChildPath(), ...activeAccountClaudeEnv() } }
       );
       const child = spawn(file, args, options);
       let stdout = '', stderr = '';
@@ -1758,23 +1763,63 @@ function accountTokenInfo(account) {
 // One round trip for the panel's static half: paths, which config files exist,
 // whether a token is on file, and the last usage figures already in the DB.
 // Nothing here touches the network.
-// The panel offers a copy-paste command for running the CLI against one
-// account, so a bare `claude` is only the fallback — resolve the real binary
-// through a login shell, which is where nvm/mise/asdf put it.
+// Resolving `claude` to an absolute path is not optional. An app launched from
+// Finder or the Dock inherits launchd's minimal PATH — /usr/bin:/bin:/usr/sbin:
+// /sbin — not the shell's, so `spawn('claude')` fails with ENOENT in a packaged
+// build while working fine under `npm start`, which is launched from a terminal.
+// Same reason DOCKER_PATH exists above.
+//
+// Order: ask a login shell first, since that is where nvm/mise/asdf/bun put the
+// binary, then fall back to the locations the installers actually use.
+const CLAUDE_EXTRA_PATH = [
+  path.join(os.homedir(), '.local', 'bin'),
+  path.join(os.homedir(), '.claude', 'local'),
+  path.join(os.homedir(), '.bun', 'bin'),
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+];
+
 let _claudeBinary;
 function resolveClaudeBinary() {
   if (_claudeBinary !== undefined) return _claudeBinary;
   const { execFileSync } = require('child_process');
-  _claudeBinary = 'claude';
-  try {
-    const opts = { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] };
-    const out = process.platform === 'win32'
-      ? execFileSync('where', ['claude'], opts)
-      : execFileSync(process.env.SHELL || '/bin/sh', ['-lc', 'command -v claude'], opts);
-    const first = out.split(/\r?\n/).map(s => s.trim()).find(Boolean);
-    if (first) _claudeBinary = first;
-  } catch {}
+  const opts = { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] };
+  _claudeBinary = null;
+
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync('where', ['claude'], opts);
+      _claudeBinary = out.split(/\r?\n/).map(s => s.trim()).find(Boolean) || null;
+    } catch {}
+  } else {
+    // -l so the profile that sets up the version manager is sourced. SHELL can
+    // be absent under launchd, hence the explicit default.
+    for (const args of [['-lc', 'command -v claude'], ['-c', 'command -v claude']]) {
+      try {
+        const out = execFileSync(process.env.SHELL || '/bin/zsh', args, opts);
+        const hit = out.split('\n').map(s => s.trim()).find(Boolean);
+        if (hit && fs.existsSync(hit)) { _claudeBinary = hit; break; }
+      } catch {}
+    }
+    if (!_claudeBinary) {
+      for (const dir of CLAUDE_EXTRA_PATH) {
+        const candidate = path.join(dir, 'claude');
+        try { fs.accessSync(candidate, fs.constants.X_OK); _claudeBinary = candidate; break; } catch {}
+      }
+    }
+  }
+
+  // Nothing found: keep the bare name so the failure is an honest ENOENT rather
+  // than a path we invented.
+  if (!_claudeBinary) _claudeBinary = 'claude';
   return _claudeBinary;
+}
+
+// The CLI shells out to git, node and friends, which are equally missing from
+// launchd's PATH.
+function claudeChildPath() {
+  const extra = process.platform === 'win32' ? [] : CLAUDE_EXTRA_PATH;
+  return [process.env.PATH || '', ...extra].filter(Boolean).join(path.delimiter);
 }
 
 function posixQuote(value) {
