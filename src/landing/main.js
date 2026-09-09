@@ -1,14 +1,32 @@
 import { createApp } from 'vue';
 import { store } from '../vue/store.js';
 import LandingApp from './LandingApp.vue';
-import { MOCK_PROJECTS, MOCK_ACCOUNTS, MOCK_ACTIVE_PTY_IDS, MOCK_WAITING_PTY_IDS, MOCK_PROJECT_INFO, MOCK_PROJECT_DETAIL, getProjectAvatar } from './mock-data.js';
+import {
+  MOCK_PROJECTS,
+  MOCK_ACCOUNTS,
+  MOCK_ACTIVE_ACCOUNT_ID,
+  MOCK_ACTIVE_PTY_IDS,
+  MOCK_WAITING_PTY_IDS,
+  MOCK_RESPONSE_READY_PTY_IDS,
+  MOCK_PROJECT_INFO,
+  MOCK_PROJECT_DETAIL,
+  getProjectAvatar,
+} from './mock-data.js';
 import '../../public/style.css';
+// fonts-brand.css is deliberately NOT imported here: vite's library mode
+// inlines url() assets as base64, which quadrupled docs/landing.css. It is
+// copied to docs/css/ by build:landing and linked from docs/index.html after
+// landing.css instead.
 // Redesign layer — same order as public/index.html loads it.
 import '../../public/css/shell.css';
 import '../../public/css/sidebar-redesign.css';
 import '../../public/css/session-view.css';
+import '../../public/css/accounts-view.css';
 import '../../public/css/terminal-preview.css';
 import '../../public/css/theme-light.css';
+// Landing-only CSS. Lives here rather than in a .vue <style> block: the app's
+// `vite build` writes its CSS asset straight over public/style.css.
+import './landing.css';
 
 const MOCK_DIFF_CONTENT = `const { RateLimiterMemory } = require('rate-limiter-flexible');
 
@@ -35,6 +53,8 @@ window.api = new Proxy({}, {
     if (prop === 'onProjectInfoUpdated') return () => {};
     if (prop === 'getProjectAvatar') return async () => null;
     if (prop === 'getProjectGitCache') return async () => null;
+    if (prop === 'getSetting') return async () => null;
+    if (prop === 'setSetting') return async () => ({ ok: true });
     if (prop === 'getProjectInfo') return async (path) => MOCK_PROJECT_INFO[path] ?? null;
     if (prop === 'getProjectDetail') return async (path) => MOCK_PROJECT_DETAIL[path] ?? null;
     if (prop === 'gitBranches') return async () => ({ ok: true, branches: ['feat/rate-limiting', 'main'], remotes: ['origin/main'] });
@@ -92,11 +112,108 @@ store.projects = MOCK_PROJECTS;
 store.activePtyIds = MOCK_ACTIVE_PTY_IDS;
 store.sessionBusyState = new Map([...MOCK_ACTIVE_PTY_IDS].map(id => [id, true]));
 store.attentionSessions = MOCK_WAITING_PTY_IDS;
+store.responseReadySessions = MOCK_RESPONSE_READY_PTY_IDS;
+store.headerAccount = MOCK_ACCOUNTS.find(a => a.id === MOCK_ACTIVE_ACCOUNT_ID)?.name || null;
 store.sessionMaxAgeDays = 30;
 store.visibleSessionCount = 20;
 
-// Stub bridge globals
-window.__sb = {};
+// ── window.__sb — the app's renderer bridge ──────────────────────────────
+// public/app.js installs the real one; everything it does is Electron IPC or
+// xterm. The landing gets the same surface, implemented against the mock
+// store: actions that make sense without a backend (select, search, star,
+// archive, rename, stop) mutate the store so the demo feels live; everything
+// else is a no-op. Shared components stay landing-unaware.
+function findSession(sessionId) {
+  for (const p of store.projects) {
+    const s = p.sessions.find(x => x.sessionId === sessionId);
+    if (s) return { session: s, project: p };
+  }
+  return null;
+}
+
+window.__sb = {
+  openSession(session) {
+    if (!session?.sessionId) return;
+    store.activeSessionId = session.sessionId;
+    store.attentionProject = findSession(session.sessionId)?.project.projectPath || null;
+  },
+
+  search(query, titlesOnly) {
+    const q = String(query || '').toLowerCase();
+    const ids = new Set();
+    const paths = new Set();
+    for (const p of store.projects) {
+      if (!titlesOnly && p.projectPath.toLowerCase().includes(q)) paths.add(p.projectPath);
+      for (const s of p.sessions) {
+        const haystack = `${s.name || ''} ${s.aiTitle || ''}`.toLowerCase();
+        if (haystack.includes(q)) ids.add(s.sessionId);
+      }
+    }
+    store.searchMatchIds = ids;
+    store.searchMatchProjectPaths = paths;
+  },
+
+  clearSearch() {
+    store.searchMatchIds = null;
+    store.searchMatchProjectPaths = null;
+  },
+
+  toggleGridView() { store.gridViewActive = !store.gridViewActive; },
+
+  toggleStar(sessionId) {
+    const hit = findSession(sessionId);
+    if (hit) hit.session.starred = !hit.session.starred;
+  },
+
+  archiveSession(sessionId) {
+    const hit = findSession(sessionId);
+    if (hit) hit.session.archived = !hit.session.archived;
+  },
+
+  archiveSessions(sessions) {
+    for (const s of sessions || []) window.__sb.archiveSession(s.sessionId);
+  },
+
+  renameSession(sessionId, name) {
+    const hit = findSession(sessionId);
+    if (hit && name) hit.session.name = name;
+  },
+
+  stopSession(sessionId) {
+    store.activePtyIds.delete(sessionId);
+    store.sessionBusyState.delete(sessionId);
+    store.attentionSessions.delete(sessionId);
+    store.responseReadySessions.delete(sessionId);
+  },
+
+  switchAccount(id) {
+    store.headerAccount = MOCK_ACCOUNTS.find(a => a.id === id)?.name || null;
+  },
+
+  // Everything below needs a real Electron main process — nothing to do here.
+  onTabChange() {},
+  onFilterChange() {},
+  onPvTabChange() {},
+  resort() {},
+  addProject() {},
+  removeProject() {},
+  projectRemoved() {},
+  openProject() {},
+  openSettings() {},
+  openGlobalSettings() {},
+  newSession() {},
+  forkSession() {},
+  showJsonl() {},
+  launchConfig() {},
+  openPlan() {},
+  openMemory() {},
+  openAccountHomeSession() {},
+  renameAccount() {},
+  deleteAccount() {},
+  createAccount() { return null; },
+  discoverWslClaudeHomes() { return []; },
+  createWslAccount() { return null; },
+};
 window.vuePlans = {};
 window.vueMemory = {};
 window.vueAccounts = {};

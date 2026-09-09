@@ -19,12 +19,14 @@
         :title="row.title"
         @click="$emit('select', row.name)"
       >
-        <span class="sbx-attention__monogram">{{ row.initials }}</span>
+        <ProjectAvatar v-if="row.projectPath" class="sbx-attention__monogram" :project-path="row.projectPath" />
+        <span v-else class="sbx-attention__monogram">{{ row.initials }}</span>
         <span class="sbx-attention__meta">
           <span class="sbx-attention__name">{{ row.name }}</span>
           <span class="sbx-attention__reason">{{ row.reason }}</span>
         </span>
-        <span v-if="row.count > 0" class="sbx-attention__badge">{{ row.count }}</span>
+        <!-- One session is the common case; a badge reading "1" is noise. -->
+        <span v-if="row.count > 1" class="sbx-attention__badge">{{ row.count }}</span>
       </button>
     </div>
   </div>
@@ -32,6 +34,7 @@
 
 <script setup>
 import { computed } from 'vue';
+import ProjectAvatar from './ProjectAvatar.vue';
 
 const STATUSES = ['running', 'waiting', 'done', 'idle'];
 
@@ -48,6 +51,7 @@ const rows = computed(() => (props.items || []).map((item) => {
   const reason = item.reason || '';
   return {
     key: item.projectPath || name,
+    projectPath: item.projectPath || '',
     name,
     reason,
     status: STATUSES.includes(item.status) ? item.status : 'idle',

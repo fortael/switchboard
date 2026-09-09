@@ -194,15 +194,19 @@ const worktreeName = computed(() => {
   return match?.[1] || props.project.projectPath.split('/').pop();
 });
 
-// Initial collapse state: auto-collapse stale or project-name-only matches
-const collapsed = ref(() => {
+// Initial collapse state: auto-collapse stale or project-name-only matches.
+// This used to be `ref(() => {...})`, which stored the function itself — always
+// truthy, so every group mounted collapsed and the heuristic never ran.
+function initialCollapsed() {
   if (props.project._projectMatchedOnly) return true;
   if (props.searchMatchIds || props.showStarredOnly || props.showRunningOnly) return false;
   const sessions = props.project.sessions || [];
   if (sessions.length === 0) return false;
   const mostRecent = sessions.reduce((a, b) => new Date(b.modified) > new Date(a.modified) ? b : a);
   return (Date.now() - new Date(mostRecent.modified)) > props.sessionMaxAgeDays * 86400000;
-});
+}
+
+const collapsed = ref(initialCollapsed());
 
 function toggle() { collapsed.value = !collapsed.value; }
 

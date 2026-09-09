@@ -780,6 +780,11 @@ setTimeout(() => {
     if (global.monoFont && window.TERMINAL_FONTS?.[global.monoFont]) {
       window._applyTerminalFont?.(window.TERMINAL_FONTS[global.monoFont].family);
     }
+    // Must land before the first terminal is constructed: font size and line
+    // height change the character box, so applying them later refits a live
+    // terminal and leaves whatever the CLI already painted mis-wrapped until
+    // its next redraw.
+    window._applyUiMetrics?.(global);
     if (global.uiFont && global.uiFont !== 'default' && window.TERMINAL_FONTS?.[global.uiFont]) {
       document.documentElement.style.setProperty('--font-ui', window.TERMINAL_FONTS[global.uiFont].family);
     }
@@ -826,10 +831,13 @@ loadProjects().then(async () => {
   if (localStorage.getItem('gridViewActive') === '1') {
     showGridView();
   }
-  // Restore active session after reload
+  // Restore active session after reload. Awaited: openSession only calls
+  // showSession() after the openTerminal round trip, and showSession hides every
+  // main-area viewer — so leaving it in flight lets the terminal reappear on top
+  // of whichever panel the restore below just opened.
   if (activeSessionId && !openSessions.has(activeSessionId)) {
     const session = sessionMap.get(activeSessionId);
-    if (session) openSession(session);
+    if (session) await openSession(session);
   }
   // Restore last open panel + sidebar tab
   try {
@@ -1017,6 +1025,8 @@ async function switchAccount(id) {
   const activeTab = window.vueStore?.activeTab || 'sessions';
   if (activeTab === 'stats') window.vueStats?.load();
   if (activeTab === 'projects') loadProjects().then(() => renderProjectsPanel());
+  // The detail panel labels one account "Active" — that badge just moved.
+  if (activeTab === 'accounts') window.vueAccountViewer?.reload();
   // accountSwitching stays true — cleared in onProjectsChanged once new data arrives
 }
 
@@ -1029,6 +1039,20 @@ function makePanelHeader(titleText, btnLabel, onBtnClick) {
 function renderAccountsPanel() {
   window.vueAccounts?.setAccounts(accounts, activeAccountId);
   window.vueAccounts?.setUsage(accountsUsage);
+}
+
+// Accounts tab main area: same shape as the stats branch — clear whatever the
+// previous tab had open, hide the terminal so xterm can't eat clicks, then show
+// the account detail panel.
+function showAccountViewer(accountId) {
+  if (!accountId) return;
+  hideAllViewers();
+  terminalArea.style.display = 'none';
+  if (window.vueStore) {
+    window.vueStore.accountViewerId = accountId;
+    window.vueStore.accountViewerOpen = true;
+  }
+  window.vueAccountViewer?.load(accountId);
 }
 
 function _renderAccountsPanelOld() {
@@ -1582,8 +1606,11 @@ window.__sb = {
       hideAllViewers();
       loadMemories();
     } else if (tabName === 'accounts') {
-      hideAllViewers();
+      saveUiState({ panel: 'accounts' });
       renderAccountsPanel();
+      // Nothing selected yet — the account you are running on is the one you
+      // most likely came here to look at.
+      showAccountViewer(window.vueStore?.accountViewerId || activeAccountId);
       refreshAccountUsage().then(() => renderAccountsPanel());
     } else if (tabName === 'projects') {
       if (projectsChangedWhileAway) {
@@ -1758,6 +1785,8 @@ window.__sb = {
 
   openMemory: (file) => openMemory(file),
 
+  openAccountViewer: (id) => showAccountViewer(id),
+
   switchAccount: (id) => switchAccount(id),
 
   openAccountHomeSession: (acc) => openAccountHomeSession(acc),
@@ -1773,6 +1802,8 @@ window.__sb = {
     await window.api.deleteAccount(id);
     updateAccountDropdown();
     renderAccountsPanel();
+    // The panel was showing an account that no longer exists.
+    if (window.vueStore?.accountViewerId === id) showAccountViewer(activeAccountId);
   },
 
   createAccount: async (name) => {

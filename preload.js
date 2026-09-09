@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   // Invoke (request-response)
   getPlans: () => ipcRenderer.invoke('get-plans'),
+  getPlansDir: () => ipcRenderer.invoke('get-plans-dir'),
   readPlan: (filename) => ipcRenderer.invoke('read-plan', filename),
   savePlan: (filePath, content) => ipcRenderer.invoke('save-plan', filePath, content),
   getStats: () => ipcRenderer.invoke('get-stats'),
@@ -39,6 +40,12 @@ contextBridge.exposeInMainWorld('api', {
   getActiveAccountId: () => ipcRenderer.invoke('get-active-account-id'),
   setActiveAccountId: (id) => ipcRenderer.invoke('set-active-account-id', id),
   getAccountsUsage: () => ipcRenderer.invoke('get-accounts-usage'),
+  // Account detail panel. readAccountConfigFile only reaches an allowlisted
+  // file inside that account's own configDir — it is not a general file read.
+  getAccountDetail: (id) => ipcRenderer.invoke('get-account-detail', id),
+  readAccountConfigFile: (id, name) => ipcRenderer.invoke('read-account-config-file', id, name),
+  checkAccountAuth: (id) => ipcRenderer.invoke('check-account-auth', id),
+  getAccountStats: (id) => ipcRenderer.invoke('get-account-stats', id),
   getHomedir: () => ipcRenderer.invoke('get-homedir'),
   getEffectiveSettings: (projectPath) => ipcRenderer.invoke('get-effective-settings', projectPath),
   getScheduleCreatorCommand: () => ipcRenderer.invoke('get-schedule-creator-command'),

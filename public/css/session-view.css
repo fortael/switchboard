@@ -11,13 +11,17 @@
 
 /* ─── Session header ────────────────────────────────────────────── */
 
+/* Between the mockup's 64px and a cramped toolbar: 46px, one line, with
+   real breathing room on the sides. The terminal is the work; the header
+   still has to look designed. */
 .sbx-sesshead {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   min-width: 0;
   flex-shrink: 0;
-  padding: var(--space-4) var(--space-6);
+  height: 46px;
+  padding: 0 var(--space-5);
   background: var(--surface-panel-raised);
   border-bottom: 1px solid var(--border-subtle);
   font-family: var(--font-ui);
@@ -41,8 +45,8 @@
 /* Avatar — ProjectAvatar renders <img> when an icon exists, <span> with
    initials otherwise; both need the same box. */
 .sbx-sesshead__avatar {
-  width: var(--hit-xs);
-  height: var(--hit-xs);
+  width: 22px;
+  height: 22px;
   flex-shrink: 0;
   border-radius: var(--radius-xs);
   display: flex;
@@ -61,7 +65,7 @@
 }
 
 .sbx-sesshead__title {
-  font-size: var(--text-xl, 20px);
+  font-size: var(--text-md);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
   letter-spacing: var(--tracking-tight);
@@ -80,7 +84,7 @@
 
 .sbx-sesshead__project {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-tertiary);
   white-space: nowrap;
   overflow: hidden;
@@ -221,8 +225,8 @@
 
 /* IconButton — borderless square, soft card hover (IconButton.jsx). */
 .sbx-sesshead__iconbtn {
-  width: var(--hit-sm);
-  height: var(--hit-sm);
+  width: var(--hit-xs);
+  height: var(--hit-xs);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -260,7 +264,7 @@
    else in it folds away before the controls do. */
 @media (max-width: 900px) {
   .sbx-sesshead {
-    padding: var(--space-3) var(--space-4);
+    padding: 0 var(--space-3);
     gap: var(--space-2);
   }
   .sbx-sesshead__ai,
@@ -268,7 +272,7 @@
     display: none;
   }
   .sbx-sesshead__title {
-    font-size: var(--text-lg);
+    font-size: var(--text-base);
   }
   .sbx-sesshead__chip,
   .sbx-sesshead__chip--pty {

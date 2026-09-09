@@ -56,6 +56,8 @@ export const store = reactive({
   memoryViewerOpen: false,
   gridViewActive: false,
   gridViewerCount: '',
+  accountViewerOpen: false,      // Accounts tab detail panel in the main area
+  accountViewerId: null,         // which account it is showing
 
   // Project avatars: projectPath → data: URL string
   avatarDataUrls: {},

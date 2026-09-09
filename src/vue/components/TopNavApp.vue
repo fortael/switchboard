@@ -13,7 +13,7 @@
         :title="tab.label"
         @click="emit('select', tab.id)"
       >
-        <SbIcon :name="tab.icon" :size="16" :tone="tab.id === activeId ? 'accent' : 'muted'" />
+        <SbIcon :name="tab.icon" :size="14" :tone="tab.id === activeId ? 'accent' : 'muted'" />
         <span class="sbx-topnav__tab-label">{{ tab.label }}</span>
         <span v-if="tab.badge" class="sbx-topnav__tab-badge">{{ tab.badge }}</span>
         <span class="sbx-topnav__tab-underline"></span>
@@ -26,17 +26,17 @@
         :title="theme === 'light' ? 'Dark theme' : 'Light theme'"
         @click="emit('toggle-theme')"
       >
-        <SbIcon :name="theme === 'light' ? 'moon' : 'sun'" :size="16" tone="muted" />
+        <SbIcon :name="theme === 'light' ? 'moon' : 'sun'" :size="14" tone="muted" />
       </button>
       <button class="sbx-topnav__util" title="Global settings" @click="emit('settings')">
-        <SbIcon name="settings" :size="16" tone="muted" />
+        <SbIcon name="settings" :size="14" tone="muted" />
       </button>
       <button
         class="sbx-topnav__util"
         :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
         @click="emit('toggle-sidebar')"
       >
-        <SbIcon :name="sidebarCollapsed ? 'panel-left-open' : 'panel-left-close'" :size="16" tone="muted" />
+        <SbIcon :name="sidebarCollapsed ? 'panel-left-open' : 'panel-left-close'" :size="14" tone="muted" />
       </button>
     </div>
   </div>

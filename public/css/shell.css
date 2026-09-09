@@ -5,7 +5,9 @@
 
 :root {
   --rail-width: 56px;
-  --topnav-height: 52px;
+  /* The mockup says 52px. 42 keeps the nav subordinate to the work area
+     without cramping it, and sits just under the 46px session header. */
+  --topnav-height: 42px;
 }
 
 /* ── Shell frame ─────────────────────────────────────────────────────── */
@@ -16,11 +18,16 @@
   flex-direction: column;
 }
 
+/* `clip`, not `hidden`: #terminals carries a -20px right margin to hide
+   xterm's scrollbar gutter, which leaves 20px of real overflow. With
+   `hidden` the browser is still allowed to scroll this box, so focusing the
+   xterm helper textarea scrolled the whole shell 20px left and clipped the
+   sidebar. `clip` forbids scrolling outright. */
 .sbx-shell__body {
   flex: 1;
   min-height: 0;
   display: flex;
-  overflow: hidden;
+  overflow: clip;
 }
 
 /* ── TopNav ──────────────────────────────────────────────────────────── */
@@ -31,15 +38,15 @@
   flex-shrink: 0;
   background: var(--surface-panel);
   border-bottom: 1px solid var(--border-subtle);
-  padding: 0 12px 0 16px;
-  gap: 14px;
+  padding: 0 8px 0 10px;
+  gap: 10px;
 }
 
 .sbx-topnav__account {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding-right: 14px;
+  gap: 7px;
+  padding-right: 10px;
   border-right: 1px solid var(--border-subtle);
   position: relative;
 }
@@ -47,8 +54,9 @@
 /* AccountDropdownApp was built for the old full-width sidebar slot. */
 .sbx-topnav__account .account-btn-vue {
   width: auto;
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
+  padding: 2px 5px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
 }
 .sbx-topnav__account .account-dropdown-vue {
   left: 0;
@@ -72,11 +80,11 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 0 12px;
+  gap: 6px;
+  padding: 0 9px;
   border: none;
   background: transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   cursor: pointer;
   flex-shrink: 0;
   color: var(--text-tertiary);
@@ -123,14 +131,14 @@
 .sbx-topnav__utils {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding-left: 12px;
+  gap: 2px;
+  padding-left: 8px;
   border-left: 1px solid var(--border-subtle);
 }
 
 .sbx-topnav__util {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -280,3 +288,46 @@
 
 .sbx-rail__spacer { flex: none; }
 .sbx-rail__spacer.is-flex { flex: 1; }
+
+/* ── Plans empty state ───────────────────────────────────────────────────
+   The plans directory follows the active account, so the empty state names
+   the path it searched and lets you lift it for an MCP config. */
+.plans-empty-path {
+  display: inline-block;
+  max-width: 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--surface-card);
+  color: var(--text-disabled);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: background var(--duration-fast) var(--ease-standard),
+              color var(--duration-fast) var(--ease-standard);
+}
+.plans-empty-path:hover {
+  background: var(--surface-card-hover);
+  color: var(--text-tertiary);
+}
+
+/* ── Sidebar tab panels ──────────────────────────────────────────────────
+   Every sidebar tab (sessions, plans, agent files, stats, accounts,
+   projects) renders into one of these, so they all share one scroll box and
+   one gutter. The per-id rules in style.css deliberately no longer declare
+   padding — a class can't outrank an id per-property. */
+.sbx-sidebar-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) 0 var(--space-4);
+}
+
+/* The first group already sits below the panel's own gutter; its default
+   top margin would double it and it lands differently per tab. */
+.sbx-sidebar-panel .project-group:first-child {
+  margin-top: 0;
+}

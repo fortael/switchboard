@@ -8,17 +8,36 @@
 // wrapInGridCard, showGridView (grid-view.js)
 // Depends on: shellEscape (utils.js)
 
-// Current terminal font — read from settings on startup, changed via _applyTerminalFont
+// Current terminal typography — read from settings on startup, changed via
+// _applyTerminalFont / _applyTerminalMetrics. Defaults must match
+// UI_METRIC_DEFAULTS in public/ui-metrics.js.
 let currentFontFamily = (window.TERMINAL_FONTS?.['default']?.family) || "'SF Mono', Menlo, monospace";
+let currentFontSize = 12;
+let currentLineHeight = 1.25;
+
+window._getTerminalMetrics = () => ({ fontSize: currentFontSize, lineHeight: currentLineHeight });
+
+function reapplyTerminalTypography() {
+  for (const [, entry] of openSessions) {
+    if (entry.closed) continue;
+    entry.terminal.options.fontFamily = currentFontFamily;
+    entry.terminal.options.fontSize = currentFontSize;
+    entry.terminal.options.lineHeight = currentLineHeight;
+    safeFit(entry);
+  }
+}
 
 window._applyTerminalFont = (fontFamily) => {
   currentFontFamily = fontFamily;
-  for (const [, entry] of openSessions) {
-    if (!entry.closed) {
-      entry.terminal.options.fontFamily = fontFamily;
-      safeFit(entry);
-    }
-  }
+  reapplyTerminalTypography();
+};
+
+// Font size and line height change the character box, so every open terminal
+// has to be refitted or the PTY keeps the old cols/rows.
+window._applyTerminalMetrics = ({ fontSize, lineHeight } = {}) => {
+  if (Number.isFinite(fontSize)) currentFontSize = fontSize;
+  if (Number.isFinite(lineHeight)) currentLineHeight = lineHeight;
+  reapplyTerminalTypography();
 };
 
 // --- Terminal key bindings ---
@@ -185,7 +204,8 @@ function createTerminalEntry(session) {
   terminalsEl.appendChild(container);
 
   const terminal = new Terminal({
-    fontSize: 12,
+    fontSize: currentFontSize,
+    lineHeight: currentLineHeight,
     fontFamily: currentFontFamily,
     theme: TERMINAL_THEME,
     cursorBlink: false,

@@ -59,8 +59,9 @@
       </template>
     </CommandBar>
 
+    <!-- Not scoped to the sessions tab: live sessions are worth watching from
+         wherever you are. Renders nothing when nothing is running. -->
     <AttentionRail
-      v-if="store.activeTab === 'sessions'"
       :items="attentionProjects"
       :active-name="attentionActiveName"
       @select="onSelectAttentionName"
@@ -89,25 +90,25 @@
     </FilterTabs>
 
     <!-- Sidebar content panels (v-show keeps DOM alive for vanilla JS queries) -->
-    <div id="sidebar-content" v-show="store.activeTab === 'sessions' && !store.accountSwitching">
+    <div id="sidebar-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'sessions' && !store.accountSwitching">
       <SidebarApp :callbacks="sidebarCallbacks" />
     </div>
     <div v-if="store.accountSwitching && store.activeTab === 'sessions'" id="account-switch-overlay" class="account-switch-preloader">
       <div class="acct-spinner"></div><span>Switching account…</span>
     </div>
-    <div id="plans-content" v-show="store.activeTab === 'plans'">
+    <div id="plans-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'plans'">
       <PlansApp ref="plansRef" :callbacks="planCallbacks" />
     </div>
-    <div id="stats-content" v-show="store.activeTab === 'stats'">
+    <div id="stats-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'stats'">
       <div class="plans-empty">Click the Stats tab to view activity heatmap.</div>
     </div>
-    <div id="memory-content" v-show="store.activeTab === 'memory'">
+    <div id="memory-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'memory'">
       <MemoryApp ref="memoryRef" :callbacks="memoryCallbacks" />
     </div>
-    <div id="accounts-content" v-show="store.activeTab === 'accounts'">
+    <div id="accounts-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'accounts'">
       <AccountsApp ref="accountsRef" :callbacks="accountsCallbacks" />
     </div>
-    <div id="projects-content" v-show="store.activeTab === 'projects'">
+    <div id="projects-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'projects'">
       <ProjectsApp ref="projectsRef" :callbacks="projectsCallbacks" />
     </div>
   </div>
@@ -160,6 +161,9 @@
     </div>
     <div id="jsonl-viewer" v-show="store.showJsonl">
       <JsonlViewerApp ref="jsonlRef" />
+    </div>
+    <div id="account-viewer" v-show="store.accountViewerOpen">
+      <AccountViewerApp ref="accountViewerRef" />
     </div>
     <div id="terminal-area">
       <div id="vue-session-header">
@@ -227,6 +231,7 @@ import SettingsPanelApp from './SettingsPanelApp.vue';
 import ProjectViewerApp from './ProjectViewerApp.vue';
 import StatsApp from './StatsApp.vue';
 import JsonlViewerApp from './JsonlViewerApp.vue';
+import AccountViewerApp from './AccountViewerApp.vue';
 import ViewerContentApp from './ViewerContentApp.vue';
 import DialogsApp from './DialogsApp.vue';
 
@@ -241,6 +246,7 @@ const gridCardsRef = ref(null);
 const projectViewerRef = ref(null);
 const statsRef = ref(null);
 const jsonlRef = ref(null);
+const accountViewerRef = ref(null);
 const planViewerRef = ref(null);
 const memoryViewerRef = ref(null);
 const dialogsRef = ref(null);
@@ -325,14 +331,16 @@ const attentionProjects = computed(() => {
   for (const p of store.projects) {
     const live = p.sessions.filter(s => store.activePtyIds.has(s.sessionId));
     if (!live.length) continue;
-    let status = 'idle';
-    let reason = 'open';
+    // Everything in this list has a live PTY, so 'running' is the floor —
+    // 'idle' would contradict the session header, which says Running.
+    let status = 'running';
+    let reason = 'running';
     if (live.some(s => store.attentionSessions.has(s.sessionId))) {
       status = 'waiting'; reason = 'needs input';
     } else if (live.some(s => store.responseReadySessions.has(s.sessionId))) {
       status = 'done'; reason = 'response ready';
     } else if (live.some(s => store.sessionBusyState.get(s.sessionId))) {
-      status = 'running'; reason = 'working';
+      reason = 'working';
     }
     out.push({
       projectPath: p.projectPath,
@@ -358,6 +366,9 @@ function onSelectAttentionName(name) {
 
 function onSelectAttentionProject(projectPath) {
   store.attentionProject = projectPath;
+  // The rail is on every tab, so a click from Plans or Projects has to take
+  // you where the session actually lives.
+  if (store.activeTab !== 'sessions') setTab('sessions');
   const project = store.projects.find(p => p.projectPath === projectPath);
   const live = project?.sessions.filter(s => store.activePtyIds.has(s.sessionId)) || [];
   if (!live.length) return;
@@ -438,6 +449,7 @@ const memoryCallbacks = {
 };
 
 const accountsCallbacks = {
+  openAccountViewer: (id) => window.__sb?.openAccountViewer?.(id),
   switchAccount: (id) => window.__sb?.switchAccount?.(id),
   openAccountHomeSession: (acc) => window.__sb?.openAccountHomeSession?.(acc),
   renameAccount: (id, name) => window.__sb?.renameAccount?.(id, name),
@@ -522,6 +534,10 @@ onMounted(async () => {
     invalidate: () => statsRef.value?.invalidate(),
   };
   window.vueJsonlViewer = { open: (s) => jsonlRef.value?.open(s) };
+  window.vueAccountViewer = {
+    load: (id) => accountViewerRef.value?.load(id),
+    reload: () => accountViewerRef.value?.reload(),
+  };
   Object.assign(window.vueDialogs, {
     openNewSession: (...args) => dialogsRef.value?.openNewSession(...args),
     openResumeSession: (...args) => dialogsRef.value?.openResumeSession(...args),
@@ -549,6 +565,7 @@ onMounted(async () => {
     }
     store.showStats = false;
     store.showJsonl = false;
+    store.accountViewerOpen = false;
     store.settingsScope = scope || 'global';
     store.settingsProjectPath = projectPath || null;
     store.settingsOpen = true;
@@ -643,6 +660,7 @@ onMounted(async () => {
       window.vueStore.settingsOpen = false;
       window.vueStore.showStats = false;
       window.vueStore.showJsonl = false;
+      window.vueStore.accountViewerOpen = false;
     }
     const pv = document.getElementById('project-viewer');
     if (pv) pv.style.display = 'none';

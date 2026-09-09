@@ -1,7 +1,16 @@
 <template>
   <div>
+    <!-- Plans follow the active account, so name the directory that was
+         actually searched instead of the default ~/.claude one. -->
     <div v-if="plans.length === 0" class="plans-empty">
-      No plans found in ~/.claude/plans/
+      <div>No plans for <strong>{{ plansDir.accountName || 'this account' }}</strong>.</div>
+      <button
+        v-if="plansDir.dir"
+        type="button"
+        class="plans-empty-path"
+        :data-tooltip="plansDir.exists ? 'Copy path' : 'Directory does not exist yet — copy path'"
+        @click="copyPlansDir"
+      >{{ copied ? 'Copied' : plansDir.dir }}</button>
     </div>
 
     <div v-else class="project-group">
@@ -29,7 +38,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import ListItem from './ListItem.vue';
 
 const props = defineProps({
@@ -38,6 +47,24 @@ const props = defineProps({
 
 const plans = ref([]);
 const activePlan = ref(null);
+const plansDir = ref({ dir: '', exists: false, accountName: '' });
+const copied = ref(false);
+
+async function refreshPlansDir() {
+  plansDir.value = (await window.api?.getPlansDir?.().catch(() => null)) || plansDir.value;
+}
+
+// Only needed while the list is empty, and the account may have changed since
+// the last look.
+watch(plans, (list) => { if (!list.length) refreshPlansDir(); }, { immediate: true });
+
+async function copyPlansDir() {
+  try {
+    await navigator.clipboard.writeText(plansDir.value.dir);
+    copied.value = true;
+    setTimeout(() => { copied.value = false; }, 1200);
+  } catch {}
+}
 
 function fmtDate(d) {
   return window.formatDate ? window.formatDate(new Date(d)) : d;

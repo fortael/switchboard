@@ -28,7 +28,12 @@
       <div class="lp-section-inner">
         <h2 class="lp-section-title">Try the real interface</h2>
 
-        <div class="lp-app-window">
+        <!-- The demo below renders the app's own components (TopNavApp,
+             CommandBar, AttentionRail, FilterTabs, SidebarApp,
+             SessionHeaderApp …) inside App.vue's wrapper markup, driven by
+             mock-data.js. Change a component in src/vue/components and this
+             picks it up with no edit here. -->
+        <div class="lp-app-window" :data-theme="store.theme">
           <!-- macOS-style title bar -->
           <div class="lp-titlebar">
             <div class="lp-traffic-lights">
@@ -39,92 +44,123 @@
             <span class="lp-titlebar-name">Wooton Pad</span>
           </div>
 
-          <!-- App body -->
-          <div class="lp-app-body">
+          <!-- ── App shell — mirrors src/vue/components/App.vue ──────── -->
+          <div class="sbx-shell">
+            <TopNavApp
+              :tabs="store.sidebarCollapsed ? [] : TABS"
+              :active-id="store.activeTab"
+              :theme="store.theme"
+              :sidebar-collapsed="store.sidebarCollapsed"
+              @select="setTab"
+              @settings="onGlobalSettings"
+              @toggle-sidebar="store.sidebarCollapsed = !store.sidebarCollapsed"
+              @toggle-theme="toggleTheme"
+            >
+              <template #account>
+                <AccountDropdownApp ref="accountDropdownRef" :callbacks="accountDropdownCallbacks" />
+              </template>
+            </TopNavApp>
 
-            <!-- Sidebar (reuses real CSS IDs from style.css) -->
-            <div id="sidebar">
+            <div class="sbx-shell__body">
+              <CollapsedRailApp
+                v-if="store.sidebarCollapsed"
+                :tabs="TABS"
+                :active-id="store.activeTab"
+                :projects="attentionProjects"
+                :active-project="store.attentionProject"
+                @select="setTab"
+                @select-project="onSelectAttentionProject"
+                @settings="onGlobalSettings"
+                @expand="store.sidebarCollapsed = false"
+              />
 
-              <!-- Account dropdown -->
-              <div id="account-selector">
-                <AccountDropdownApp ref="accountDropdownRef" :callbacks="demoCallbacks" />
-              </div>
+              <div id="sidebar" v-show="!store.sidebarCollapsed">
+                <CommandBar
+                  :model-value="store.searchQuery"
+                  :placeholder="searchPlaceholder"
+                  add-title="Add project"
+                  @update:model-value="onSearchValue"
+                  @add="onAddProject"
+                  @spotlight="focusSearch"
+                >
+                  <template #field-actions>
+                    <button
+                      v-show="store.searchQuery"
+                      type="button"
+                      class="sbx-commandbar__chip"
+                      aria-label="Clear search"
+                      @click="doClearSearch"
+                    >&times;</button>
+                    <button
+                      type="button"
+                      class="sbx-commandbar__chip"
+                      :class="{ 'is-active': store.searchTitlesOnly }"
+                      data-tooltip="Search titles only"
+                      aria-label="Search titles only"
+                      @click="toggleTitlesOnly"
+                    >Tt</button>
+                  </template>
+                </CommandBar>
 
-              <!-- Tab bar -->
-              <div id="sidebar-header">
-                <div id="sidebar-tabs">
-                  <button
-                    v-for="tab in DEMO_TABS"
-                    :key="tab.id"
-                    class="sidebar-tab"
-                    :class="{ active: store.activeTab === tab.id }"
-                    :data-tooltip="tab.label"
-                    @click="setTab(tab.id)"
-                    v-html="tab.svg"
-                  ></button>
+                <AttentionRail
+                  v-if="store.activeTab === 'sessions'"
+                  :items="attentionProjects"
+                  :active-name="attentionActiveName"
+                  @select="onSelectAttentionName"
+                />
+
+                <FilterTabs
+                  v-if="store.activeTab === 'sessions'"
+                  :tabs="FILTER_TABS"
+                  :active="store.sessionFilterTab"
+                  :view-mode="store.sidebarViewMode"
+                  @select="onFilterTab"
+                  @update:view-mode="onViewMode"
+                >
+                  <template #actions>
+                    <span id="loading-status" v-show="store.loadingStatus">{{ store.loadingStatus }}</span>
+                    <button
+                      type="button"
+                      class="sbx-filtertabs__view"
+                      data-tooltip="Re-sort sessions"
+                      aria-label="Re-sort sessions"
+                      @click="onResort"
+                    >
+                      <SbIcon name="refresh-cw" :size="13" tone="muted" />
+                    </button>
+                  </template>
+                </FilterTabs>
+
+                <div id="sidebar-content" v-show="store.activeTab === 'sessions'">
+                  <SidebarApp :callbacks="sidebarCallbacks" />
                 </div>
-                <div id="session-filters" v-show="store.activeTab === 'sessions'">
-                  <button id="running-toggle" :class="{ active: store.showRunningOnly }" data-tooltip="Show running only" @click="store.showRunningOnly = !store.showRunningOnly"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="4"/></svg></button>
-                  <button id="star-toggle" :class="{ active: store.showStarredOnly }" data-tooltip="Show pinned only" @click="store.showStarredOnly = !store.showStarredOnly"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1-.707.707c-.28-.28-.576-.49-.888-.656L10.073 9.333l-.07 3.181a.5.5 0 0 1-.853.354l-3.535-3.536-4.243 4.243a.5.5 0 1 1-.707-.707l4.243-4.243L1.372 5.11a.5.5 0 0 1 .354-.854l3.18-.07L8.37.722A3.37 3.37 0 0 1 9.12.074a.5.5 0 0 1 .708.002l-.707.707z"/></svg></button>
-                  <button id="today-toggle" :class="{ active: store.showTodayOnly }" data-tooltip="Show today's sessions only" @click="store.showTodayOnly = !store.showTodayOnly"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-12a2 2 0 0 1-2-2v-12z"/><path d="M16 3v4"/><path d="M8 3v4"/><path d="M4 11h16"/><path d="M11 15h1"/><path d="M12 15v3"/></svg></button>
-                  <button id="archive-toggle" :class="{ active: store.showArchived }" data-tooltip="Show archived sessions" @click="store.showArchived = !store.showArchived"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="0"><path d="m21.706 5.292-2.999-2.999A.996.996 0 0 0 18 2H6a.996.996 0 0 0-.707.293L2.294 5.292A.994.994 0 0 0 2 6v13c0 1.103.897 2 2 2h16c1.103 0 2-.897 2-2V6a.994.994 0 0 0-.294-.708zM6.414 4h11.172l1 1H5.414l1-1zM4 19V7h16l.002 12H4z"/><path d="M14 9h-4v3H7l5 5 5-5h-3z"/></svg></button>
-                  <button id="grid-toggle-btn" :class="{ active: store.gridViewActive }" data-tooltip="Session overview" @click="store.gridViewActive = !store.gridViewActive"><svg width="14" height="14" stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg></button>
-                  <button id="resort-btn" data-tooltip="Re-sort sessions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></button>
-                  <button id="add-project-btn" data-tooltip="Add project"><svg width="14" height="14" viewBox="0 0 512 512" fill="currentColor" stroke="currentColor" stroke-width="0"><path d="M512 416c0 35.3-28.7 64-64 64L64 480c-35.3 0-64-28.7-64-64L0 96C0 60.7 28.7 32 64 32l128 0c20.1 0 39.1 9.5 51.2 25.6l19.2 25.6c6 8.1 15.5 12.8 25.6 12.8l160 0c35.3 0 64 28.7 64 64l0 256zM232 376c0 13.3 10.7 24 24 24s24-10.7 24-24l0-64 64 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-64 0 0-64c0-13.3-10.7-24-24-24s-24 10.7-24 24l0 64-64 0c-13.3 0-24 10.7-24 24s10.7 24 24 24l64 0 0 64z"/></svg></button>
+                <div id="plans-content" v-show="store.activeTab === 'plans'">
+                  <PlansApp ref="plansRef" :callbacks="planCallbacks" />
+                </div>
+                <div id="stats-content" v-show="store.activeTab === 'stats'" class="lp-demo-empty-tab">
+                  <div class="plans-empty">The activity heatmap needs a local Claude install — grab the app to see it.</div>
+                </div>
+                <div id="memory-content" v-show="store.activeTab === 'memory'">
+                  <MemoryApp ref="memoryRef" :callbacks="memoryCallbacks" />
+                </div>
+                <div id="accounts-content" v-show="store.activeTab === 'accounts'">
+                  <AccountsApp ref="accountsRef" :callbacks="accountsCallbacks" />
+                </div>
+                <div id="projects-content" v-show="store.activeTab === 'projects'">
+                  <ProjectsApp ref="projectsRef" :callbacks="projectsCallbacks" />
                 </div>
               </div>
 
-              <!-- Search bar -->
-              <div id="search-bar">
-                <input id="search-input" type="text" placeholder="Search sessions..." readonly style="pointer-events:none;" />
-              </div>
+              <div id="sidebar-resize-handle" v-show="!store.sidebarCollapsed"></div>
 
-              <!-- Sessions panel -->
-              <div id="sidebar-content" v-show="store.activeTab === 'sessions'">
-                <SidebarApp :callbacks="demoCallbacks" />
-              </div>
-
-              <!-- Projects panel -->
-              <div id="projects-content" v-show="store.activeTab === 'projects'">
-                <ProjectsApp ref="projectsRef" :callbacks="demoCallbacks" />
-              </div>
-
-              <!-- Accounts panel -->
-              <div id="accounts-content" v-show="store.activeTab === 'accounts'">
-                <AccountsApp ref="accountsRef" :callbacks="demoCallbacks" />
-              </div>
-
-              <!-- Plans panel -->
-              <div id="plans-content" v-show="store.activeTab === 'plans'">
-                <PlansApp ref="plansRef" :callbacks="demoCallbacks" />
-              </div>
-
-              <!-- Memory panel -->
-              <div id="memory-content" v-show="store.activeTab === 'memory'">
-                <MemoryApp ref="memoryRef" :callbacks="demoCallbacks" />
-              </div>
-
-              <!-- Stats / other placeholder -->
-              <div v-show="!['sessions','projects','accounts','plans','memory'].includes(store.activeTab)" class="lp-demo-empty-tab">
-                <div class="plans-empty">No data in demo mode.</div>
-              </div>
-
-            </div>
-
-            <!-- Resize handle visual -->
-            <div id="sidebar-resize-handle" style="pointer-events:none;"></div>
-
-            <!-- Main area -->
-            <div id="main">
-              <div v-if="!activeSession" id="placeholder" style="display:flex;">
-                <p>Click a session from the sidebar to see it here.</p>
-              </div>
-
-              <div v-else class="lp-terminal-area">
+              <div id="main">
                 <div id="vue-session-header">
                   <SessionHeaderApp />
                 </div>
-                <div class="lp-terminal-body">
+
+                <!-- No PTY on a landing page: a static transcript rendered
+                     from mock-data.js, not an xterm instance. -->
+                <div v-if="activeSession" class="lp-term">
                   <template v-for="(line, i) in terminalLines" :key="i">
                     <div v-if="line.t === 'logo'" class="lp-term-logo-block">
                       <div v-for="(art, ri) in line.logo" :key="ri" class="lp-term-line lp-term-logo-row">
@@ -133,18 +169,12 @@
                       </div>
                     </div>
                     <div v-else-if="line.t === 'blank'" class="lp-term-blank"></div>
-                    <div v-else-if="line.t === 'hint'" class="lp-term-line lp-term-hint">{{ line.v }}</div>
-                    <div v-else-if="line.t === 'todo'" class="lp-term-line lp-term-todo">{{ line.v }}</div>
-                    <div v-else-if="line.t === 'question'" class="lp-term-line lp-term-question">{{ line.v }}</div>
                     <div v-else-if="line.t === 'opt-sel'" class="lp-term-line lp-term-opt-sel">
                       <span class="lp-opt-cursor">❯</span>{{ line.v }}
                     </div>
-                    <div v-else-if="line.t === 'opt-sub'" class="lp-term-line lp-term-opt-sub">{{ line.v }}</div>
-                    <div v-else-if="line.t === 'opt'" class="lp-term-line lp-term-opt">{{ line.v }}</div>
-                    <div v-else-if="line.t === 'nav'" class="lp-term-line lp-term-nav">{{ line.v }}</div>
                     <div v-else-if="line.t === 'sh-prompt'" class="lp-term-line lp-term-sh-prompt">
                       <span class="lp-sh-cwd">{{ line.cwd }}</span>
-                      <span v-if="line.branch" class="lp-sh-branch"> on <span class="lp-sh-branch-name">{{ line.branch }}</span></span>
+                      <span v-if="line.branch" class="lp-sh-branch">&nbsp;on <span class="lp-sh-branch-name">{{ line.branch }}</span></span>
                     </div>
                     <div v-else-if="line.t === 'sh-cmd'" class="lp-term-line lp-term-sh-cmd">
                       <span class="lp-sh-arrow">❯</span> {{ line.v }}
@@ -152,18 +182,19 @@
                     <div v-else-if="line.t === 'sh-cursor'" class="lp-term-line lp-term-sh-cmd">
                       <span class="lp-sh-arrow">❯</span> <span class="lp-sh-block-cursor">█</span>
                     </div>
-                    <div v-else-if="line.t === 'sh-out-ok'" class="lp-term-line lp-term-sh-out-ok">{{ line.v }}</div>
-                    <div v-else-if="line.t === 'sh-out'" class="lp-term-line lp-term-sh-out">{{ line.v }}</div>
-                    <div v-else class="lp-term-line" :class="'lp-term-' + line.t">
-                      <span v-if="line.t === 'spin'" class="lp-spinner-char">{{ spinChar }}</span>
-                      <span v-else-if="line.t === 'wait'" class="lp-wait-cursor">▋</span>
-                      {{ line.v }}
+                    <div v-else-if="line.t === 'spin'" class="lp-term-line lp-term-spin">
+                      <span class="lp-spinner-char">{{ spinChar }}</span> {{ line.v }}
                     </div>
+                    <div v-else-if="line.t === 'wait'" class="lp-term-line lp-term-wait">
+                      <span class="lp-wait-cursor">▋</span> {{ line.v }}
+                    </div>
+                    <div v-else class="lp-term-line" :class="'lp-term-' + line.t">{{ line.v }}</div>
                   </template>
                 </div>
+
+                <div v-else class="lp-demo-placeholder">Select a session from the sidebar to begin.</div>
               </div>
             </div>
-
           </div>
         </div>
       </div>
@@ -309,7 +340,7 @@
             <span class="lp-titlebar-name">Wooton Pad — my-api</span>
           </div>
           <div class="lp-project-body">
-            <ProjectViewerApp ref="projectViewerRef" :callbacks="demoCallbacks" />
+            <ProjectViewerApp ref="projectViewerRef" :callbacks="projectViewerCallbacks" />
           </div>
         </div>
       </div>
@@ -364,25 +395,51 @@
 </template>
 
 <script setup>
+// The demo window is a thin re-implementation of src/vue/components/App.vue:
+// same components, same wrapper markup, same store fields — only the data is
+// mocked and the Electron-facing callbacks are routed through the window.__sb
+// / window.api stubs installed in src/landing/main.js. Nothing in
+// src/vue/** is landing-aware.
 import { ref, computed, onMounted, nextTick, watch } from 'vue';
-
-const iconUrl = 'icon.png';
 import { store } from '../vue/store.js';
-import SessionHeaderApp from '../vue/components/SessionHeaderApp.vue';
+
+import SbIcon from '../vue/components/SbIcon.vue';
+import TopNavApp from '../vue/components/TopNavApp.vue';
+import CollapsedRailApp from '../vue/components/CollapsedRailApp.vue';
+import CommandBar from '../vue/components/CommandBar.vue';
+import FilterTabs from '../vue/components/FilterTabs.vue';
+import AttentionRail from '../vue/components/AttentionRail.vue';
 import SidebarApp from '../vue/components/SidebarApp.vue';
-import AccountsApp from '../vue/components/AccountsApp.vue';
+import SessionHeaderApp from '../vue/components/SessionHeaderApp.vue';
 import AccountDropdownApp from '../vue/components/AccountDropdownApp.vue';
+import AccountsApp from '../vue/components/AccountsApp.vue';
 import ProjectsApp from '../vue/components/ProjectsApp.vue';
 import PlansApp from '../vue/components/PlansApp.vue';
 import MemoryApp from '../vue/components/MemoryApp.vue';
 import ProjectViewerApp from '../vue/components/ProjectViewerApp.vue';
-import { MOCK_ACCOUNTS, MOCK_PROJECTS, MOCK_TERMINAL_LINES, MOCK_USAGE, MOCK_PLANS, MOCK_MEMORIES } from './mock-data.js';
+import {
+  MOCK_ACCOUNTS,
+  MOCK_ACTIVE_ACCOUNT_ID,
+  MOCK_PROJECTS,
+  MOCK_TERMINAL_LINES,
+  MOCK_USAGE,
+  MOCK_PLANS,
+  MOCK_MEMORIES,
+  MOCK_SELECTED_SESSION_ID,
+  MOCK_VIEWER_PROJECT_PATH,
+} from './mock-data.js';
 
+const iconUrl = 'icon.png';
+
+// ── Marketing chrome ─────────────────────────────────────────────
 const stars = ref(null);
+
+// ── Fake terminal spinner ────────────────────────────────────────
 const SPIN_FRAMES = ['⠸', '⠼', '⠴', '⠦', '⠇', '⠏', '⠋', '⠙'];
 let _spinIdx = 0;
 const spinChar = ref(SPIN_FRAMES[0]);
 
+// ── Template refs ────────────────────────────────────────────────
 const accountDropdownRef = ref(null);
 const accountsRef = ref(null);
 const projectsRef = ref(null);
@@ -390,51 +447,206 @@ const plansRef = ref(null);
 const memoryRef = ref(null);
 const projectViewerRef = ref(null);
 
-// Tabs shown in the demo (full set)
-const DEMO_TABS = [
-  { id: 'sessions', label: 'Sessions', svg: '<svg width="18" height="18" viewBox="0 0 1200 1200" fill="#d97757" stroke="none"><path d="M 233.959793 800.214905 L 468.644287 668.536987 L 472.590637 657.100647 L 468.644287 650.738403 L 457.208069 650.738403 L 417.986633 648.322144 L 283.892639 644.69812 L 167.597321 639.865845 L 54.926208 633.825623 L 26.577238 627.785339 L 3.3e-05 592.751709 L 2.73832 575.27533 L 26.577238 559.248352 L 60.724873 562.228149 L 136.187973 567.382629 L 249.422867 575.194763 L 331.570496 580.026978 L 453.261841 592.671082 L 472.590637 592.671082 L 475.328857 584.859009 L 468.724915 580.026978 L 463.570557 575.194763 L 346.389313 495.785217 L 219.543671 411.865906 L 153.100723 363.543762 L 117.181267 339.060425 L 99.060455 316.107361 L 91.248367 266.01355 L 123.865784 230.093994 L 167.677887 233.073853 L 178.872513 236.053772 L 223.248367 270.201477 L 318.040283 343.570496 L 441.825592 434.738342 L 459.946411 449.798706 L 467.194672 444.64447 L 468.080597 441.020203 L 459.946411 427.409485 L 392.617493 305.718323 L 320.778564 181.932983 L 288.80542 130.630859 L 280.348999 99.865845 C 277.369171 87.221436 275.194641 76.590698 275.194641 63.624268 L 312.322174 13.20813 L 332.8591 6.604126 L 382.389313 13.20813 L 403.248352 31.328979 L 434.013519 101.71814 L 483.865753 212.537048 L 561.181274 363.221497 L 583.812134 407.919434 L 595.892639 449.315491 L 600.40271 461.959839 L 608.214783 461.959839 L 608.214783 454.711609 L 614.577271 369.825623 L 626.335632 265.61084 L 637.771851 131.516846 L 641.718201 93.745117 L 660.402832 48.483276 L 697.530334 24.000122 L 726.52356 37.852417 L 750.362549 72 L 747.060486 94.067139 L 732.886047 186.201416 L 705.100708 330.52356 L 686.979919 427.167847 L 697.530334 427.167847 L 709.61084 415.087341 L 758.496704 350.174561 L 840.644348 247.490051 L 876.885925 206.738342 L 919.167847 161.71814 L 946.308838 140.29541 L 997.61084 140.29541 L 1035.38269 196.429626 L 1018.469849 254.416199 L 965.637634 321.422852 L 921.825562 378.201538 L 859.006714 462.765259 L 819.785278 530.41626 L 823.409424 535.812073 L 832.75177 534.92627 L 974.657776 504.724915 L 1051.328979 490.872559 L 1142.818848 475.167786 L 1184.214844 494.496582 L 1188.724854 514.147644 L 1172.456421 554.335693 L 1074.604126 578.496765 L 959.838989 601.449829 L 788.939636 641.879272 L 786.845764 643.409485 L 789.261841 646.389343 L 866.255127 653.637634 L 899.194702 655.409424 L 979.812134 655.409424 L 1129.932861 666.604187 L 1169.154419 692.537109 L 1192.671265 724.268677 L 1188.724854 748.429688 L 1128.322144 779.194641 L 1046.818848 759.865845 L 856.590759 714.604126 L 791.355774 698.335754 L 782.335693 698.335754 L 782.335693 703.731567 L 836.69812 756.885986 L 936.322205 846.845581 L 1061.073975 962.81897 L 1067.436279 991.490112 L 1051.409424 1014.120911 L 1034.496704 1011.704712 L 924.885986 929.234924 L 882.604126 892.107544 L 786.845764 811.48999 L 780.483276 811.48999 L 780.483276 819.946289 L 802.550415 852.241699 L 919.087341 1027.409424 L 925.127625 1081.127686 L 916.671204 1098.604126 L 886.469849 1109.154419 L 853.288696 1103.114136 L 785.073914 1007.355835 L 714.684631 899.516785 L 657.906067 802.872498 L 650.979858 806.81897 L 617.476624 1167.704834 L 601.771851 1186.147705 L 565.530212 1200 L 535.328857 1177.046997 L 519.302124 1139.919556 L 535.328857 1066.550537 L 554.657776 970.792053 L 570.362488 894.68457 L 584.536926 800.134277 L 592.993347 768.724976 L 592.429626 766.630859 L 585.503479 767.516968 L 514.22821 865.369263 L 405.825531 1011.865906 L 320.053711 1103.677979 L 299.516815 1111.812256 L 263.919525 1093.369263 L 267.221497 1060.429688 L 287.114136 1031.114136 L 405.825531 880.107361 L 477.422913 786.52356 L 523.651062 732.483276 L 523.328918 724.671265 L 520.590698 724.671265 L 205.288605 929.395935 L 149.154434 936.644409 L 124.993355 914.01355 L 127.973183 876.885986 L 139.409409 864.80542 L 234.201385 799.570435 Z"/></svg>' },
-  { id: 'plans',   label: 'Plans',   svg: '<svg width="18" height="18" viewBox="0 0 17 17" fill="currentColor"><path d="M14 2v-2h-13v17h13v-2h2v-13h-2zM2 16v-15h2v15h-2zM13 16h-8v-15h8v15zM15 14h-1v-3h1v3zM15 10h-1v-3h1v3zM14 6v-3h1v3h-1zM6 4h5v1h-5v-1zM6 6h4v1h-4v-1z"/></svg>' },
-  { id: 'memory',  label: 'Agent Files', svg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>' },
-  { id: 'stats',   label: 'Stats',   svg: '<svg width="18" height="18" viewBox="0 0 512 512" fill="currentColor"><path d="M128 496H48V304h80zm224 0h-80V208h80zm112 0h-80V96h80zm-224 0h-80V16h80z"/></svg>' },
-  { id: 'projects', label: 'Projects', svg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6a2 2 0 0 1 2-2h3.17a1 1 0 0 1 .71.29L10.24 5.7A1 1 0 0 0 11 6h9a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="15.5" x2="13" y2="15.5"/></svg>' },
-  { id: 'accounts', label: 'Accounts', svg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3.5"/><path d="M1.5 21c0-4 2.9-7 6.5-7s6.5 3 6.5 7"/><circle cx="17" cy="8.5" r="2.5"/><path d="M14.5 21c0-2.8 1.8-5 4.5-5s4.5 2.2 4.5 5"/></svg>' },
+// ── Tab config (same list App.vue feeds TopNavApp) ───────────────
+const TABS = [
+  { id: 'sessions', icon: 'sparkles', label: 'Sessions' },
+  { id: 'plans', icon: 'book-open', label: 'Plans' },
+  { id: 'memory', icon: 'brain', label: 'Agent Files' },
+  { id: 'stats', icon: 'chart-no-axes-column', label: 'Stats' },
+  { id: 'projects', icon: 'folder', label: 'Projects' },
+  { id: 'accounts', icon: 'users', label: 'Accounts' },
 ];
 
-// Demo callbacks (no-ops — prevents console errors from real handlers)
-const demoCallbacks = {
-  openSession: (s) => { store.activeSessionId = s.sessionId; },
-  stopSession: () => {},
-  toggleStar: () => {},
-  archiveSession: () => {},
-  forkSession: () => {},
-  showJsonl: () => {},
-  launchConfig: () => {},
-  renameSession: () => {},
-  newSession: () => {},
-  openSettings: () => {},
-  archiveSessions: () => {},
-  removeProject: () => {},
-  openProject: (p) => { store.activeSessionId = null; },
-  addProject: () => {},
-  projectRemoved: () => {},
-  switchAccount: (id) => { accountDropdownRef.value?.setActiveAccount?.(id); },
-  openAccountHomeSession: () => {},
-  openPlan: () => {},
-  openMemory: () => {},
-  renameAccount: () => {},
-  deleteAccount: () => {},
-  createAccount: () => null,
-};
+const FILTER_TABS = [
+  { id: 'recent', label: 'Recent' },
+  { id: 'running', label: 'Running' },
+  { id: 'pinned', label: 'Pinned' },
+  { id: 'today', label: 'Today' },
+  { id: 'archived', label: 'Archived' },
+];
 
-function setTab(id) {
-  store.activeTab = id;
-  store.activeSessionId = null;
+// ── Search ───────────────────────────────────────────────────────
+const searchPlaceholder = computed(() => {
+  switch (store.activeTab) {
+    case 'plans': return 'Search plans...';
+    case 'memory': return 'Search agent files...';
+    case 'projects': return 'Search projects…';
+    default: return 'Search sessions...';
+  }
+});
+
+let searchDebounceTimer = null;
+
+function onSearchValue(value) {
+  store.searchQuery = value;
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null;
+    const query = store.searchQuery.trim();
+    if (!query) { doClearSearch(); return; }
+    window.__sb?.search?.(query, store.searchTitlesOnly);
+  }, 200);
 }
 
+function doClearSearch() {
+  store.searchQuery = '';
+  if (searchDebounceTimer) { clearTimeout(searchDebounceTimer); searchDebounceTimer = null; }
+  window.__sb?.clearSearch?.();
+}
+
+function focusSearch() {
+  document.querySelector('.lp-app-window .sbx-commandbar__input')?.focus();
+}
+
+function toggleTitlesOnly() {
+  store.searchTitlesOnly = !store.searchTitlesOnly;
+  if (store.searchQuery.trim()) {
+    window.__sb?.search?.(store.searchQuery.trim(), store.searchTitlesOnly);
+  }
+}
+
+// ── Theme ────────────────────────────────────────────────────────
+// The app mirrors this onto <html data-theme>; the landing scopes it to the
+// demo window instead (:data-theme on .lp-app-window) so flipping the app's
+// theme does not repaint the marketing page around it.
+function toggleTheme() {
+  store.theme = store.theme === 'light' ? 'dark' : 'light';
+}
+
+// ── Active-session rail ──────────────────────────────────────────
+const ATTENTION_ORDER = { waiting: 0, done: 1, running: 2, idle: 3 };
+
+const attentionProjects = computed(() => {
+  const out = [];
+  for (const p of store.projects) {
+    const live = p.sessions.filter(s => store.activePtyIds.has(s.sessionId));
+    if (!live.length) continue;
+    let status = 'idle';
+    let reason = 'open';
+    if (live.some(s => store.attentionSessions.has(s.sessionId))) {
+      status = 'waiting'; reason = 'needs input';
+    } else if (live.some(s => store.responseReadySessions.has(s.sessionId))) {
+      status = 'done'; reason = 'response ready';
+    } else if (live.some(s => store.sessionBusyState.get(s.sessionId))) {
+      status = 'running'; reason = 'working';
+    }
+    out.push({
+      projectPath: p.projectPath,
+      name: p.projectPath.split('/').filter(Boolean).pop() || p.projectPath,
+      status,
+      reason,
+      count: live.length,
+    });
+  }
+  return out.sort((a, b) => ATTENTION_ORDER[a.status] - ATTENTION_ORDER[b.status]);
+});
+
+const attentionActiveName = computed(() =>
+  attentionProjects.value.find(p => p.projectPath === store.attentionProject)?.name || ''
+);
+
+function onSelectAttentionName(name) {
+  const hit = attentionProjects.value.find(p => p.name === name);
+  if (hit) onSelectAttentionProject(hit.projectPath);
+}
+
+function onSelectAttentionProject(projectPath) {
+  store.attentionProject = projectPath;
+  const project = store.projects.find(p => p.projectPath === projectPath);
+  const live = project?.sessions.filter(s => store.activePtyIds.has(s.sessionId)) || [];
+  if (!live.length) return;
+  const newest = live.reduce((a, b) => (new Date(b.modified || 0) > new Date(a.modified || 0) ? b : a));
+  window.__sb?.openSession?.(newest);
+}
+
+// ── Tab switching ────────────────────────────────────────────────
+function setTab(tabId) {
+  if (tabId === store.activeTab) return;
+  store.activeTab = tabId;
+  store.searchQuery = '';
+  store.searchMatchIds = null;
+  store.searchMatchProjectPaths = null;
+  window.__sb?.onTabChange?.(tabId);
+}
+
+// ── Filter tabs ──────────────────────────────────────────────────
+function onFilterTab(id) {
+  store.sessionFilterTab = id;
+  store.showRunningOnly = id === 'running';
+  store.showStarredOnly = id === 'pinned';
+  store.showTodayOnly = id === 'today';
+  store.showArchived = id === 'archived';
+  window.__sb?.onFilterChange?.({
+    showStarredOnly: store.showStarredOnly,
+    showRunningOnly: store.showRunningOnly,
+    showTodayOnly: store.showTodayOnly,
+    showArchived: store.showArchived,
+  });
+}
+
+function onViewMode(mode) {
+  store.sidebarViewMode = mode;
+  if ((mode === 'grid') !== store.gridViewActive) window.__sb?.toggleGridView?.();
+}
+
+// ── Sidebar action callbacks (identical shape to App.vue) ────────
+function onGlobalSettings() { window.__sb?.openGlobalSettings?.(); }
+function onResort() { window.__sb?.resort?.(); }
+function onAddProject() { window.__sb?.addProject?.(); }
+
+const sidebarCallbacks = {
+  openSession: (s) => window.__sb?.openSession?.(s),
+  stopSession: (id) => window.__sb?.stopSession?.(id),
+  toggleStar: (id) => window.__sb?.toggleStar?.(id),
+  archiveSession: (id) => window.__sb?.archiveSession?.(id),
+  forkSession: (id) => window.__sb?.forkSession?.(id),
+  showJsonl: (id) => window.__sb?.showJsonl?.(id),
+  launchConfig: (id) => window.__sb?.launchConfig?.(id),
+  renameSession: (id, name) => window.__sb?.renameSession?.(id, name),
+  newSession: (project, btn) => window.__sb?.newSession?.(project, btn),
+  openSettings: (path) => window.__sb?.openSettings?.(path),
+  archiveSessions: (sessions) => window.__sb?.archiveSessions?.(sessions),
+  removeProject: (path) => window.__sb?.removeProject?.(path),
+};
+
+const planCallbacks = { openPlan: (plan) => window.__sb?.openPlan?.(plan) };
+const memoryCallbacks = { openMemory: (file) => window.__sb?.openMemory?.(file) };
+
+const accountsCallbacks = {
+  switchAccount: (id) => window.__sb?.switchAccount?.(id),
+  openAccountHomeSession: (acc) => window.__sb?.openAccountHomeSession?.(acc),
+  renameAccount: (id, name) => window.__sb?.renameAccount?.(id, name),
+  deleteAccount: (id) => window.__sb?.deleteAccount?.(id),
+  createAccount: (name) => window.__sb?.createAccount?.(name),
+  discoverWslClaudeHomes: () => window.__sb?.discoverWslClaudeHomes?.(),
+  createWslAccount: (distro, name) => window.__sb?.createWslAccount?.(distro, name),
+};
+
+const accountDropdownCallbacks = {
+  switchAccount: (id) => {
+    window.__sb?.switchAccount?.(id);
+    accountDropdownRef.value?.setActiveAccount?.(id);
+  },
+};
+
+const projectsCallbacks = {
+  openProject: (p) => window.__sb?.openProject?.(p),
+  newSession: (p, btn) => window.__sb?.newSession?.(p, btn),
+  addProject: () => window.__sb?.addProject?.(),
+  projectRemoved: () => window.__sb?.projectRemoved?.(),
+};
+
+const projectViewerCallbacks = {
+  newSession: (p, btn) => window.__sb?.newSession?.(p, btn),
+  onTabChange: (tab) => window.__sb?.onPvTabChange?.(tab),
+  worktreeDeleted: () => {},
+};
+
+// ── Selected session → SessionHeaderApp + fake terminal ──────────
 const activeSession = computed(() => {
   if (!store.activeSessionId) return null;
   for (const p of store.projects) {
-    const s = p.sessions.find(s => s.sessionId === store.activeSessionId);
+    const s = p.sessions.find(x => x.sessionId === store.activeSessionId);
     if (s) return { ...s, projectPath: p.projectPath };
   }
   return null;
@@ -442,11 +654,30 @@ const activeSession = computed(() => {
 
 watch(activeSession, (s) => { store.headerSession = s; }, { immediate: true });
 
-const terminalLines = computed(() => {
-  if (!store.activeSessionId) return [];
-  return MOCK_TERMINAL_LINES[store.activeSessionId] || [];
-});
+const terminalLines = computed(() =>
+  store.activeSessionId ? (MOCK_TERMINAL_LINES[store.activeSessionId] || []) : []
+);
 
+// ── ProjectGroup lazy-collapse workaround ────────────────────────
+// ProjectGroup.vue:198 initialises `collapsed` as `ref(() => …)`. A ref holds
+// the function rather than calling it, so `collapsed.value` is always truthy
+// and every freshly mounted group renders collapsed. Fixing that belongs in
+// src/vue, which the landing must not touch — so expand each group once, the
+// first time it appears, and leave later user toggles alone.
+const expandedGroups = new Set();
+
+function expandNewGroups() {
+  for (const header of document.querySelectorAll('.lp-app-window #sidebar-content .project-header')) {
+    if (expandedGroups.has(header.id)) continue;
+    expandedGroups.add(header.id);
+    if (header.classList.contains('collapsed')) header.querySelector('.arrow')?.click();
+  }
+}
+
+watch(
+  () => [store.activeTab, store.sessionFilterTab, store.searchMatchIds, store.sidebarCollapsed],
+  () => nextTick(expandNewGroups)
+);
 
 onMounted(async () => {
   fetch('https://api.github.com/repos/fortael/wootonpad')
@@ -459,686 +690,20 @@ onMounted(async () => {
     spinChar.value = SPIN_FRAMES[_spinIdx];
   }, 120);
 
-  accountDropdownRef.value?.setAccounts(MOCK_ACCOUNTS, 'default', MOCK_USAGE);
-  accountsRef.value?.setAccounts(MOCK_ACCOUNTS, 'default');
+  // Components that take their data through an exposed setter rather than the
+  // store — same handshake App.vue performs in its own onMounted.
+  accountDropdownRef.value?.setAccounts(MOCK_ACCOUNTS, MOCK_ACTIVE_ACCOUNT_ID, MOCK_USAGE);
+  accountsRef.value?.setAccounts(MOCK_ACCOUNTS, MOCK_ACTIVE_ACCOUNT_ID);
   accountsRef.value?.setUsage(MOCK_USAGE);
   projectsRef.value?.setProjects(MOCK_PROJECTS);
   plansRef.value?.setPlans(MOCK_PLANS);
   memoryRef.value?.setMemories(MOCK_MEMORIES);
-  projectViewerRef.value?.open({ projectPath: '/Users/demo/Projects/my-api' });
-  // ProjectGroup.vue uses ref(fn) for lazy collapsed init. In Vue 3.5, if the
-  // lazy init resolves to a truthy function rather than a boolean, all projects
-  // appear collapsed. Click the arrows to expand all collapsed project groups.
-  // Set activeSessionId after expanding so nothing overrides it.
+  projectViewerRef.value?.open({ projectPath: MOCK_VIEWER_PROJECT_PATH });
+
   await nextTick();
-  setTimeout(() => {
-    document.querySelectorAll('#sidebar .project-header.collapsed .arrow').forEach(el => el.click());
-    store.activeSessionId = 'sess-001';
-  }, 50);
+  expandNewGroups();
+  store.activeSessionId = MOCK_SELECTED_SESSION_ID;
+  store.attentionProject = activeSession.value?.projectPath || null;
 });
 </script>
 
-<style>
-/* Override Electron-specific globals so the landing page can scroll */
-html, body {
-  height: auto !important;
-  overflow: auto !important;
-}
-
-/* The landing app root fills the page */
-#landing-app {
-  min-height: 100vh;
-  background: var(--surface-app);
-  color: var(--text-primary);
-}
-
-/* ── Landing root ────────────────────────────────────────── */
-.lp-root {
-  font-family: var(--font-sans);
-}
-
-/* ── Hero ────────────────────────────────────────────────── */
-.lp-hero {
-  background: radial-gradient(ellipse at 50% 0%, rgba(242, 136, 75, 0.12) 0%, transparent 65%),
-              var(--surface-app);
-  text-align: center;
-  padding: 56px 24px 48px;
-}
-
-.lp-hero-inner {
-  max-width: 680px;
-  margin: 0 auto;
-}
-
-.lp-logo {
-  display: block;
-  margin: 0 auto 20px;
-}
-
-.lp-title {
-  font-size: 56px;
-  font-weight: 700;
-  letter-spacing: -1.5px;
-  color: var(--white);
-  margin: 0 0 12px;
-  line-height: 1.1;
-}
-
-.lp-tagline {
-  font-size: 20px;
-  color: var(--orange-400);
-  font-weight: 500;
-  margin: 0 0 20px;
-}
-
-.lp-desc {
-  font-size: 16px;
-  color: var(--text-secondary);
-  line-height: 1.7;
-  margin: 0 0 36px;
-}
-
-.lp-cta {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  flex-wrap: wrap;
-  margin-bottom: 20px;
-}
-
-.lp-btn-primary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--orange-500);
-  color: #0a0a0c;
-  font-weight: 600;
-  font-size: 15px;
-  padding: 10px 24px;
-  border-radius: 8px;
-  text-decoration: none;
-  transition: background 0.15s;
-}
-
-.lp-btn-primary:hover { background: var(--orange-400); }
-
-.lp-btn-secondary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid var(--border-default);
-  color: var(--text-primary);
-  font-weight: 500;
-  font-size: 15px;
-  padding: 10px 24px;
-  border-radius: 8px;
-  text-decoration: none;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.lp-btn-secondary:hover {
-  background: rgba(255,255,255,0.1);
-  border-color: var(--border-strong);
-}
-
-.lp-stars {
-  margin-left: 4px;
-  padding-left: 12px;
-  border-left: 1px solid var(--border-default);
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.lp-platforms {
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
-/* ── Section common ──────────────────────────────────────── */
-.lp-section-inner {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 24px;
-}
-
-.lp-section-title {
-  font-size: 34px;
-  font-weight: 700;
-  letter-spacing: -0.8px;
-  color: var(--white);
-  text-align: center;
-  margin: 0 0 12px;
-}
-
-.lp-section-subtitle {
-  text-align: center;
-  font-size: 15px;
-  color: var(--text-secondary);
-  max-width: 600px;
-  margin: 0 auto 48px;
-  line-height: 1.6;
-}
-
-/* ── Fork features bento ─────────────────────────────────── */
-.lp-fork-section {
-  padding: 90px 24px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.lp-fork-label {
-  text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--orange-400);
-  margin-bottom: 14px;
-}
-
-.lp-bento {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-  margin-top: 52px;
-}
-
-@media (max-width: 900px) {
-  .lp-bento { grid-template-columns: repeat(2, 1fr); }
-  .lp-bento-wide { grid-column: span 2; }
-}
-@media (max-width: 560px) {
-  .lp-bento { grid-template-columns: 1fr; }
-  .lp-bento-wide { grid-column: span 1; }
-}
-
-.lp-bento-wide { grid-column: span 2; }
-
-.lp-bento-card {
-  position: relative;
-  background: var(--surface-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  padding: 28px 28px 24px;
-  overflow: hidden;
-  transition: border-color 0.2s, transform 0.2s;
-}
-
-.lp-bento-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 14px;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.lp-bento-card:hover { border-color: var(--border-default); transform: translateY(-2px); }
-.lp-bento-card:hover::before { opacity: 1; }
-
-/* Accent glow colours */
-.lp-bento-accent-blue  { --_ac: 96, 165, 250; }
-.lp-bento-accent-purple{ --_ac: 167, 139, 250; }
-.lp-bento-accent-orange{ --_ac: 251, 146, 60;  }
-.lp-bento-accent-cyan  { --_ac: 34, 211, 238;  }
-.lp-bento-accent-pink  { --_ac: 244, 114, 182; }
-.lp-bento-accent-green { --_ac: 74, 222, 128;  }
-.lp-bento-accent-yellow{ --_ac: 250, 204, 21;  }
-
-.lp-bento-card::after {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
-  background: rgb(var(--_ac));
-  border-radius: 14px 14px 0 0;
-  opacity: 0.7;
-}
-
-.lp-bento-card::before {
-  background: radial-gradient(ellipse at 0% 0%, rgba(var(--_ac), 0.06) 0%, transparent 60%);
-}
-
-.lp-bento-icon {
-  width: 44px;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(var(--_ac), 0.12);
-  border-radius: 10px;
-  color: rgb(var(--_ac));
-  margin-bottom: 18px;
-}
-
-.lp-bento-card h3 {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--white);
-  margin: 0 0 8px;
-}
-
-.lp-bento-card p {
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.65;
-  margin: 0;
-}
-
-.lp-bento-pill {
-  display: inline-block;
-  margin-top: 16px;
-  padding: 3px 10px;
-  background: rgba(var(--_ac), 0.12);
-  color: rgb(var(--_ac));
-  border-radius: 100px;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-/* ── Features ────────────────────────────────────────────── */
-.lp-features {
-  padding: 90px 24px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.lp-feature-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  margin-top: 56px;
-}
-
-@media (max-width: 900px) {
-  .lp-feature-grid { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 560px) {
-  .lp-feature-grid { grid-template-columns: 1fr; }
-}
-
-.lp-feature-card {
-  background: var(--surface-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 28px;
-  transition: border-color 0.2s;
-}
-
-.lp-feature-card:hover { border-color: var(--border-default); }
-
-.lp-feature-icon {
-  width: 44px;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(242, 136, 75, 0.1);
-  border-radius: 10px;
-  color: var(--orange-400);
-  margin-bottom: 16px;
-}
-
-.lp-feature-card h3 {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--white);
-  margin: 0 0 10px;
-}
-
-.lp-feature-card p {
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  margin: 0;
-}
-
-/* ── Demo section ────────────────────────────────────────── */
-.lp-demo-section {
-  padding: 48px 24px 80px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-/* App window frame */
-.lp-app-window {
-  border: 1px solid var(--border-default);
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6);
-  max-width: 1200px;
-  margin: 0 auto;
-  height: 540px;
-  display: flex;
-  flex-direction: column;
-  user-select: none;
-}
-
-/* macOS title bar */
-.lp-titlebar {
-  background: var(--surface-panel);
-  border-bottom: 1px solid var(--border-subtle);
-  height: 38px;
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  flex-shrink: 0;
-  gap: 12px;
-}
-
-.lp-traffic-lights { display: flex; gap: 7px; }
-
-.lp-tl {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.lp-tl-close  { background: #ff5f57; }
-.lp-tl-min    { background: #ffbd2e; }
-.lp-tl-max    { background: #28c840; }
-
-.lp-titlebar-name {
-  font-size: 13px;
-  color: var(--text-tertiary);
-  font-weight: 500;
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-/* App body (sidebar + main) */
-.lp-app-body {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-  min-height: 0;
-}
-
-/* Override sidebar height for the demo container */
-.lp-app-body #sidebar {
-  height: 100%;
-  width: 340px;
-  min-width: 220px;
-  max-width: 340px;
-}
-
-.lp-app-body #main {
-  flex: 1;
-  overflow: hidden;
-  background: var(--surface-app);
-  display: flex;
-  flex-direction: column;
-}
-
-/* Demo-specific overrides for sidebar components */
-.lp-demo-empty-tab {
-  padding: 20px 0;
-}
-
-/* Terminal area in main */
-.lp-terminal-area {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background: var(--surface-app);
-}
-
-/* SessionHeaderApp handles header styles via public/style.css */
-#vue-session-header {
-  flex-shrink: 0;
-}
-
-.lp-terminal-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px 22px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.7;
-  background: #0d0d10;
-}
-
-.lp-term-line { display: flex; align-items: baseline; gap: 6px; }
-.lp-term-cmd  { color: var(--gray-100); font-weight: 500; }
-.lp-term-info { color: var(--text-tertiary); }
-.lp-term-sep  { color: var(--border-strong); letter-spacing: -1px; }
-.lp-term-ok   { color: #4ade80; }
-.lp-term-spin { color: var(--orange-400); }
-.lp-term-wait { color: #f59e0b; }
-.lp-term-done { color: var(--text-tertiary); }
-.lp-term-hint { color: var(--text-tertiary); padding-left: 2ch; font-size: 11px; }
-.lp-term-todo { color: var(--text-tertiary); }
-.lp-term-question { color: var(--white); font-weight: 500; }
-.lp-term-opt-sel { color: var(--white); }
-.lp-opt-cursor { color: #4ade80; flex-shrink: 0; }
-.lp-term-opt-sub { color: var(--text-tertiary); line-height: 1.45; }
-.lp-term-opt { color: var(--text-secondary); }
-.lp-term-nav { color: var(--text-tertiary); font-size: 11px; }
-.lp-term-blank { height: 0.8em; }
-.lp-term-logo-block { margin-bottom: 2px; }
-.lp-term-logo-row { gap: 10px; line-height: 1; }
-.lp-term-logo-art { color: #d97757; display: inline-block; min-width: 10ch; flex-shrink: 0; white-space: pre; }
-.lp-logo-meta-0 { color: var(--white); font-weight: 600; }
-.lp-logo-meta-1 { color: var(--text-secondary); }
-.lp-logo-meta-2 { color: var(--text-tertiary); }
-
-.lp-term-sh-prompt { color: var(--text-secondary); gap: 0; }
-.lp-sh-cwd { color: #60a5fa; }
-.lp-sh-branch { color: var(--text-tertiary); }
-.lp-sh-branch-name { color: #c084fc; }
-.lp-term-sh-cmd { color: var(--gray-100); gap: 6px; }
-.lp-sh-arrow { color: #4ade80; flex-shrink: 0; }
-.lp-sh-block-cursor { color: var(--gray-100); animation: lp-blink 1s step-end infinite; }
-@keyframes lp-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-.lp-term-sh-out { color: var(--text-secondary); padding-left: 0; }
-.lp-term-sh-out-ok { color: #4ade80; }
-
-.lp-spinner-char {
-  color: var(--orange-400);
-  font-family: var(--font-mono);
-  flex-shrink: 0;
-}
-
-.lp-wait-cursor {
-  color: #f59e0b;
-  animation: lp-pulse 1s ease-in-out infinite;
-  flex-shrink: 0;
-}
-
-@keyframes lp-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-/* ── Install ─────────────────────────────────────────────── */
-.lp-install {
-  padding: 90px 24px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.lp-install-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  max-width: 700px;
-  margin: 56px auto 0;
-}
-
-@media (max-width: 600px) {
-  .lp-install-grid { grid-template-columns: 1fr; }
-}
-
-.lp-install-card {
-  background: var(--surface-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  text-align: center;
-}
-
-.lp-install-platform {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.lp-dl-btn {
-  display: inline-block;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  padding: 7px 14px;
-  font-size: 13px;
-  color: var(--text-primary);
-  text-decoration: none;
-  transition: background 0.15s;
-}
-
-.lp-dl-btn:hover { background: rgba(255,255,255,0.1); }
-
-.lp-install-note {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin: 0;
-}
-
-.lp-install-prereq {
-  text-align: center;
-  margin-top: 32px;
-  font-size: 13px;
-  color: var(--text-tertiary);
-}
-
-.lp-install-prereq a {
-  color: var(--orange-400);
-  text-decoration: none;
-}
-
-.lp-install-prereq a:hover { text-decoration: underline; }
-
-/* ── Footer ──────────────────────────────────────────────── */
-.lp-footer {
-  background: var(--surface-panel);
-  border-top: 1px solid var(--border-subtle);
-  padding: 24px;
-}
-
-.lp-footer-inner {
-  max-width: 1100px;
-  margin: 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--text-tertiary);
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.lp-footer-inner a {
-  color: var(--text-tertiary);
-  text-decoration: none;
-}
-
-.lp-footer-inner a:hover { color: var(--text-secondary); }
-
-/* ── Landing diff polyfill ───────────────────────────────────── */
-.lp-diff-wrap {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background: #0d0d10;
-  overflow: hidden;
-}
-
-.lp-diff-filename {
-  padding: 8px 16px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-tertiary);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-panel);
-  flex-shrink: 0;
-}
-
-.lp-diff-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 0;
-}
-
-.lp-diff-line {
-  display: flex;
-  align-items: baseline;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.65;
-  padding: 0 16px;
-}
-
-.lp-diff-add {
-  background: rgba(46, 160, 67, 0.1);
-}
-
-.lp-diff-gutter {
-  color: var(--green-500);
-  width: 16px;
-  flex-shrink: 0;
-  user-select: none;
-}
-
-.lp-diff-code {
-  color: var(--text-primary);
-  white-space: pre;
-}
-
-/* ── Project viewer demo section ─────────────────────────── */
-.lp-project-demo-section {
-  padding: 90px 24px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.lp-project-demo-text {
-  max-width: 600px;
-  margin: 0 auto 48px;
-  text-align: center;
-}
-
-.lp-project-demo-desc {
-  font-size: 15px;
-  color: var(--text-secondary);
-  line-height: 1.65;
-  margin: 0;
-}
-
-.lp-project-window {
-  max-width: 1200px;
-  height: 580px;
-}
-
-.lp-project-body {
-  flex: 1;
-  overflow: hidden;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.lp-project-body .pv-root {
-  flex: 1;
-  overflow: hidden;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-</style>

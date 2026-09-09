@@ -155,19 +155,43 @@ function transformUsageResponse(apiUsage) {
   return usage;
 }
 
-async function fetchUsage(configDir) {
-  const oauth = getOAuthToken(configDir);
-  if (!oauth?.accessToken) return null;
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 
-  const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
+function usageRequestInit(accessToken) {
+  return {
     headers: {
-      'Authorization': `Bearer ${oauth.accessToken}`,
+      'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
       'User-Agent': 'claude-code/2.1.74',
       'anthropic-beta': 'oauth-2025-04-20',
     },
     signal: AbortSignal.timeout(10000),
-  });
+  };
+}
+
+// Same request as fetchUsage, but the HTTP status survives the call. fetchUsage
+// collapses every failure to null, which cannot tell a dead token (401) apart
+// from a bad day at the API — the account panel needs that distinction to say
+// "signed out" rather than "something went wrong".
+// Throws only on a transport failure, which the caller reports as a network error.
+async function probeUsage(configDir) {
+  const oauth = getOAuthToken(configDir);
+  if (!oauth?.accessToken) return { tokenPresent: false, status: 0, ok: false, usage: null };
+  const res = await fetch(USAGE_URL, usageRequestInit(oauth.accessToken));
+  let usage = null;
+  if (res.ok) {
+    try { usage = transformUsageResponse(await res.json()); } catch { usage = null; }
+  }
+  let retryAfterSeconds = 0;
+  if (res.status === 429) retryAfterSeconds = parseInt(res.headers.get('retry-after') || '0', 10);
+  return { tokenPresent: true, status: res.status, ok: res.ok, usage, retryAfterSeconds };
+}
+
+async function fetchUsage(configDir) {
+  const oauth = getOAuthToken(configDir);
+  if (!oauth?.accessToken) return null;
+
+  const res = await fetch(USAGE_URL, usageRequestInit(oauth.accessToken));
 
   if (res.status === 429) {
     const retryAfter = parseInt(res.headers.get('retry-after') || '0', 10);
@@ -196,4 +220,4 @@ async function fetchAndTransformUsage(configDir) {
   }
 }
 
-module.exports = { getOAuthToken, fetchUsage, fetchAndTransformUsage, getConfigDir };
+module.exports = { getOAuthToken, fetchUsage, probeUsage, fetchAndTransformUsage, getConfigDir };

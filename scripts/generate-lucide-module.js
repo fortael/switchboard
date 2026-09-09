@@ -16,6 +16,8 @@ const ICONS = [
   // Session view
   'git-branch', 'x', 'maximize-2', 'circle', 'square', 'folder-open', 'terminal',
   'square-arrow-out-up-right', 'ellipsis',
+  // Accounts view
+  'copy', 'check', 'key-round', 'file-json', 'triangle-alert', 'circle-check',
 ];
 
 const SRC = path.join(__dirname, '..', 'node_modules', 'lucide-static', 'icons');

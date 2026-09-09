@@ -1,0 +1,722 @@
+/* ── Landing-page-only CSS ──────────────────────────────────────────────
+   Imported from src/landing/main.js, so the landing vite build folds it into
+   docs/landing.css. It must NOT live in a .vue <style> block: the app's lib
+   build writes its CSS asset straight over public/style.css.
+
+   Everything below the marketing sections (the demo shell + fake terminal)
+   is written against the design tokens declared at the top of
+   public/style.css so the demo tracks the app's palette automatically. */
+
+/* Override Electron-specific globals so the landing page can scroll */
+html, body {
+  height: auto !important;
+  overflow: auto !important;
+}
+
+/* The landing app root fills the page */
+#landing-app {
+  min-height: 100vh;
+  background: var(--surface-app);
+  color: var(--text-primary);
+}
+
+/* ── Landing root ────────────────────────────────────────── */
+.lp-root {
+  font-family: var(--font-sans);
+}
+
+/* ── Hero ────────────────────────────────────────────────── */
+.lp-hero {
+  background: radial-gradient(ellipse at 50% 0%, rgba(242, 136, 75, 0.12) 0%, transparent 65%),
+              var(--surface-app);
+  text-align: center;
+  padding: 56px 24px 48px;
+}
+
+.lp-hero-inner {
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+.lp-logo {
+  display: block;
+  margin: 0 auto 20px;
+}
+
+.lp-title {
+  font-size: 56px;
+  font-weight: 700;
+  letter-spacing: -1.5px;
+  color: var(--white);
+  margin: 0 0 12px;
+  line-height: 1.1;
+}
+
+.lp-tagline {
+  font-size: 20px;
+  color: var(--orange-400);
+  font-weight: 500;
+  margin: 0 0 20px;
+}
+
+.lp-desc {
+  font-size: 16px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin: 0 0 36px;
+}
+
+.lp-cta {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.lp-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--orange-500);
+  color: var(--text-on-accent);
+  font-weight: 600;
+  font-size: 15px;
+  padding: 10px 24px;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.lp-btn-primary:hover { background: var(--orange-400); }
+
+.lp-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 15px;
+  padding: 10px 24px;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.lp-btn-secondary:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: var(--border-strong);
+}
+
+.lp-stars {
+  margin-left: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.lp-platforms {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* ── Section common ──────────────────────────────────────── */
+.lp-section-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.lp-section-title {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.8px;
+  color: var(--white);
+  text-align: center;
+  margin: 0 0 12px;
+}
+
+.lp-section-subtitle {
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-secondary);
+  max-width: 600px;
+  margin: 0 auto 48px;
+  line-height: 1.6;
+}
+
+/* ── Fork features bento ─────────────────────────────────── */
+.lp-fork-section {
+  padding: 90px 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lp-fork-label {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--orange-400);
+  margin-bottom: 14px;
+}
+
+.lp-bento {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 52px;
+}
+
+@media (max-width: 900px) {
+  .lp-bento { grid-template-columns: repeat(2, 1fr); }
+  .lp-bento-wide { grid-column: span 2; }
+}
+@media (max-width: 560px) {
+  .lp-bento { grid-template-columns: 1fr; }
+  .lp-bento-wide { grid-column: span 1; }
+}
+
+.lp-bento-wide { grid-column: span 2; }
+
+.lp-bento-card {
+  position: relative;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  padding: 28px 28px 24px;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+
+.lp-bento-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.lp-bento-card:hover { border-color: var(--border-default); transform: translateY(-2px); }
+.lp-bento-card:hover::before { opacity: 1; }
+
+/* Accent glow colours */
+.lp-bento-accent-blue  { --_ac: 96, 165, 250; }
+.lp-bento-accent-purple{ --_ac: 167, 139, 250; }
+.lp-bento-accent-orange{ --_ac: 251, 146, 60;  }
+.lp-bento-accent-cyan  { --_ac: 34, 211, 238;  }
+.lp-bento-accent-pink  { --_ac: 244, 114, 182; }
+.lp-bento-accent-green { --_ac: 74, 222, 128;  }
+.lp-bento-accent-yellow{ --_ac: 250, 204, 21;  }
+
+.lp-bento-card::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: rgb(var(--_ac));
+  border-radius: 14px 14px 0 0;
+  opacity: 0.7;
+}
+
+.lp-bento-card::before {
+  background: radial-gradient(ellipse at 0% 0%, rgba(var(--_ac), 0.06) 0%, transparent 60%);
+}
+
+.lp-bento-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--_ac), 0.12);
+  border-radius: 10px;
+  color: rgb(var(--_ac));
+  margin-bottom: 18px;
+}
+
+.lp-bento-card h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--white);
+  margin: 0 0 8px;
+}
+
+.lp-bento-card p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.lp-bento-pill {
+  display: inline-block;
+  margin-top: 16px;
+  padding: 3px 10px;
+  background: rgba(var(--_ac), 0.12);
+  color: rgb(var(--_ac));
+  border-radius: 100px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ── Features ────────────────────────────────────────────── */
+.lp-features {
+  padding: 90px 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lp-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 56px;
+}
+
+@media (max-width: 900px) {
+  .lp-feature-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 560px) {
+  .lp-feature-grid { grid-template-columns: 1fr; }
+}
+
+.lp-feature-card {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 28px;
+  transition: border-color 0.2s;
+}
+
+.lp-feature-card:hover { border-color: var(--border-default); }
+
+.lp-feature-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(242, 136, 75, 0.1);
+  border-radius: 10px;
+  color: var(--orange-400);
+  margin-bottom: 16px;
+}
+
+.lp-feature-card h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--white);
+  margin: 0 0 10px;
+}
+
+.lp-feature-card p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ── Demo section ────────────────────────────────────────── */
+.lp-demo-section {
+  padding: 48px 24px 80px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* App window frame */
+.lp-app-window {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+  max-width: 1200px;
+  margin: 0 auto;
+  height: 600px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-app);
+  user-select: none;
+}
+
+/* macOS title bar */
+.lp-titlebar {
+  background: var(--surface-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.lp-traffic-lights { display: flex; gap: 7px; }
+
+.lp-tl {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* Traffic lights read as macOS chrome by position and shape; taking the hues
+   from the design system keeps the frame on-brand and off literal hexes. */
+.lp-tl-close  { background: var(--red-500); }
+.lp-tl-min    { background: var(--amber-500); }
+.lp-tl-max    { background: var(--green-500); }
+
+.lp-titlebar-name {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* ── Demo shell ──────────────────────────────────────────────────────────
+   The demo renders the app's own components inside App.vue's wrapper markup
+   (.sbx-shell / .sbx-shell__body / #sidebar / #main), so shell.css,
+   sidebar-redesign.css and session-view.css style it unchanged. Only the
+   things the Electron window would otherwise supply are set here: a bounded
+   height, and a sidebar that cannot be dragged wider than the frame. */
+.lp-app-window > .sbx-shell {
+  flex: 1;
+  min-height: 0;
+}
+
+.lp-app-window #sidebar {
+  width: 320px;
+  min-width: 320px;
+  max-width: 320px;
+}
+
+/* No drag handler on the landing — keep the divider, drop the col-resize
+   affordance so it does not promise something the page cannot do. */
+.lp-app-window #sidebar-resize-handle {
+  cursor: default;
+  pointer-events: none;
+}
+
+/* The Electron window has a minimum width; a phone does not. Narrow the
+   sidebar first, then — once the session view would be too thin to read —
+   drop it and let the sidebar carry the demo on its own. */
+@media (max-width: 1040px) {
+  .lp-app-window #sidebar {
+    width: 270px;
+    min-width: 270px;
+    max-width: 270px;
+  }
+}
+
+@media (max-width: 840px) {
+  .lp-app-window {
+    height: 520px;
+  }
+  .lp-app-window #sidebar {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+  .lp-app-window #sidebar-resize-handle,
+  .lp-app-window #main {
+    display: none;
+  }
+  /* The account slot would eat the whole nav at this width and squeeze the
+     section tabs to zero. The Accounts tab covers the same ground. */
+  .lp-app-window .sbx-topnav__account {
+    display: none;
+  }
+  .lp-app-window .sbx-topnav__tabs {
+    flex: 1 1 auto;
+    min-width: 120px;
+  }
+}
+
+.lp-demo-empty-tab {
+  padding: var(--space-5) 0;
+}
+
+/* App.vue wraps SessionHeaderApp in this div; keep it from being squeezed. */
+.lp-app-window #vue-session-header {
+  flex-shrink: 0;
+}
+
+/* ── Fake terminal ───────────────────────────────────────────────────────
+   No PTY on a landing page: this is a static transcript rendered from
+   mock-data.js, styled with the app's tokens so it reads as the real thing. */
+.lp-term {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-5) var(--space-6);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  background: var(--gray-925);
+  white-space: pre-wrap;
+}
+
+/* Colours here come from the raw palette (--gray-*, --green-500 …) rather
+   than the semantic aliases (--text-secondary …): the terminal keeps its dark
+   background in both themes, exactly like the real xterm surface, so text
+   that followed --text-* would turn dark ink on a dark panel in light mode. */
+.lp-term-line { display: flex; align-items: baseline; gap: var(--space-1); }
+.lp-term-cmd  { color: var(--gray-100); font-weight: var(--weight-medium); }
+.lp-term-info { color: var(--gray-400); }
+.lp-term-sep  { color: var(--gray-600); letter-spacing: -1px; }
+.lp-term-ok   { color: var(--green-500); }
+.lp-term-spin { color: var(--orange-400); }
+.lp-term-wait { color: var(--amber-500); }
+.lp-term-done { color: var(--gray-400); }
+.lp-term-hint { color: var(--gray-400); padding-left: 2ch; font-size: var(--text-2xs); }
+.lp-term-todo { color: var(--gray-400); }
+.lp-term-question { color: var(--white); font-weight: var(--weight-medium); }
+.lp-term-opt-sel { color: var(--white); }
+.lp-opt-cursor { color: var(--green-500); flex-shrink: 0; }
+.lp-term-opt-sub { color: var(--gray-400); line-height: var(--leading-normal); }
+.lp-term-opt { color: var(--gray-300); }
+.lp-term-nav { color: var(--gray-400); font-size: var(--text-2xs); }
+.lp-term-blank { height: 0.8em; }
+.lp-term-logo-block { margin-bottom: 2px; }
+.lp-term-logo-row { gap: var(--space-2); line-height: 1; }
+.lp-term-logo-art { color: var(--orange-500); display: inline-block; min-width: 10ch; flex-shrink: 0; white-space: pre; }
+.lp-logo-meta-0 { color: var(--white); font-weight: var(--weight-semibold); }
+.lp-logo-meta-1 { color: var(--gray-300); }
+.lp-logo-meta-2 { color: var(--gray-400); }
+
+.lp-term-sh-prompt { color: var(--gray-300); gap: 0; }
+.lp-sh-cwd { color: var(--blue-500); }
+.lp-sh-branch { color: var(--gray-400); }
+.lp-sh-branch-name { color: var(--purple-400); }
+.lp-term-sh-cmd { color: var(--gray-100); gap: var(--space-1); }
+.lp-sh-arrow { color: var(--green-500); flex-shrink: 0; }
+.lp-sh-block-cursor { color: var(--gray-100); animation: lp-blink 1s step-end infinite; }
+@keyframes lp-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.lp-term-sh-out { color: var(--gray-300); }
+.lp-term-sh-out-ok { color: var(--green-500); }
+
+.lp-spinner-char {
+  color: var(--orange-400);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.lp-wait-cursor {
+  color: var(--amber-500);
+  animation: lp-pulse 1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes lp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Main-area empty state when no session is selected */
+.lp-demo-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  background: var(--surface-app);
+}
+
+/* ── Install ─────────────────────────────────────────────── */
+.lp-install {
+  padding: 90px 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lp-install-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  max-width: 700px;
+  margin: 56px auto 0;
+}
+
+@media (max-width: 600px) {
+  .lp-install-grid { grid-template-columns: 1fr; }
+}
+
+.lp-install-card {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.lp-install-platform {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.lp-dl-btn {
+  display: inline-block;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.lp-dl-btn:hover { background: rgba(255,255,255,0.1); }
+
+.lp-install-note {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+
+.lp-install-prereq {
+  text-align: center;
+  margin-top: 32px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+.lp-install-prereq a {
+  color: var(--orange-400);
+  text-decoration: none;
+}
+
+.lp-install-prereq a:hover { text-decoration: underline; }
+
+/* ── Footer ──────────────────────────────────────────────── */
+.lp-footer {
+  background: var(--surface-panel);
+  border-top: 1px solid var(--border-subtle);
+  padding: 24px;
+}
+
+.lp-footer-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.lp-footer-inner a {
+  color: var(--text-tertiary);
+  text-decoration: none;
+}
+
+.lp-footer-inner a:hover { color: var(--text-secondary); }
+
+/* ── Landing diff polyfill ───────────────────────────────────── */
+.lp-diff-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--gray-925);
+  overflow: hidden;
+}
+
+.lp-diff-filename {
+  padding: var(--space-2) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-panel);
+  flex-shrink: 0;
+}
+
+.lp-diff-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3) 0;
+}
+
+.lp-diff-line {
+  display: flex;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.65;
+  padding: 0 var(--space-4);
+}
+
+.lp-diff-add {
+  background: color-mix(in srgb, var(--green-500) 10%, transparent);
+}
+
+.lp-diff-gutter {
+  color: var(--green-500);
+  width: var(--space-4);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.lp-diff-code {
+  color: var(--text-primary);
+  white-space: pre;
+}
+
+/* ── Project viewer demo section ─────────────────────────── */
+.lp-project-demo-section {
+  padding: 90px 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lp-project-demo-text {
+  max-width: 600px;
+  margin: 0 auto 48px;
+  text-align: center;
+}
+
+.lp-project-demo-desc {
+  font-size: 15px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.lp-project-window {
+  max-width: 1200px;
+  height: 580px;
+}
+
+.lp-project-body {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.lp-project-body .pv-root {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

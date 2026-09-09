@@ -133,3 +133,46 @@
 [data-theme='light'] ::-webkit-scrollbar-thumb:hover, .theme-light ::-webkit-scrollbar-thumb:hover {
   background: var(--paper-500); background-clip: padding-box;
 }
+
+/* ── Accent on paper ─────────────────────────────────────────────────────
+   --orange-500 is tuned for near-black surfaces and washes out on white, so
+   every place it carries meaning rather than filling a shape steps down to
+   --orange-600. Fills and glows are already handled above. */
+[data-theme='light'] .sbx-topnav__tab.is-active .sbx-topnav__tab-underline,
+[data-theme='light'] .sbx-filtertabs__tab--active .sbx-filtertabs__underline,
+[data-theme='light'] .sbx-rail__btn.is-active::before,
+.theme-light .sbx-topnav__tab.is-active .sbx-topnav__tab-underline,
+.theme-light .sbx-filtertabs__tab--active .sbx-filtertabs__underline,
+.theme-light .sbx-rail__btn.is-active::before {
+  background: var(--orange-600);
+}
+
+[data-theme='light'] .sbx-filtertabs__view--active .sb-icon,
+[data-theme='light'] .sbx-metric__range::-webkit-slider-thumb,
+.theme-light .sbx-filtertabs__view--active .sb-icon,
+.theme-light .sbx-metric__range::-webkit-slider-thumb {
+  color: var(--orange-600);
+}
+
+[data-theme='light'] .sbx-metric__range::-webkit-slider-thumb,
+.theme-light .sbx-metric__range::-webkit-slider-thumb {
+  background: var(--orange-600);
+}
+
+[data-theme='light'] .sbx-commandbar__field:focus-within,
+[data-theme='light'] .sbx-rail__project.is-active,
+.theme-light .sbx-commandbar__field:focus-within,
+.theme-light .sbx-rail__project.is-active {
+  border-color: var(--orange-600);
+}
+
+/* Session list rows: the subtitle and timestamp sat at --text-disabled, which
+   is a grey tuned for a near-black surface and drops under 4.5:1 on paper. */
+[data-theme='light'] .session-summary,
+[data-theme='light'] .session-time,
+[data-theme='light'] .session-meta,
+.theme-light .session-summary,
+.theme-light .session-time,
+.theme-light .session-meta {
+  color: var(--text-tertiary);
+}

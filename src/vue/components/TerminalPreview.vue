@@ -2,7 +2,9 @@
   <div class="sbx-termpreview">
     <div class="sbx-termpreview__chrome">
       <span class="sbx-termpreview__label">Preview</span>
-      <span class="sbx-termpreview__meta">{{ themeLabel }} · {{ fontLabel }}</span>
+      <span class="sbx-termpreview__meta">
+        {{ themeLabel }} · {{ fontLabel }} · {{ fontSize }}px / {{ lineHeight.toFixed(2) }}
+      </span>
     </div>
     <div v-if="unavailable" class="sbx-termpreview__fallback">
       Terminal preview unavailable.
@@ -18,6 +20,7 @@ const props = defineProps({
   themeKey: { type: String, default: '' },
   fontKey: { type: String, default: 'default' },
   fontSize: { type: Number, default: 12 },
+  lineHeight: { type: Number, default: 1.25 },
 });
 
 const hostEl = ref(null);
@@ -60,6 +63,7 @@ onMounted(() => {
     cols: 76,
     rows: 13,
     fontSize: props.fontSize,
+    lineHeight: props.lineHeight,
     fontFamily: font.value?.family,
     theme: theme.value || undefined,
     cursorBlink: true,
@@ -86,5 +90,9 @@ watch(font, (next) => {
 
 watch(() => props.fontSize, (next) => {
   if (term && next) term.options.fontSize = next;
+});
+
+watch(() => props.lineHeight, (next) => {
+  if (term && next) term.options.lineHeight = next;
 });
 </script>

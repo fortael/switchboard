@@ -1,0 +1,341 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Canonical control layer — buttons, icon buttons, form fields.
+
+   Ports design/components/core/{Button,IconButton,Input,Textarea}.jsx into
+   plain CSS. Every value is a design token from the :root block at the top
+   of public/style.css; there is not a single literal colour, radius or type
+   size in this file.
+
+   This file is additive: it only defines new `.sbx-*` classes, so linking
+   it changes nothing on screen until markup opts in. The existing app is
+   pulled onto these *metrics* from inside public/style.css instead, because
+   the component templates are owned elsewhere and cannot be re-classed.
+
+   Load order (public/index.html): after style.css, before the other
+   redesign-layer sheets.
+
+     <link rel="stylesheet" href="css/controls.css">
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ------------------------------------------------------------------ *
+ * Added layout token
+ *
+ * --bar-height is the one value this pass needed that the :root block in
+ * style.css does not carry. Every "bar above the work area" — session
+ * header, viewer toolbars, settings header, diff nav — is the same object
+ * and was drifting between 35px, 40px and 46px. 46px is the height
+ * .sbx-sesshead already uses in css/session-view.css; naming it here stops
+ * it being a magic number in three sheets.
+ *
+ * style.css spells it `var(--bar-height, 46px)` so that sheet keeps
+ * rendering correctly even if this one is not linked.
+ * ------------------------------------------------------------------ */
+
+:root {
+  --bar-height: 46px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Button — .sbx-btn
+ *
+ * Base carries layout + type; a size modifier carries the box; a variant
+ * modifier carries the skin. Always apply exactly one of each:
+ *
+ *   <button class="sbx-btn sbx-btn--sm sbx-btn--primary">Commit</button>
+ * ------------------------------------------------------------------ */
+
+.sbx-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: var(--font-ui);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-tight);
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+/* SbIcon renders an inline <svg>; kill the baseline gap inside the flex row. */
+.sbx-btn > svg,
+.sbx-btn .sb-icon {
+  display: block;
+  flex-shrink: 0;
+}
+
+/* ---- Sizes ---- */
+
+.sbx-btn--xs {
+  height: var(--hit-xs);
+  padding: 0 var(--space-3);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+}
+
+.sbx-btn--sm {
+  height: var(--hit-sm);
+  padding: 0 var(--space-4);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-md);
+}
+
+.sbx-btn--md {
+  height: var(--hit-md);
+  padding: 0 var(--space-5);
+  font-size: var(--text-base);
+  border-radius: var(--radius-md);
+}
+
+/* ---- Variants ---- */
+
+.sbx-btn--primary {
+  background: var(--gradient-primary);
+  box-shadow: var(--glow-orange);
+  color: var(--text-on-accent);
+  border-color: transparent;
+}
+
+.sbx-btn--danger {
+  background: var(--gradient-danger);
+  box-shadow: var(--glow-red);
+  color: var(--text-on-accent);
+  border-color: transparent;
+}
+
+.sbx-btn--secondary {
+  background: var(--surface-card);
+  border-color: var(--border-default);
+  color: var(--text-secondary);
+}
+
+.sbx-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+
+/* ---- States ----
+   Filled variants keep their gradient and lift the glow; outlined variants
+   step one surface up. Nothing inverts, nothing shrinks. */
+
+.sbx-btn--secondary:hover:not(:disabled) {
+  background: var(--surface-card-hover);
+  color: var(--text-primary);
+}
+
+.sbx-btn--ghost:hover:not(:disabled) {
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+
+.sbx-btn--primary:hover:not(:disabled),
+.sbx-btn--danger:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.sbx-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+.sbx-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Hover must not read as available while disabled. */
+.sbx-btn:disabled:hover {
+  filter: none;
+}
+
+.sbx-btn--secondary:disabled:hover {
+  background: var(--surface-card);
+  color: var(--text-secondary);
+}
+
+.sbx-btn--ghost:disabled:hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+/* Full-bleed variant for dialog footers and stacked forms. */
+.sbx-btn--block {
+  display: flex;
+  width: 100%;
+}
+
+/* ------------------------------------------------------------------ *
+ * IconButton — .sbx-iconbtn
+ *
+ * Borderless square for toolbars, rails and inline row actions. Default
+ * 28px is the comfortable target for dense toolbars; --sm is the in-row
+ * size, --md the roomy toolbar size.
+ * ------------------------------------------------------------------ */
+
+.sbx-iconbtn {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  line-height: 1;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-iconbtn > svg,
+.sbx-iconbtn .sb-icon {
+  display: block;
+}
+
+.sbx-iconbtn--sm { width: 26px; height: 26px; }
+.sbx-iconbtn--md { width: 32px; height: 32px; }
+
+.sbx-iconbtn:hover:not(:disabled) {
+  background: var(--surface-card);
+  color: var(--text-secondary);
+}
+
+.sbx-iconbtn:active:not(:disabled),
+.sbx-iconbtn.is-active {
+  background: var(--surface-card-hover);
+}
+
+.sbx-iconbtn.is-active {
+  color: var(--orange-500);
+}
+
+.sbx-iconbtn--danger:hover:not(:disabled) {
+  color: var(--status-danger);
+  background: color-mix(in srgb, var(--status-danger) 10%, transparent);
+}
+
+.sbx-iconbtn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+.sbx-iconbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sbx-iconbtn:disabled:hover {
+  background: transparent;
+  color: var(--text-tertiary);
+}
+
+/* ------------------------------------------------------------------ *
+ * Fields — .sbx-input / .sbx-select / .sbx-textarea
+ *
+ * One box, one border, one focus treatment. The focus signal is the
+ * orange accent border, not a glow (Input.prompt.md).
+ * ------------------------------------------------------------------ */
+
+.sbx-input,
+.sbx-select,
+.sbx-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  background: var(--surface-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  outline: none;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-input,
+.sbx-select {
+  height: var(--hit-sm);
+  padding: 0 var(--space-3);
+}
+
+.sbx-textarea {
+  height: auto;
+  padding: var(--space-2) var(--space-3);
+  line-height: var(--leading-normal);
+  resize: vertical;
+}
+
+.sbx-input::placeholder,
+.sbx-textarea::placeholder {
+  color: var(--text-disabled);
+}
+
+.sbx-input:focus,
+.sbx-select:focus,
+.sbx-textarea:focus {
+  border-color: var(--border-focus);
+}
+
+.sbx-input:disabled,
+.sbx-select:disabled,
+.sbx-textarea:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Native select chrome is unstyleable, so we draw our own caret.
+   NOTE: this is the one place in the redesign layer that carries a literal
+   colour. An SVG data URI is a separate document — it cannot read a CSS
+   custom property, and `currentColor` does not cross the URI boundary — so
+   the stroke has to be spelled out. The two values below are exactly
+   --text-tertiary in each theme (--gray-400 / --ink-500); if either token
+   moves, move these with it. Everything else here is a token. */
+.sbx-select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  padding-right: var(--space-7);
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%236b6b78' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
+}
+
+[data-theme='light'] .sbx-select,
+.theme-light .sbx-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%2363656f' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.sbx-select option,
+.sbx-select optgroup {
+  background: var(--surface-panel-raised);
+  color: var(--text-primary);
+}
+
+/* Field wrapper for a label + control stack. */
+.sbx-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.sbx-field__label {
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}

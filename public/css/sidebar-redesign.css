@@ -24,8 +24,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 34px;
-  padding: 0 10px;
+  height: var(--hit-sm);
+  padding: 0 var(--space-3);
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-full);
@@ -63,13 +63,13 @@
 .sbx-commandbar__chip {
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   line-height: 1;
   color: var(--text-disabled);
   background: transparent;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
-  padding: 2px 5px;
+  padding: var(--space-1) var(--space-2);
   cursor: pointer;
   transition:
     color var(--duration-base) var(--ease-standard),
@@ -84,8 +84,8 @@
 }
 
 .sbx-commandbar__add {
-  width: 34px;
-  height: 34px;
+  width: var(--hit-sm);
+  height: var(--hit-sm);
   flex: none;
   display: flex;
   align-items: center;
@@ -117,7 +117,7 @@
   display: flex;
   align-items: flex-start;
   gap: var(--space-4);
-  padding: var(--space-4) 14px 0;
+  padding: var(--space-4) var(--space-3) 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -172,18 +172,18 @@
 
 .sbx-filtertabs__views {
   display: flex;
-  gap: 2px;
-  padding-bottom: 6px;
+  gap: var(--space-1);
+  padding-bottom: var(--space-1);
 }
 
 .sbx-filtertabs__view {
-  width: 24px;
-  height: 22px;
+  width: var(--hit-xs);
+  height: var(--hit-xs);
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   background: transparent;
   transition: background var(--duration-fast) var(--ease-standard);
@@ -218,8 +218,8 @@
  * ------------------------------------------------------------------ */
 
 .sbx-attention {
-  margin: 14px var(--space-3) 0;
-  padding: 10px;
+  margin: var(--space-3) var(--space-3) 0;
+  padding: var(--space-3);
   border-radius: var(--radius-sm);
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
@@ -228,7 +228,7 @@
 .sbx-attention__header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   margin-bottom: var(--space-2);
   padding-left: 2px;
 }
@@ -242,7 +242,7 @@
 }
 
 .sbx-attention__label {
-  font-size: 10px;
+  font-size: var(--text-2xs);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   color: var(--text-tertiary);
@@ -255,14 +255,14 @@
 
 .sbx-attention__count {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   color: var(--text-disabled);
 }
 
 .sbx-attention__rail {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -280,7 +280,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: var(--space-2);
   height: 30px;
   width: 30px;
   padding: 0;
@@ -299,20 +299,31 @@
 .sbx-attention__avatar--done    { --sbx-tone: var(--blue-500); }
 .sbx-attention__avatar--idle    { --sbx-tone: var(--gray-500); }
 
+/* ProjectAvatar renders an <img> when the project has an icon and a
+   colour-filled <span> of initials when it does not — the same avatar the
+   session list and the collapsed rail use, so a project looks identical
+   everywhere. Status is a ring around it rather than a tint, which would
+   fight the avatar's own colour. */
 .sbx-attention__monogram {
   width: 22px;
   height: 22px;
   flex: none;
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--sbx-tone) 20%, var(--surface-card));
-  border: 1px solid color-mix(in srgb, var(--sbx-tone) 45%, transparent);
+  border-radius: var(--radius-xs);
+  box-shadow: 0 0 0 var(--border-width-thick) color-mix(in srgb, var(--sbx-tone) 65%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   font-weight: var(--weight-bold);
-  color: var(--sbx-tone);
+  color: var(--text-on-accent);
+  letter-spacing: var(--tracking-normal);
+}
+
+.sbx-attention__monogram:is(img) {
+  display: block;
+  object-fit: cover;
 }
 
 /* Open state (active or hovered) reveals the meta column and hides the
@@ -338,23 +349,26 @@
   color: var(--text-tertiary);
 }
 
+/* Sized to ride the monogram's corner, not cover it: the button is only
+   30px wide, so content-box padding + border has to stay tiny. */
 .sbx-attention__badge {
   position: absolute;
-  top: -1px;
-  right: -1px;
-  min-width: 13px;
-  height: 13px;
-  padding: 0 3px;
+  top: 0;
+  right: 0;
+  min-width: 9px;
+  height: 11px;
+  padding: 0 2px;
   border-radius: var(--radius-full);
   background: var(--sbx-tone);
   color: var(--surface-panel);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 8px;
+  line-height: 1;
   font-weight: var(--weight-bold);
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px solid var(--surface-panel);
+  border: 1.5px solid var(--surface-panel);
   box-sizing: content-box;
 }
 
