@@ -59,6 +59,12 @@ export const store = reactive({
   accountViewerOpen: false,      // Accounts tab detail panel in the main area
   accountViewerId: null,         // which account it is showing
 
+  // Session side panel — uncommitted changes / containers / scratch shell for
+  // the session that is open in the main area. Scoped to that session's own
+  // projectPath, which may be a worktree the Projects tab is not showing.
+  sidePanelOpen: false,
+  sidePanelWidth: 380,
+
   // Project avatars: projectPath → data: URL string
   avatarDataUrls: {},
 });

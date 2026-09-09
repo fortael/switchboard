@@ -18,14 +18,29 @@ let currentLineHeight = 1.25;
 window._getTerminalMetrics = () => ({ fontSize: currentFontSize, lineHeight: currentLineHeight });
 
 function reapplyTerminalTypography() {
-  for (const [, entry] of openSessions) {
-    if (entry.closed) continue;
+  for (const entry of allTerminalEntries()) {
     entry.terminal.options.fontFamily = currentFontFamily;
     entry.terminal.options.fontSize = currentFontSize;
     entry.terminal.options.lineHeight = currentLineHeight;
     safeFit(entry);
   }
 }
+
+// Every live xterm instance: the session terminals plus the side panel's
+// scratch shell, which is deliberately not in openSessions (see below).
+function* allTerminalEntries() {
+  for (const [, entry] of openSessions) {
+    if (!entry.closed) yield entry;
+  }
+  if (panelTerm) yield panelTerm;
+}
+
+// Something outside the terminal changed its width — the session side panel
+// opened, closed or was dragged. xterm keeps its own cols/rows and pushes them
+// to the PTY, so without a refit the CLI keeps wrapping at the old width.
+window._refitOpenTerminals = () => {
+  for (const entry of allTerminalEntries()) safeFit(entry);
+};
 
 window._applyTerminalFont = (fontFamily) => {
   currentFontFamily = fontFamily;
@@ -370,6 +385,129 @@ function showSession(sessionId) {
     }
   }
 }
+
+// --- Session side-panel scratch shell ---------------------------------------
+//
+// A plain login shell that lives exactly as long as the session side panel is
+// open. It is deliberately kept OUT of `openSessions`: nothing about it should
+// reach the sidebar, the session list or the grid view, and app.js's own
+// terminal-data / process-exited handlers therefore never match its id.
+//
+// Ownership: created by SessionSidePanelApp.vue on mount (and whenever the open
+// session's project path changes), destroyed on unmount, on a project change,
+// and on renderer unload. main.js additionally reaps any earlier ephemeral PTY
+// when a new one is requested, which covers a renderer reload.
+
+let panelTerm = null;
+
+// Its own id namespace, so nothing can confuse it with a Claude session UUID.
+// Hyphen, not colon: session ids occasionally end up in file names.
+const PANEL_TERM_ID_PREFIX = 'sbx-panel-shell-';
+
+window.api.onTerminalData((sessionId, data) => {
+  if (panelTerm && sessionId === panelTerm.id) panelTerm.terminal.write(data);
+});
+
+window.api.onProcessExited((sessionId) => {
+  if (panelTerm && sessionId === panelTerm.id) {
+    panelTerm.exited = true;
+    panelTerm.terminal.write('\r\n\x1b[90m[shell exited]\x1b[0m\r\n');
+  }
+});
+
+// Spawn the panel shell and attach it to `host`. Resolves once the PTY is up.
+window.createPanelTerminal = async function createPanelTerminal(host, projectPath) {
+  window.destroyPanelTerminal();
+  if (!host || !projectPath) return null;
+
+  const id = PANEL_TERM_ID_PREFIX + crypto.randomUUID();
+  const terminal = new Terminal({
+    fontSize: currentFontSize,
+    lineHeight: currentLineHeight,
+    fontFamily: currentFontFamily,
+    theme: TERMINAL_THEME,
+    cursorBlink: false,
+    // A scratch shell, not a session log — a short scrollback is plenty and
+    // keeps the panel cheap.
+    scrollback: 2000,
+    convertEol: true,
+    allowProposedApi: true,
+  });
+  const fitAddon = new FitAddon.FitAddon();
+  terminal.loadAddon(fitAddon);
+  terminal.loadAddon(new WebLinksAddon.WebLinksAddon((_event, url) => {
+    window.api.openExternal(url);
+  }));
+  // No WebGL addon here on purpose: the browser caps the number of live WebGL
+  // contexts, and the session terminals are the ones that need one.
+  terminal.open(host);
+  host.style.backgroundColor = TERMINAL_THEME.background;
+
+  const entry = { id, terminal, fitAddon, element: host, projectPath, closed: false, exited: false };
+  panelTerm = entry;
+
+  terminal.onData(data => {
+    if (data === '\x1b[I' || data === '\x1b[O') return;
+    window.api.sendInput(id, data);
+  });
+  terminal.onResize(({ cols, rows }) => window.api.resizeTerminal(id, cols, rows));
+  setupDragAndDrop(host, () => id);
+
+  // The panel is resized by dragging, by collapsing a section above it and by
+  // the window itself. An observer is both simpler and more reliable than
+  // calling fit from each of those places — and it also catches the first
+  // measurement, which xterm cannot make until the font has actually loaded.
+  let fitRaf = 0;
+  entry.observer = new ResizeObserver(() => {
+    cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(() => { if (panelTerm === entry) safeFit(entry); });
+  });
+  entry.observer.observe(host);
+
+  const result = await window.api.openTerminal(id, projectPath, true, { type: 'terminal', ephemeral: true });
+  // The panel may have been closed while the PTY was starting.
+  if (panelTerm !== entry) return null;
+  if (!result?.ok) {
+    entry.exited = true;
+    terminal.write(`\r\n\x1b[31mError: ${result?.error || 'could not start shell'}\x1b[0m\r\n`);
+    return entry;
+  }
+  safeFit(entry);
+  // xterm cannot size a cell before its font has actually loaded, and the
+  // first fit can land on the fallback metrics. One deferred fit settles it.
+  setTimeout(() => { if (panelTerm === entry) safeFit(entry); }, 150);
+  return entry;
+};
+
+// Kill the PTY and dispose the xterm instance. Safe to call when none exists.
+window.destroyPanelTerminal = function destroyPanelTerminal() {
+  const entry = panelTerm;
+  if (!entry) return;
+  panelTerm = null;
+  // close-terminal only detaches; the PTY has to be killed explicitly or it
+  // outlives the panel that owns it.
+  try { entry.observer?.disconnect(); } catch {}
+  if (!entry.exited) { try { window.api.stopSession(entry.id); } catch {} }
+  try { window.api.closeTerminal(entry.id); } catch {}
+  try { entry.terminal.dispose(); } catch {}
+};
+
+window.fitPanelTerminal = function fitPanelTerminal() {
+  if (panelTerm) safeFit(panelTerm);
+};
+
+window.focusPanelTerminal = function focusPanelTerminal() {
+  panelTerm?.terminal.focus();
+};
+
+window._applyPanelTerminalTheme = (theme) => {
+  if (!panelTerm) return;
+  panelTerm.terminal.options.theme = theme;
+  panelTerm.element.style.backgroundColor = theme.background;
+};
+
+// A renderer reload never reaches SessionSidePanelApp's unmount hook.
+window.addEventListener('beforeunload', () => window.destroyPanelTerminal());
 
 function setupDragAndDrop(container, getSessionId) {
   let dragCounter = 0;

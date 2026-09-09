@@ -502,3 +502,40 @@
 .acct-json__num { color: var(--text-link); }
 .acct-json__bool { color: var(--status-warning); }
 .acct-json__null { color: var(--text-disabled); }
+
+/* ── Launch command ──────────────────────────────────────────────────────
+   The one line you paste into another terminal to run the CLI against this
+   account. Wraps rather than truncates: a half-shown command is useless. */
+.acct-launch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.acct-launch__label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.acct-path--command {
+  align-items: flex-start;
+  background: var(--surface-app);
+  border-color: var(--border-default);
+}
+
+.acct-path__value--mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+  flex: 1;
+  min-width: 0;
+}

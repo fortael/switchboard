@@ -165,10 +165,19 @@
     <div id="account-viewer" v-show="store.accountViewerOpen">
       <AccountViewerApp ref="accountViewerRef" />
     </div>
-    <div id="terminal-area">
+    <!-- The side panel is absolutely positioned inside #terminal-area and the
+         terminal split is given a matching right margin (css/side-panel.css).
+         It cannot be a flex sibling of #terminals: file-panel.js reparents
+         #terminals into a #terminal-split of its own at startup. -->
+    <div
+      id="terminal-area"
+      :class="{ 'has-side-panel': sidePanelVisible }"
+      :style="{ '--sbx-sidepanel-w': store.sidePanelWidth + 'px' }"
+    >
       <div id="vue-session-header">
         <SessionHeaderApp />
       </div>
+      <SessionSidePanelApp v-if="sidePanelVisible" />
       <!-- Legacy terminal header kept for JS references (hidden) -->
       <div id="terminal-header" style="display:none;">
         <div id="terminal-header-info">
@@ -210,7 +219,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { store } from '../store.js';
 import SbIcon from './SbIcon.vue';
 import TopNavApp from './TopNavApp.vue';
@@ -220,6 +229,7 @@ import FilterTabs from './FilterTabs.vue';
 import AttentionRail from './AttentionRail.vue';
 import SidebarApp from './SidebarApp.vue';
 import SessionHeaderApp from './SessionHeaderApp.vue';
+import SessionSidePanelApp from './SessionSidePanelApp.vue';
 import PlansApp from './PlansApp.vue';
 import MemoryApp from './MemoryApp.vue';
 import AccountsApp from './AccountsApp.vue';
@@ -419,6 +429,16 @@ function onViewMode(mode) {
   if ((mode === 'grid') !== store.gridViewActive) window.__sb?.toggleGridView?.();
 }
 
+// ── Session side panel ───────────────────────────────────────────
+// Only meaningful over an open session — it is scoped to that session's own
+// project path. Opening, closing or resizing it changes the terminal's width,
+// and xterm keeps its own cols/rows, so every transition ends in a refit.
+const sidePanelVisible = computed(() => store.sidePanelOpen && !!store.headerSession);
+
+watch(sidePanelVisible, () => {
+  requestAnimationFrame(() => window._refitOpenTerminals?.());
+});
+
 // ── Sidebar action callbacks ──────────────────────────────────────
 function onGlobalSettings() { window.__sb?.openGlobalSettings?.(); }
 function onResort() { window.__sb?.resort?.(); }
@@ -602,6 +622,11 @@ onMounted(async () => {
   store.showTodayOnly = store.sessionFilterTab === 'today';
   store.showArchived = store.sessionFilterTab === 'archived';
   store.sidebarViewMode = localStorage.getItem('sidebarViewMode') === 'grid' ? 'grid' : 'list';
+
+  // Session side panel — open state and width survive a restart.
+  store.sidePanelOpen = localStorage.getItem('sessionSidePanelOpen') === '1';
+  const savedPanelWidth = parseInt(localStorage.getItem('sessionSidePanelWidth'), 10);
+  if (Number.isFinite(savedPanelWidth) && savedPanelWidth >= 280) store.sidePanelWidth = savedPanelWidth;
 
   // Plans & memory viewer globals (migrated from plans-memory-view.js)
   let cachedMemoryData = { global: { files: [] }, projects: [] };

@@ -201,6 +201,8 @@ function buildProjectsFromCache(showArchived) {
       projectPath: row.projectPath,
       slug: row.slug || null,
       aiTitle: row.aiTitle || null,
+      contextTokens: row.contextTokens || 0,
+      contextLimit: row.contextLimit || 0,
       name: meta?.name || null,
       starred: meta?.starred || 0,
       archived: meta?.archived || 0,

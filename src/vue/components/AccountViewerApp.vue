@@ -50,26 +50,28 @@
             </button>
           </div>
 
-          <div v-if="pathRows.length" class="acct-path-list">
-            <div v-for="row in pathRows" :key="row.path" class="acct-path">
-              <span class="acct-path__name">{{ row.name }}</span>
-              <span class="acct-path__value" :title="row.path">{{ row.path }}</span>
-              <span
-                v-if="row.external"
-                class="acct-path__meta"
-                title="Claude keeps this file next to the home directory, not inside the config directory — the panel offers its path but does not read it."
-              >outside config dir</span>
-              <span class="acct-path__meta">{{ formatBytes(row.size) }}</span>
+          <div v-if="detail.launchCommand" class="acct-launch">
+            <span class="acct-launch__label">Run the CLI as this account</span>
+            <div class="acct-path acct-path--command">
+              <code class="acct-path__value acct-path__value--mono" :title="detail.launchCommand">{{ detail.launchCommand }}</code>
               <button
                 class="acct-copy"
-                :class="{ 'acct-copy--done': copied === row.path }"
-                @click="copy(row.path, row.path)"
+                :class="{ 'acct-copy--done': copied === 'launch' }"
+                @click="copy('launch', detail.launchCommand)"
               >
-                <SbIcon :name="copied === row.path ? 'check' : 'copy'" :size="13" />
-                {{ copied === row.path ? 'Copied' : 'Copy' }}
+                <SbIcon :name="copied === 'launch' ? 'check' : 'copy'" :size="13" />
+                {{ copied === 'launch' ? 'Copied' : 'Copy' }}
               </button>
             </div>
+            <p v-if="account.wslDistro" class="acct-section__hint">
+              Inside the distribution this home is already the default, so the command
+              does not set <code class="acct-code">CLAUDE_CONFIG_DIR</code> — the Windows
+              view of the path would not resolve there.
+            </p>
           </div>
+
+          <!-- The per-file paths live in Configuration below, next to the file
+               they belong to; repeating them here was pure duplication. -->
         </section>
 
         <!-- ── Authorization ─────────────────────────────────────── -->
@@ -207,6 +209,26 @@
               </button>
             </div>
           </template>
+
+          <!-- Files Claude keeps beside the home directory rather than inside
+               the config dir. No tab: the guarded IPC deliberately refuses to
+               read outside configDir, so only the path is offered. -->
+          <div v-if="externalRows.length" class="acct-path-list">
+            <div v-for="row in externalRows" :key="row.path" class="acct-path">
+              <span class="acct-path__name">{{ row.name }}</span>
+              <span class="acct-path__value" :title="row.path">{{ row.path }}</span>
+              <span class="acct-path__meta" title="Outside the config directory — Switchboard offers the path but does not read it.">outside config dir</span>
+              <span class="acct-path__meta">{{ formatBytes(row.size) }}</span>
+              <button
+                class="acct-copy"
+                :class="{ 'acct-copy--done': copied === row.path }"
+                @click="copy(row.path, row.path)"
+              >
+                <SbIcon :name="copied === row.path ? 'check' : 'copy'" :size="13" />
+                {{ copied === row.path ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+          </div>
         </section>
       </template>
     </div>
@@ -252,13 +274,7 @@ const usage = computed(() => detail.value?.usage || {});
 // ── Paths ─────────────────────────────────────────────────────────
 // Files in the config dir, then the ones that live outside it (the default
 // account's ~/.claude.json) — copyable either way, readable only inside.
-const pathRows = computed(() => {
-  if (!detail.value) return [];
-  return [
-    ...detail.value.files.map(f => ({ ...f, external: false })),
-    ...(detail.value.externalFiles || []).map(f => ({ ...f, external: true })),
-  ];
-});
+const externalRows = computed(() => detail.value?.externalFiles || []);
 
 // ── Auth ──────────────────────────────────────────────────────────
 // A stored expiry in the past is not proof of being signed out — the CLI

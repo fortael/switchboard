@@ -57,7 +57,9 @@ db.exec(`
     modified TEXT,
     messageCount INTEGER DEFAULT 0,
     slug TEXT,
-    aiTitle TEXT
+    aiTitle TEXT,
+    contextTokens INTEGER DEFAULT 0,
+    contextLimit INTEGER DEFAULT 0
   )
 `);
 
@@ -154,6 +156,16 @@ const migrations = [
       )
     `);
   },
+  // v8: Add contextTokens — how full the model's context window was on the
+  // session's last assistant turn. Clearing the cache forces one re-index so
+  // the column is populated everywhere at once; left to the incremental
+  // refresh the rings would instead appear session by session over days.
+  (db) => {
+    try { db.exec('ALTER TABLE session_cache ADD COLUMN contextTokens INTEGER DEFAULT 0'); } catch {}
+    try { db.exec('ALTER TABLE session_cache ADD COLUMN contextLimit INTEGER DEFAULT 0'); } catch {}
+    try { db.exec('DELETE FROM session_cache'); } catch {}
+    try { db.exec('DELETE FROM cache_meta'); } catch {}
+  },
 ];
 
 const currentDbVersion = (() => {
@@ -207,14 +219,15 @@ const stmts = {
   cacheCountByAccount: db.prepare("SELECT COUNT(*) as cnt FROM session_cache WHERE accountId = ?"),
   cacheGetByAccount: db.prepare('SELECT * FROM session_cache WHERE accountId = ?'),
   cacheUpsert: db.prepare(`
-    INSERT INTO session_cache (sessionId, folder, projectPath, summary, firstPrompt, created, modified, messageCount, slug, aiTitle, accountId)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO session_cache (sessionId, folder, projectPath, summary, firstPrompt, created, modified, messageCount, slug, aiTitle, accountId, contextTokens, contextLimit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(sessionId) DO UPDATE SET
       folder = excluded.folder, projectPath = excluded.projectPath,
       summary = excluded.summary, firstPrompt = excluded.firstPrompt,
       created = excluded.created, modified = excluded.modified,
       messageCount = excluded.messageCount, slug = excluded.slug,
-      aiTitle = COALESCE(session_cache.aiTitle, excluded.aiTitle), accountId = excluded.accountId
+      aiTitle = COALESCE(session_cache.aiTitle, excluded.aiTitle), accountId = excluded.accountId,
+      contextTokens = excluded.contextTokens, contextLimit = excluded.contextLimit
   `),
   cacheGetByFolder: db.prepare('SELECT sessionId, modified FROM session_cache WHERE folder = ? AND accountId = ?'),
   cacheGetFolder: db.prepare('SELECT folder FROM session_cache WHERE sessionId = ?'),
@@ -301,7 +314,7 @@ const upsertCachedSessionsBatch = db.transaction((sessions, accountId) => {
     stmts.cacheUpsert.run(
       s.sessionId, s.folder, s.projectPath, s.summary,
       s.firstPrompt, s.created, s.modified, s.messageCount || 0,
-      s.slug || null, s.aiTitle || null, accountId
+      s.slug || null, s.aiTitle || null, accountId, s.contextTokens || 0, s.contextLimit || 0
     );
   }
 });

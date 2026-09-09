@@ -191,6 +191,32 @@
 .sb-icon--running { color: var(--status-running); }
 .sb-icon--danger  { color: var(--status-danger); }
 
+/* ── Scrollbars (global default) ──────────────────────────────────────────
+   Every scroll container used to opt in by id — 54 near-identical rules — so
+   any new panel inherited Chrome's white default until someone remembered to
+   add one more. This is the default; the handful of containers that genuinely
+   want a different size still override it below.
+
+   Unprefixed `scrollbar-color` is deliberately not set: it would win over the
+   ::-webkit- rules and cannot express the rounded thumb. */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: var(--radius-xs);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
@@ -342,7 +368,7 @@ body { display: flex; flex-direction: column; }
 /* ---- Text buttons: shared skin ------------------------------------- */
 #update-restart-btn, #update-dismiss-btn,
 .panel-section-btn, .account-open-btn, .fp-toolbar-btn, .pv-git-btn,
-.pv-new-btn, .projects-sort-btn, .pv-nav-btn, .pv-action-btn,
+.pv-new-btn, .pv-nav-btn, .pv-action-btn,
 .pv-save-btn, .pv-dialog-cancel, .settings-reset-btn,
 .file-panel-accept-btn, .file-panel-reject-btn,
 #file-panel-actions button,
@@ -369,7 +395,7 @@ body { display: flex; flex-direction: column; }
 /* ---- Text buttons: xs (dense toolbars, inline row actions) --------- */
 #update-restart-btn, #update-dismiss-btn,
 .panel-section-btn, .account-open-btn, .fp-toolbar-btn, .pv-git-btn,
-.pv-new-btn, .projects-sort-btn, .pv-nav-btn, .pv-action-btn,
+.pv-new-btn, .pv-nav-btn, .pv-action-btn,
 .pv-save-btn, .pv-dialog-cancel, .settings-reset-btn,
 .file-panel-accept-btn, .file-panel-reject-btn,
 #file-panel-actions button {
@@ -425,7 +451,7 @@ body { display: flex; flex-direction: column; }
 .usage-refresh-btn:focus-visible, .viewer-toolbar-copy-path:focus-visible,
 .panel-section-btn:focus-visible, .account-open-btn:focus-visible,
 .fp-toolbar-btn:focus-visible, .pv-git-btn:focus-visible,
-.pv-new-btn:focus-visible, .projects-sort-btn:focus-visible,
+.pv-new-btn:focus-visible,
 .pv-nav-btn:focus-visible, .pv-action-btn:focus-visible,
 .pv-save-btn:focus-visible, .pv-dialog-cancel:focus-visible,
 .settings-reset-btn:focus-visible, .file-panel-accept-btn:focus-visible,
@@ -453,7 +479,7 @@ body { display: flex; flex-direction: column; }
 .stats-refresh-btn:disabled, .usage-refresh-btn:disabled,
 .panel-section-btn:disabled, .account-open-btn:disabled,
 .fp-toolbar-btn:disabled, .pv-git-btn:disabled, .pv-new-btn:disabled,
-.projects-sort-btn:disabled, .pv-nav-btn:disabled,
+.pv-nav-btn:disabled,
 .pv-action-btn:disabled, .pv-save-btn:disabled,
 .pv-dialog-cancel:disabled, .settings-reset-btn:disabled,
 .file-panel-accept-btn:disabled, .file-panel-reject-btn:disabled,
@@ -796,10 +822,6 @@ body { display: flex; flex-direction: column; }
   overflow-y: auto;
   flex: 1;
 }
-#projects-content::-webkit-scrollbar { width: 5px; }
-#projects-content::-webkit-scrollbar-track { background: transparent; }
-#projects-content::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
-#projects-content::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* Shared panel header (title + optional action button) */
 .panel-section-header {
@@ -2459,10 +2481,6 @@ body { display: flex; flex-direction: column; }
 }
 
 /* ========== SCROLLBAR ========== */
-#sidebar-content::-webkit-scrollbar, #plans-content::-webkit-scrollbar { width: 5px; }
-#sidebar-content::-webkit-scrollbar-track, #plans-content::-webkit-scrollbar-track { background: transparent; }
-#sidebar-content::-webkit-scrollbar-thumb, #plans-content::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
-#sidebar-content::-webkit-scrollbar-thumb:hover, #plans-content::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* ========== PLANS ========== */
 #plans-content {
@@ -2595,10 +2613,6 @@ body { display: flex; flex-direction: column; }
   overflow-y: auto;
   padding: var(--space-6);
 }
-
-#stats-viewer-body::-webkit-scrollbar { width: 5px; }
-#stats-viewer-body::-webkit-scrollbar-track { background: transparent; }
-#stats-viewer-body::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
 
 /* Heatmap */
 .heatmap-container {
@@ -3060,10 +3074,6 @@ body { display: flex; flex-direction: column; }
   padding: var(--space-2) var(--space-4);
 }
 
-#jsonl-viewer-body::-webkit-scrollbar { width: 5px; }
-#jsonl-viewer-body::-webkit-scrollbar-track { background: transparent; }
-#jsonl-viewer-body::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
-
 .jsonl-entry {
   margin-bottom: 2px;
   padding: var(--space-2) var(--space-4);
@@ -3424,10 +3434,6 @@ body { display: flex; flex-direction: column; }
   flex: 1;
   overflow-y: auto;
 }
-
-#memory-content::-webkit-scrollbar { width: 5px; }
-#memory-content::-webkit-scrollbar-track { background: transparent; }
-#memory-content::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
 
 /* Stats sidebar content */
 #stats-content {
@@ -4001,9 +4007,6 @@ body { display: flex; flex-direction: column; }
   display: flex;
   justify-content: center;
 }
-.settings-panel-body::-webkit-scrollbar { width: 5px; }
-.settings-panel-body::-webkit-scrollbar-track { background: transparent; }
-.settings-panel-body::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
 
 .settings-loading {
   color: var(--text-tertiary);
@@ -4525,21 +4528,6 @@ body.hide-avatars .grid-card-avatar {
 
 .projects-search-input { flex: 1; min-width: 0; }
 
-.projects-sort-wrap {
-  display: flex;
-  gap: var(--space-1);
-  flex-shrink: 0;
-}
-
-.projects-sort-btn {
-  background: var(--surface-card);
-  border: 1px solid var(--border-default);
-  color: var(--text-disabled);
-}
-
-.projects-sort-btn:hover { color: var(--text-secondary); border-color: var(--border-strong); }
-.projects-sort-btn.active { color: var(--text-primary); background: var(--surface-card-hover); border-color: var(--border-strong); }
-
 /* .project-item inherits session-item layout; only override what differs */
 .project-item {
   cursor: default;
@@ -4858,11 +4846,6 @@ body.hide-avatars .grid-card-avatar {
   overflow-x: hidden;
 }
 
-.pv-diff-container::-webkit-scrollbar { width: 5px; }
-.pv-diff-container::-webkit-scrollbar-track { background: transparent; }
-.pv-diff-container::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
-.pv-diff-container::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
-
 .pv-diff-container .cm-merge-view {
   min-width: 0;
   font-size: var(--text-sm);
@@ -5044,10 +5027,6 @@ body.hide-avatars .grid-card-avatar {
   overflow-y: auto;
   padding: var(--space-3) var(--space-4) var(--space-5);
 }
-.pv-body::-webkit-scrollbar { width: 5px; }
-.pv-body::-webkit-scrollbar-track { background: transparent; }
-.pv-body::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
-.pv-body::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 .pv-section {
   margin-bottom: var(--space-5);
@@ -5275,10 +5254,6 @@ body.hide-avatars .grid-card-avatar {
   padding: var(--space-4) var(--space-4) var(--space-5);
   container-type: inline-size;
 }
-.pv-tab-body::-webkit-scrollbar { width: 5px; }
-.pv-tab-body::-webkit-scrollbar-track { background: transparent; }
-.pv-tab-body::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-xs); }
-.pv-tab-body::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* ── Git toolbar ────────────────────────────────────────────────── */
 .pv-git-toolbar {

@@ -1,29 +1,41 @@
 <template>
-  <div>
-    <div class="project-group">
-      <div class="project-header">
-        <span class="project-name">Projects ({{ filteredProjects.length }})</span>
-        <button class="project-new-btn" data-tooltip="Add" @click="callbacks.addProject?.()">
-          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-            <line x1="6" y1="1" x2="6" y2="11"/><line x1="1" y1="6" x2="11" y2="6"/>
-          </svg>
+  <div class="projects-panel">
+    <!-- Same chrome as the sessions sidebar: the sort orders become the text
+         tabs, the toggles become icon actions. `--no-views` drops the
+         list/grid pair, which has no meaning for a project list. -->
+    <FilterTabs
+      class="sbx-filtertabs--no-views"
+      :tabs="SORT_TABS"
+      :active="sortOrder"
+      @select="sortOrder = $event"
+    >
+      <template #actions>
+        <span class="projects-count" :title="`${filteredProjects.length} projects`">{{ filteredProjects.length }}</span>
+        <button
+          type="button"
+          class="sbx-filtertabs__view"
+          :class="{ 'sbx-filtertabs__view--active': showContainers }"
+          data-tooltip="Toggle containers"
+          aria-label="Toggle container visibility"
+          :aria-pressed="showContainers"
+          @click="showContainers = !showContainers"
+        >
+          <SbIcon name="container" :size="13" :tone="showContainers ? 'accent' : 'muted'" />
         </button>
-        <div class="projects-sort-wrap">
-          <button
-            v-for="[key, label] in sortOptions"
-            :key="key"
-            class="projects-sort-btn"
-            :class="{ active: sortOrder === key }"
-            @click="sortOrder = key"
-          >{{ label }}</button>
-          <button
-            class="projects-sort-btn"
-            :class="{ active: showContainers }"
-            @click="showContainers = !showContainers"
-            title="Toggle container visibility"
-          >Containers</button>
-        </div>
-      </div>
+        <button
+          type="button"
+          class="sbx-filtertabs__view"
+          data-tooltip="Add project"
+          aria-label="Add project"
+          @click="callbacks.addProject?.()"
+        >
+          <SbIcon name="folder-plus" :size="13" tone="muted" />
+        </button>
+      </template>
+    </FilterTabs>
+
+    <div class="projects-scroll">
+    <div class="project-group">
       <div class="project-sessions">
         <div v-if="filteredProjects.length === 0" class="projects-empty-hint">
           {{ searchQuery ? 'No matching projects.' : 'No projects yet. Click Add to select a folder.' }}
@@ -109,12 +121,15 @@
         </button>
       </div>
     </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
 import ProjectAvatar from './ProjectAvatar.vue';
+import FilterTabs from './FilterTabs.vue';
+import SbIcon from './SbIcon.vue';
 
 const props = defineProps({
   callbacks: { type: Object, required: true },
@@ -127,7 +142,11 @@ const showContainers = ref(true);
 const projectInfo = reactive({});
 const loadingPaths = reactive(new Set());
 const activeProjectPath = ref(null);
-const sortOptions = [['name', 'Name'], ['changes', 'Changes']];
+// Same shape FilterTabs takes on the sessions tab; the ids are the sort orders.
+const SORT_TABS = [
+  { id: 'name', label: 'Name' },
+  { id: 'changes', label: 'Changes' },
+];
 
 let queueGen = 0;
 

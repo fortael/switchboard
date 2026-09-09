@@ -27,7 +27,19 @@
           <template v-else>{{ displayName }}</template>
         </div>
         <div v-if="session.aiTitle && !renaming" class="session-subtitle">{{ cleanName(session.aiTitle) }}</div>
-        <div class="session-meta">{{ timeStr }}{{ msgSuffix }}</div>
+        <div class="session-meta">
+          <UsageRing
+            v-if="contextPct !== null"
+            class="session-context-ring"
+            :value="contextPct"
+            :size="11"
+            :label="contextLabel"
+          />
+          <!-- app.js's 30s timeago tick writes into this span by class. It must
+               stay a separate element: textContent on .session-meta would wipe
+               the ring beside it. -->
+          <span class="session-meta-text">{{ timeStr }}{{ msgSuffix }}</span>
+        </div>
       </div>
 
       <div class="session-actions">
@@ -46,6 +58,8 @@
 
 <script setup>
 import { computed, ref, nextTick } from 'vue';
+import UsageRing from './UsageRing.vue';
+import { contextPercent, formatContextLabel } from '../context-window.js';
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -57,6 +71,9 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['open', 'stop', 'star', 'archive', 'fork', 'jsonl', 'launch-config', 'rename']);
+
+const contextPct = computed(() => contextPercent(props.session.contextTokens, props.session));
+const contextLabel = computed(() => formatContextLabel(props.session.contextTokens, props.session));
 
 const renaming = ref(false);
 const renameValue = ref('');

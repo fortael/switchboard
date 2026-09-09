@@ -13,9 +13,13 @@ const ICONS = [
   // Command bar / filters
   'search', 'plus', 'list', 'layout-grid', 'star', 'archive', 'calendar-days',
   'refresh-cw', 'folder-plus', 'circle-dot',
+  // Projects tab — container-visibility toggle
+  'container',
   // Session view
   'git-branch', 'x', 'maximize-2', 'circle', 'square', 'folder-open', 'terminal',
   'square-arrow-out-up-right', 'ellipsis',
+  // Session side panel
+  'panel-right-open', 'panel-right-close',
   // Accounts view
   'copy', 'check', 'key-round', 'file-json', 'triangle-alert', 'circle-check',
 ];

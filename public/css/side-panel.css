@@ -1,0 +1,348 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Session side panel — SessionSidePanelApp.vue
+
+   A column on the right of the open session showing that session's own
+   uncommitted changes, its compose services and a scratch shell. Scoped to
+   the session's projectPath, which may be a worktree with a branch of its
+   own — which is why this is not the Projects tab.
+
+   Layout: absolutely positioned inside #terminal-area (below the 46px
+   session header) rather than a flex sibling of #terminals, because
+   file-panel.js reparents #terminals into its own #terminal-split at
+   startup. #terminal-split gets a matching right margin instead, so the
+   terminal genuinely loses width and can be refitted.
+
+   Every colour, spacing, radius and font-size is a token from the :root
+   block at the top of public/style.css.
+
+   Load order: after css/session-view.css (it extends .sbx-sesshead__iconbtn).
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Fallback: the inline style on #terminal-area normally supplies this. */
+#terminal-area { --sbx-sidepanel-w: 380px; }
+
+/* The terminal gives up exactly the panel's width. #terminals carries a
+   -20px margin of its own to hide xterm's scrollbar gutter, so when
+   file-panel.js has not built the split yet the shift is offset by it. */
+#terminal-area.has-side-panel > #terminal-split {
+  margin-right: var(--sbx-sidepanel-w);
+}
+
+#terminal-area.has-side-panel > #terminals {
+  margin-right: calc(var(--sbx-sidepanel-w) - 20px);
+}
+
+/* Same treatment for the grid-mode header strip, so it lines up with the
+   grid it labels. */
+#terminal-area.has-side-panel > #grid-viewer {
+  margin-right: var(--sbx-sidepanel-w);
+}
+
+/* ─── Panel frame ───────────────────────────────────────────────── */
+
+.sbx-sidepanel {
+  position: absolute;
+  top: 46px;                 /* clears .sbx-sesshead — never covers it */
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  width: var(--sbx-sidepanel-w);
+  display: flex;
+  background: var(--surface-panel);
+  border-left: 1px solid var(--border-subtle);
+  font-family: var(--font-ui);
+}
+
+/* Drag handle. Sits in the panel's own left edge rather than in the gap, so
+   it cannot land on top of the terminal's text. */
+.sbx-sidepanel__grip {
+  width: var(--space-1);
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--duration-base) var(--ease-standard);
+}
+
+.sbx-sidepanel__grip:hover,
+.sbx-sidepanel__grip.is-dragging {
+  background: var(--border-strong);
+}
+
+.sbx-sidepanel__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ─── Header: branch + path + actions ───────────────────────────── */
+
+.sbx-sidepanel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  height: var(--hit-md);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  background: var(--surface-panel-raised);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sbx-sidepanel .sb-icon { display: block; }
+
+.sbx-sidepanel__branch {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.sbx-sidepanel__path {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sbx-sidepanel__iconbtn {
+  width: var(--hit-xs);
+  height: var(--hit-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-sidepanel__iconbtn:hover {
+  background: var(--surface-card-hover);
+  color: var(--text-primary);
+}
+
+.sbx-sidepanel__iconbtn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+.sbx-sidepanel__iconbtn.is-busy .sb-icon {
+  animation: sbx-sidepanel-spin 0.9s linear infinite;
+}
+
+@keyframes sbx-sidepanel-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Sections ──────────────────────────────────────────────────── */
+
+/* All three are open at once by default: the whole point of the panel is to
+   stop the user switching between views to see these three things. */
+.sbx-sidepanel__section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sbx-sidepanel__sechead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-sidepanel__sechead:hover {
+  background: var(--surface-card-hover);
+}
+
+.sbx-sidepanel__sechead:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+.sbx-sidepanel__chev {
+  flex-shrink: 0;
+  color: var(--text-disabled);
+  transition: transform var(--duration-base) var(--ease-standard);
+}
+
+.sbx-sidepanel__section.is-collapsed .sbx-sidepanel__chev {
+  transform: rotate(-90deg);
+}
+
+.sbx-sidepanel__sectitle {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.sbx-sidepanel__secstat {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.sbx-sidepanel__secnote {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.sbx-sidepanel__secbody {
+  min-height: 0;
+  padding: 0 var(--space-3) var(--space-2);
+}
+
+/* Changes and containers keep a ceiling so a busy repo cannot push the shell
+   off the bottom; each scrolls on its own. */
+.sbx-sidepanel__secbody--files {
+  max-height: 32vh;
+  overflow-y: auto;
+}
+
+.sbx-sidepanel__secbody--containers {
+  max-height: 22vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* The shell takes whatever height the other two leave. */
+.sbx-sidepanel__section--shell {
+  flex: 1 1 auto;
+  border-bottom: none;
+}
+
+.sbx-sidepanel__secbody--shell {
+  flex: 1 1 auto;
+  min-height: 120px;
+  padding: var(--space-1) 0 var(--space-1) var(--space-2);
+  background: var(--surface-app);
+  overflow: hidden;
+}
+
+.sbx-sidepanel__shellhost {
+  width: 100%;
+  height: 100%;
+}
+
+/* ─── Borrowed project-viewer rows ──────────────────────────────── */
+/* .pv-file-row / .pv-container-row and their children come from
+   public/style.css so the two views cannot drift apart. Only the bits that
+   assume a wide two-column layout are adjusted here. */
+
+.sbx-sidepanel .pv-file-row {
+  gap: var(--space-2);
+  padding: 3px 0;
+}
+
+.sbx-sidepanel .pv-file-row:last-child {
+  border-bottom: none;
+}
+
+/* At this width a plain ellipsis eats the filename, which is the part worth
+   reading. Let the directory truncate and keep the basename whole. */
+.sbx-sidepanel .pv-file-name {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+}
+
+.sbx-sidepanel__filedir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-disabled);
+}
+
+.sbx-sidepanel__filebase {
+  flex: 0 0 auto;
+}
+
+.sbx-sidepanel .pv-container-ports {
+  max-width: 96px;
+}
+
+.sbx-sidepanel .pv-empty {
+  padding: var(--space-1) 0;
+}
+
+/* ─── Header toggle button (extends .sbx-sesshead__iconbtn) ─────── */
+
+.sbx-sesshead__iconbtn.is-active {
+  background: var(--surface-card);
+  color: var(--orange-500);
+}
+
+.sbx-sesshead__iconbtn.is-active:hover {
+  background: var(--surface-card-hover);
+}
+
+/* ─── Light theme ───────────────────────────────────────────────── */
+/* Nearly everything rides the semantic tokens, which theme-light.css already
+   flips. Only --orange-500 needs stepping down: it is tuned for near-black
+   surfaces and washes out on paper. */
+
+[data-theme='light'] .sbx-sesshead__iconbtn.is-active,
+.theme-light .sbx-sesshead__iconbtn.is-active {
+  color: var(--orange-600);
+}
+
+/* On paper the panel is the raised surface and the workspace behind it is
+   grey, so the plain --surface-panel would read as a hole. */
+[data-theme='light'] .sbx-sidepanel,
+.theme-light .sbx-sidepanel {
+  background: var(--surface-panel-raised);
+}
+
+[data-theme='light'] .sbx-sidepanel__head,
+.theme-light .sbx-sidepanel__head {
+  background: var(--surface-panel);
+}
+
+/* ─── Narrow windows ────────────────────────────────────────────── */
+
+@media (max-width: 1100px) {
+  .sbx-sidepanel__secbody--files { max-height: 26vh; }
+  .sbx-sidepanel__secbody--containers { max-height: 18vh; }
+}

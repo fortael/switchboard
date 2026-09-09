@@ -2,7 +2,7 @@
   <div v-if="rows.length" class="sbx-attention">
     <div class="sbx-attention__header">
       <span class="sbx-attention__dot"></span>
-      <span class="sbx-attention__label">Active now</span>
+      <span class="sbx-attention__label">Recent</span>
       <div class="sbx-attention__spacer"></div>
       <span class="sbx-attention__count">{{ rows.length }}</span>
     </div>

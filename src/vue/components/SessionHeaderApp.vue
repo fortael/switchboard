@@ -44,6 +44,19 @@
         :title="store.headerPtyTitle"
       >{{ store.headerPtyTitle }}</span>
 
+      <!-- Opens the panel on the right: this session's uncommitted changes,
+           its compose services and a scratch shell in its own directory. -->
+      <button
+        type="button"
+        class="sbx-sesshead__iconbtn"
+        :class="{ 'is-active': store.sidePanelOpen }"
+        :data-tooltip="store.sidePanelOpen ? 'Hide project panel' : 'Project panel — changes, containers, shell'"
+        :aria-pressed="store.sidePanelOpen"
+        @click="toggleSidePanel"
+      >
+        <SbIcon :name="store.sidePanelOpen ? 'panel-right-close' : 'panel-right-open'" :size="14" />
+      </button>
+
       <button
         type="button"
         class="sbx-sesshead__iconbtn sbx-sesshead__iconbtn--danger"
@@ -119,5 +132,12 @@ function stop() {
   if (sessionId.value && window.confirmAndStopSession) {
     window.confirmAndStopSession(sessionId.value);
   }
+}
+
+// App.vue watches store.sidePanelOpen and refits the terminals — the panel
+// takes width away from them, and xterm has to be told.
+function toggleSidePanel() {
+  store.sidePanelOpen = !store.sidePanelOpen;
+  localStorage.setItem('sessionSidePanelOpen', store.sidePanelOpen ? '1' : '0');
 }
 </script>

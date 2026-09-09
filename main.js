@@ -200,6 +200,20 @@ function projectExecFile(argv, cwd, options = {}) {
   return ['wsl.exe', wslExecArgs(distro, cwd, argv), rest];
 }
 
+// Env additions a `claude` child needs to run as the *active* account rather
+// than whatever ~/.claude happens to hold. Without this every headless CLI
+// call authenticates as the default account, which fails outright once that
+// one is signed out.
+//
+// WSL accounts are excluded on purpose, matching the PTY spawn: their
+// configDir is the Windows view of a home that is already the default inside
+// the distribution, so exporting it points the CLI at an unresolvable path.
+function activeAccountClaudeEnv() {
+  const account = getActiveAccount();
+  if (accountWslDistro(account) || account.configDir === DEFAULT_CLAUDE_DIR) return {};
+  return { CLAUDE_CONFIG_DIR: account.configDir };
+}
+
 // Build stats in the same format as stats-cache.json using Switchboard's own DB.
 // This ensures all accounts see charts even before running `claude /stats`.
 function computeStatsFromDb(accountId) {
@@ -922,7 +936,8 @@ ipcMain.handle('git-generate-commit-msg', async (_event, projectPath, style = 's
       // The claude binary lives wherever the project does — inside the
       // distribution for a WSL-backed one, so this call is routed there too.
       const [file, args, options] = projectExecFile(
-        ['claude', '-p', prompt, '--no-session-persistence'], projectPath, {}
+        ['claude', '-p', prompt, '--no-session-persistence'], projectPath,
+        { env: { ...process.env, ...activeAccountClaudeEnv() } }
       );
       const child = spawn(file, args, options);
       let stdout = '', stderr = '';
@@ -1743,6 +1758,38 @@ function accountTokenInfo(account) {
 // One round trip for the panel's static half: paths, which config files exist,
 // whether a token is on file, and the last usage figures already in the DB.
 // Nothing here touches the network.
+// The panel offers a copy-paste command for running the CLI against one
+// account, so a bare `claude` is only the fallback — resolve the real binary
+// through a login shell, which is where nvm/mise/asdf put it.
+let _claudeBinary;
+function resolveClaudeBinary() {
+  if (_claudeBinary !== undefined) return _claudeBinary;
+  const { execFileSync } = require('child_process');
+  _claudeBinary = 'claude';
+  try {
+    const opts = { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] };
+    const out = process.platform === 'win32'
+      ? execFileSync('where', ['claude'], opts)
+      : execFileSync(process.env.SHELL || '/bin/sh', ['-lc', 'command -v claude'], opts);
+    const first = out.split(/\r?\n/).map(s => s.trim()).find(Boolean);
+    if (first) _claudeBinary = first;
+  } catch {}
+  return _claudeBinary;
+}
+
+function posixQuote(value) {
+  return /^[A-Za-z0-9_./:@%+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+// Mirrors what the PTY spawn actually does (see the CLAUDE_CONFIG_DIR block in
+// open-terminal): inside a WSL distribution that home is already the default
+// and the Windows view of it is not a path Claude could resolve there.
+function accountLaunchCommand(account) {
+  const distro = accountWslDistro(account);
+  if (distro) return `wsl.exe -d ${distro} -- claude`;
+  return `CLAUDE_CONFIG_DIR=${posixQuote(account.configDir)} ${posixQuote(resolveClaudeBinary())}`;
+}
+
 ipcMain.handle('get-account-detail', (_event, accountId) => {
   const account = findAccount(accountId);
   if (!account) return { ok: false, error: 'unknown account' };
@@ -1778,6 +1825,7 @@ ipcMain.handle('get-account-detail', (_event, accountId) => {
     },
     isActive: getActiveAccount().id === account.id,
     configDirExists,
+    launchCommand: accountLaunchCommand(account),
     files,
     externalFiles,
     token: accountTokenInfo(account),
@@ -1891,7 +1939,9 @@ ipcMain.handle('get-effective-settings', (_event, projectPath) => {
 ipcMain.handle('get-active-sessions', () => {
   const active = [];
   for (const [sessionId, session] of activeSessions) {
-    if (!session.exited) active.push(sessionId);
+    // Ephemeral shells belong to the session side panel, which owns their whole
+    // lifecycle. They are not sessions the sidebar or the grid may know about.
+    if (!session.exited && !session.isEphemeral) active.push(sessionId);
   }
   return active;
 });
@@ -1900,7 +1950,7 @@ ipcMain.handle('get-active-sessions', () => {
 ipcMain.handle('get-active-terminals', () => {
   const terminals = [];
   for (const [sessionId, session] of activeSessions) {
-    if (!session.exited && session.isPlainTerminal) {
+    if (!session.exited && session.isPlainTerminal && !session.isEphemeral) {
       terminals.push({ sessionId, projectPath: session.projectPath });
     }
   }
@@ -1990,6 +2040,18 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
   }
 
   const isPlainTerminal = sessionOptions?.type === 'terminal';
+  // The session side panel's scratch shell: created when the panel opens,
+  // killed when it closes. Exactly one may exist, so a renderer reload — which
+  // never gets to run the panel's own teardown — cannot leak a PTY: the next
+  // panel to open reaps whatever the previous document left behind.
+  const isEphemeral = !!sessionOptions?.ephemeral;
+  if (isEphemeral) {
+    for (const [, s] of activeSessions) {
+      if (s.isEphemeral && !s.exited) {
+        try { s.pty.kill(); } catch {}
+      }
+    }
+  }
 
   // Resolve shell profile from effective settings
   const effectiveProfileId = (() => {
@@ -2217,7 +2279,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     outputBuffer: [], outputBufferSize: 0, altScreen: false,
     projectPath, firstResize: true,
     projectFolder, knownJsonlFiles, sessionSlug,
-    isPlainTerminal, forkFrom: sessionOptions?.forkFrom || null,
+    isPlainTerminal, isEphemeral, forkFrom: sessionOptions?.forkFrom || null,
     mcpServer, _openedAt: Date.now(),
   };
   activeSessions.set(sessionId, session);
