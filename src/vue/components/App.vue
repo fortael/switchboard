@@ -6,6 +6,7 @@
     :active-id="store.activeTab"
     :theme="store.theme"
     :sidebar-collapsed="store.sidebarCollapsed"
+    :can-toggle-sidebar="true"
     @select="setTab"
     @settings="onGlobalSettings"
     @toggle-sidebar="store.sidebarCollapsed = !store.sidebarCollapsed"
@@ -60,15 +61,18 @@
     </CommandBar>
 
     <!-- Not scoped to the sessions tab: live sessions are worth watching from
-         wherever you are. Renders nothing when nothing is running. -->
+         wherever you are. Renders nothing when nothing is running. The board
+         is the exception — it already shows every live session as a card, so
+         a rail of the same projects above it is noise. -->
     <AttentionRail
+      v-if="store.activeTab !== 'board'"
       :items="attentionProjects"
       :active-name="attentionActiveName"
       @select="onSelectAttentionName"
     />
 
     <FilterTabs
-      v-if="store.activeTab === 'sessions'"
+      v-if="sessionListVisible"
       :tabs="FILTER_TABS"
       :active="store.sessionFilterTab"
       :view-mode="store.sidebarViewMode"
@@ -80,8 +84,8 @@
         <button
           type="button"
           class="sbx-filtertabs__view"
-          data-tooltip="Re-sort sessions"
-          aria-label="Re-sort sessions"
+          data-tooltip="Refresh sessions"
+          aria-label="Refresh sessions"
           @click="onResort"
         >
           <SbIcon name="refresh-cw" :size="13" tone="muted" />
@@ -90,10 +94,10 @@
     </FilterTabs>
 
     <!-- Sidebar content panels (v-show keeps DOM alive for vanilla JS queries) -->
-    <div id="sidebar-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'sessions' && !store.accountSwitching">
+    <div id="sidebar-content" class="sbx-sidebar-panel" v-show="sessionListVisible && !store.accountSwitching">
       <SidebarApp :callbacks="sidebarCallbacks" />
     </div>
-    <div v-if="store.accountSwitching && store.activeTab === 'sessions'" id="account-switch-overlay" class="account-switch-preloader">
+    <div v-if="store.accountSwitching && sessionListVisible" id="account-switch-overlay" class="account-switch-preloader">
       <div class="acct-spinner"></div><span>Switching account…</span>
     </div>
     <div id="plans-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'plans'">
@@ -111,15 +115,48 @@
     <div id="projects-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'projects'">
       <ProjectsApp ref="projectsRef" :callbacks="projectsCallbacks" />
     </div>
+    <!-- Not a .sbx-sidebar-panel: this one owns two bounded scroll boxes of
+         its own instead of being a single scrolling column. -->
+    <div id="board-sidebar-content" class="sbx-boardside-panel" v-show="store.activeTab === 'board'">
+      <BoardSidebarApp :callbacks="boardSidebarCallbacks" />
+    </div>
   </div>
 
   <!-- ── RESIZE HANDLE ──────────────────────────────────────────── -->
   <div id="sidebar-resize-handle" v-show="!store.sidebarCollapsed"></div>
 
   <!-- ── MAIN AREA ──────────────────────────────────────────────── -->
-  <div id="main">
+  <div
+    id="main"
+    :class="{ 'is-board': store.showBoard, 'has-board-split': boardSplitActive }"
+    :style="{ '--sbx-board-split': store.boardSplitHeight + 'px' }"
+  >
+    <!-- Drag the seam between the board and the session below it. -->
+    <div
+      v-if="boardSplitActive"
+      class="sbx-board-splitter"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize the session pane"
+      @mousedown.prevent="startBoardResize"
+    ></div>
+    <!-- Closes the session pane, not the board. Pinned to the pane's own top
+         corner so it cannot be read as closing the thing above it. -->
+    <button
+      v-if="boardSplitActive"
+      type="button"
+      class="sbx-board-splitclose"
+      data-tooltip="Close the session below"
+      aria-label="Close the session below"
+      @click="store.boardPreviewId = null"
+    >
+      <SbIcon name="x" :size="13" tone="muted" />
+    </button>
     <div id="placeholder">
       <p>Select a session from the sidebar to begin.</p>
+    </div>
+    <div id="board-viewer" v-show="store.showBoard">
+      <SessionBoardApp ref="boardRef" />
     </div>
     <div id="stats-viewer" v-show="store.showStats">
       <div id="stats-viewer-header">
@@ -242,6 +279,8 @@ import ProjectViewerApp from './ProjectViewerApp.vue';
 import StatsApp from './StatsApp.vue';
 import JsonlViewerApp from './JsonlViewerApp.vue';
 import AccountViewerApp from './AccountViewerApp.vue';
+import SessionBoardApp from './SessionBoardApp.vue';
+import BoardSidebarApp from './BoardSidebarApp.vue';
 import ViewerContentApp from './ViewerContentApp.vue';
 import DialogsApp from './DialogsApp.vue';
 
@@ -260,6 +299,7 @@ const accountViewerRef = ref(null);
 const planViewerRef = ref(null);
 const memoryViewerRef = ref(null);
 const dialogsRef = ref(null);
+const boardRef = ref(null);
 
 const planOnSave = (filePath, content) => window.api.savePlan(filePath, content);
 const memoryOnSave = (filePath, content) => window.api.saveMemory(filePath, content);
@@ -267,6 +307,7 @@ const memoryOnSave = (filePath, content) => window.api.saveMemory(filePath, cont
 // ── Tab config ───────────────────────────────────────────────────
 const TABS = [
   { id: 'sessions', icon: 'sparkles', label: 'Sessions' },
+  { id: 'board', icon: 'square-kanban', label: 'Board' },
   { id: 'plans', icon: 'book-open', label: 'Plans' },
   { id: 'memory', icon: 'brain', label: 'Agent Files' },
   { id: 'stats', icon: 'chart-no-axes-column', label: 'Stats' },
@@ -278,11 +319,59 @@ const TABS = [
 const STATS_REFRESH_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>';
 
 // ── Search ───────────────────────────────────────────────────────
+// The board renders the same sessions in another shape, so the sidebar keeps
+// its list — and its filters — on both tabs.
+// ── Board split resize ───────────────────────────────────────────
+// Height of the session pane under the board, in px, measured from the bottom
+// of #main. Kept in px rather than a ratio so the terminal keeps its row count
+// when the window resizes.
+const BOARD_SPLIT_MIN = 160;
+const BOARD_SPLIT_MARGIN = 220;   // leave at least this much board visible
+
+function setBoardSplit(px) {
+  const main = document.getElementById('main');
+  const max = Math.max(BOARD_SPLIT_MIN, (main?.clientHeight || 800) - BOARD_SPLIT_MARGIN);
+  store.boardSplitHeight = Math.round(Math.min(max, Math.max(BOARD_SPLIT_MIN, px)));
+}
+
+function startBoardResize(event) {
+  const main = document.getElementById('main');
+  if (!main) return;
+  const bottom = main.getBoundingClientRect().bottom;
+  let frame = 0;
+
+  const onMove = (e) => {
+    setBoardSplit(bottom - e.clientY);
+    // Refit on a frame, not on every mousemove: each one resizes the PTY.
+    if (!frame) frame = requestAnimationFrame(() => { frame = 0; window._refitOpenTerminals?.(); });
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.body.style.cursor = '';
+    localStorage.setItem('boardSplitHeight', String(store.boardSplitHeight));
+    window._refitOpenTerminals?.();
+  };
+
+  document.body.style.cursor = 'row-resize';
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  void event;
+}
+
+// Board with a session previewed below it: both panes are visible at once.
+const boardSplitActive = computed(() =>
+  store.activeTab === 'board' && !!store.boardPreviewId
+);
+
+const sessionListVisible = computed(() => store.activeTab === 'sessions');
+
 const searchPlaceholder = computed(() => {
   switch (store.activeTab) {
     case 'plans': return 'Search plans...';
     case 'memory': return 'Search agent files...';
     case 'projects': return 'Search projects…';
+    case 'board': return 'Search the board...';
     default: return 'Search sessions...';
   }
 });
@@ -296,12 +385,41 @@ function onSearchValue(value) {
     searchDebounceTimer = null;
     const query = store.searchQuery.trim();
     if (!query) { doClearSearch(); return; }
+    if (store.activeTab === 'board') { runBoardSearch(query); return; }
     window.__sb?.search?.(query, store.searchTitlesOnly);
   }, 200);
 }
 
+// app.js's __sb.search dispatches on its own copy of the active tab and knows
+// only the four list tabs, so on the board it falls through and nothing
+// filters. Same index, same query, same destination — the result goes to
+// store.searchMatchIds through the same bridge app.js uses, which is what the
+// board's filterSessions() call already reads.
+let boardSearchIds = null;
+
+async function runBoardSearch(query) {
+  try {
+    const results = await window.api.search('session', query, store.searchTitlesOnly);
+    boardSearchIds = new Set(results.map(r => r.id));
+  } catch {
+    boardSearchIds = null;
+  }
+  window.vueSidebar?.setSearch(boardSearchIds, null);
+}
+
+// app.js re-asserts its own (null) search set on every refreshSidebar, and
+// those fire on the board too — a session exiting would otherwise drop an
+// active board search without the user touching the field. Re-applying makes
+// the field non-null, so this cannot re-enter.
+watch(() => store.searchMatchIds, (ids) => {
+  if (ids === null && boardSearchIds && store.activeTab === 'board' && store.searchQuery.trim()) {
+    store.searchMatchIds = boardSearchIds;
+  }
+});
+
 function doClearSearch() {
   store.searchQuery = '';
+  boardSearchIds = null;
   if (searchDebounceTimer) { clearTimeout(searchDebounceTimer); searchDebounceTimer = null; }
   window.__sb?.clearSearch?.();
 }
@@ -314,9 +432,10 @@ function focusSearch() {
 async function toggleTitlesOnly() {
   store.searchTitlesOnly = !store.searchTitlesOnly;
   await window.api?.setSetting('searchTitlesOnly', store.searchTitlesOnly);
-  if (store.searchQuery.trim()) {
-    window.__sb?.search?.(store.searchQuery.trim(), store.searchTitlesOnly);
-  }
+  const query = store.searchQuery.trim();
+  if (!query) return;
+  if (store.activeTab === 'board') runBoardSearch(query);
+  else window.__sb?.search?.(query, store.searchTitlesOnly);
 }
 
 // ── Theme ────────────────────────────────────────────────────────
@@ -392,6 +511,7 @@ function setTab(tabId) {
   store.activeTab = tabId;
   // Clear search on tab switch
   store.searchQuery = '';
+  boardSearchIds = null;
   store.searchMatchIds = null;
   store.searchMatchProjectPaths = null;
   window.__sb?.onTabChange?.(tabId);
@@ -433,7 +553,11 @@ function onViewMode(mode) {
 // Only meaningful over an open session — it is scoped to that session's own
 // project path. Opening, closing or resizing it changes the terminal's width,
 // and xterm keeps its own cols/rows, so every transition ends in a refit.
-const sidePanelVisible = computed(() => store.sidePanelOpen && !!store.headerSession);
+// Not in the board's bottom split: that pane is a small terminal preview,
+// and the changes/containers panel needs room the split does not have.
+const sidePanelVisible = computed(() =>
+  store.sidePanelOpen && !!store.headerSession && !boardSplitActive.value
+);
 
 watch(sidePanelVisible, () => {
   requestAnimationFrame(() => window._refitOpenTerminals?.());
@@ -462,6 +586,12 @@ const sidebarCallbacks = {
 
 const planCallbacks = {
   openPlan: (plan) => window.__sb?.openPlan?.(plan),
+};
+
+// A summary's link has to land exactly where a card click lands, so it goes
+// through the board's own handler rather than repeating it here.
+const boardSidebarCallbacks = {
+  selectSession: (s) => boardRef.value?.selectSession(s),
 };
 
 const memoryCallbacks = {
@@ -584,6 +714,7 @@ onMounted(async () => {
       if (el) el.style.display = 'none';
     }
     store.showStats = false;
+    store.showBoard = false;
     store.showJsonl = false;
     store.accountViewerOpen = false;
     store.settingsScope = scope || 'global';
@@ -622,6 +753,8 @@ onMounted(async () => {
   store.showTodayOnly = store.sessionFilterTab === 'today';
   store.showArchived = store.sessionFilterTab === 'archived';
   store.sidebarViewMode = localStorage.getItem('sidebarViewMode') === 'grid' ? 'grid' : 'list';
+  const savedSplit = Number(localStorage.getItem('boardSplitHeight'));
+  if (Number.isFinite(savedSplit) && savedSplit > 0) store.boardSplitHeight = savedSplit;
 
   // Session side panel — open state and width survive a restart.
   store.sidePanelOpen = localStorage.getItem('sessionSidePanelOpen') === '1';
@@ -684,6 +817,11 @@ onMounted(async () => {
       window.vueStore.memoryViewerOpen = false;
       window.vueStore.settingsOpen = false;
       window.vueStore.showStats = false;
+      // Opening a session calls through here; that must not close the board
+      // when the board is the thing showing that session.
+      if (!(window.vueStore.activeTab === 'board' && window.vueStore.boardPreviewId)) {
+        window.vueStore.showBoard = false;
+      }
       window.vueStore.showJsonl = false;
       window.vueStore.accountViewerOpen = false;
     }

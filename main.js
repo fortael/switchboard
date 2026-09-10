@@ -962,6 +962,144 @@ ipcMain.handle('git-generate-commit-msg', async (_event, projectPath, style = 's
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// ── Board summaries ───────────────────────────────────────────────────────
+// One headless `claude` call for the whole board rather than one per session:
+// N sessions would be N cold CLI starts, N authentications and N timeouts to
+// wait out, and the model reads the transcripts faster together than apart.
+// Same plumbing as git-generate-commit-msg above — resolved binary, child PATH,
+// active-account env, hard timeout, { ok } result.
+const BOARD_SUMMARY_MAX_SESSIONS = 12;
+const BOARD_SUMMARY_MAX_PROMPT = 8000;      // the budget the commit diff gets
+const BOARD_SUMMARY_MAX_PER_SESSION = 1200;
+
+// The last few assistant turns of a transcript. "What did this session just
+// finish" needs the end of the conversation and nothing else, and the whole
+// file would blow the prompt budget on the first session.
+function sessionTranscriptTail(sessionId, limit = BOARD_SUMMARY_MAX_PER_SESSION) {
+  const folder = getCachedFolder(sessionId);
+  if (!folder) return '';
+  let content;
+  try {
+    content = fs.readFileSync(path.join(activeProjectsDir(), folder, sessionId + '.jsonl'), 'utf-8');
+  } catch { return ''; }
+  const lines = content.split('\n');
+  const turns = [];
+  for (let i = lines.length - 1; i >= 0 && turns.length < 3; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.type !== 'assistant' && !(entry.type === 'message' && entry.role === 'assistant')) continue;
+    const blocks = entry.message?.content;
+    // Text blocks only: a tool_use block is an argument dump, and its result
+    // arrives as a separate user entry that says nothing about intent.
+    const text = typeof blocks === 'string' ? blocks
+      : (Array.isArray(blocks)
+        ? blocks.filter(b => b?.type === 'text').map(b => b.text || '').join('\n')
+        : (typeof entry.message === 'string' ? entry.message : ''));
+    const trimmed = text.trim();
+    if (trimmed) turns.unshift(trimmed);
+  }
+  // Tail, not head: the closing sentences are the ones that say what landed.
+  return turns.join('\n---\n').slice(-limit);
+}
+
+ipcMain.handle('board-summarize-sessions', async (_event, sessions) => {
+  const { spawn } = require('child_process');
+  const list = (Array.isArray(sessions) ? sessions : []).slice(0, BOARD_SUMMARY_MAX_SESSIONS);
+  if (!list.length) return { ok: false, error: 'No sessions on the board to summarize' };
+  try {
+    let budget = BOARD_SUMMARY_MAX_PROMPT;
+    const blocks = [];
+    for (const session of list) {
+      if (budget <= 0) break;
+      // Passed as the limit rather than sliced afterwards: sessionTranscriptTail
+      // cuts from the front, and the last thing a session said is the point.
+      const tail = sessionTranscriptTail(session.sessionId, Math.min(BOARD_SUMMARY_MAX_PER_SESSION, budget));
+      if (!tail) continue;
+      budget -= tail.length;
+      const title = String(session.title || '').replace(/"/g, "'").slice(0, 120);
+      blocks.push(`<session id="${session.sessionId}" title="${title}">\n${tail}\n</session>`);
+    }
+    if (!blocks.length) return { ok: false, error: 'No readable transcripts for these sessions' };
+
+    const prompt = 'Each <session> below is the tail of a Claude Code transcript.\n'
+      + 'For each one, write 1-2 sentences in past tense saying what that session just finished doing. '
+      + 'Name the concrete files or features the transcript names. Do not mention the transcript, the session id, or yourself.\n'
+      // It reads in a sidebar column: left to itself the model writes a
+      // paragraph of clause-joined detail that has to be scrolled to finish.
+      + 'Hard limit of 35 words per summary — cut detail rather than run long.\n\n'
+      + 'Reply with ONLY a JSON array, no prose and no code fence, one object per session in the order given:\n'
+      + '[{"id": "<the session id exactly as given>", "summary": "<1-2 sentences>"}]\n\n'
+      + blocks.join('\n\n');
+
+    // Nothing here is project work, but the CLI still runs somewhere: anchor it
+    // to a project on the board so a WSL-backed account resolves inside its own
+    // distribution rather than on the Windows side.
+    const anchor = list.find(s => s.projectPath)?.projectPath;
+
+    const raw = await new Promise((resolve, reject) => {
+      const claudeBin = activeWslDistro() ? 'claude' : resolveClaudeBinary();
+      const [file, args, options] = projectExecFile(
+        // json envelope, not bare text: it is the only way to report what the
+        // summary actually cost. The prose lands in `result`.
+        [claudeBin, '-p', prompt, '--no-session-persistence', '--output-format', 'json'], anchor,
+        { env: { ...process.env, PATH: claudeChildPath(), ...activeAccountClaudeEnv() } }
+      );
+      const child = spawn(file, args, options);
+      let stdout = '', stderr = '';
+      child.stdout.on('data', d => { stdout += d; });
+      child.stderr.on('data', d => { stderr += d; });
+      // Longer than the commit message's 60s: this prompt carries a dozen
+      // transcripts and answers with a dozen summaries.
+      const timer = setTimeout(() => { child.kill(); reject(new Error('Timed out after 120s')); }, 120000);
+      child.on('close', code => {
+        clearTimeout(timer);
+        if (code !== 0 && !stdout.trim()) reject(new Error(stderr.trim() || `claude exited with code ${code}`));
+        else resolve(stdout.trim());
+      });
+      child.on('error', err => { clearTimeout(timer); reject(err); });
+    });
+
+    if (!raw) return { ok: false, error: 'No output from claude' };
+
+    // Unwrap the CLI envelope. If it is not there — an older CLI, or a wrapper
+    // that printed something else — fall back to treating stdout as the answer
+    // and report no usage rather than failing.
+    let body = raw;
+    let usage = null;
+    try {
+      const envelope = JSON.parse(raw);
+      if (envelope && typeof envelope.result === 'string') {
+        body = envelope.result;
+        const u = envelope.usage || {};
+        usage = {
+          inputTokens: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+          outputTokens: u.output_tokens || 0,
+          costUSD: envelope.total_cost_usd || 0,
+        };
+      }
+    } catch {}
+
+    // Models fence JSON even when told not to, and sometimes prefix a sentence.
+    const unfenced = body.replace(/^```[a-z]*\n?/i, '').replace(/\n?```\s*$/, '').trim();
+    const start = unfenced.indexOf('[');
+    const end = unfenced.lastIndexOf(']');
+    let parsed;
+    try {
+      parsed = JSON.parse(start !== -1 && end > start ? unfenced.slice(start, end + 1) : unfenced);
+    } catch {
+      return { ok: false, error: 'claude did not return JSON' };
+    }
+    if (!Array.isArray(parsed)) return { ok: false, error: 'claude did not return a JSON array' };
+    const summaries = parsed
+      .filter(item => item && item.id && typeof item.summary === 'string' && item.summary.trim())
+      .map(item => ({ sessionId: String(item.id), summary: item.summary.trim() }));
+    if (!summaries.length) return { ok: false, error: 'claude returned no summaries' };
+    return { ok: true, summaries, usage };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 ipcMain.handle('delete-worktree', (_event, projectPath, worktreePath) => {
   const { setProjectGitCache } = require('./db');
   let branch = null;

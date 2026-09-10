@@ -10,6 +10,12 @@ export const store = reactive({
   sessionBusyState: new Map(),
   attentionSessions: new Set(),
   responseReadySessions: new Set(),
+  // Sessions whose finished turn the user has already opened but not yet left.
+  // The sidebar's blue dot clears the instant you click a session, so
+  // responseReadySessions alone would yank a board card out of DONE under the
+  // cursor. app.js parks the id here instead and drops it when the active
+  // session changes, which is the moment the board calls "read and left".
+  readPendingSessions: new Set(),
   lastActivityTime: new Map(),
   pendingSessions: new Set(),
 
@@ -51,6 +57,16 @@ export const store = reactive({
 
   // Main area panel visibility (Vue-owned — do not touch via innerHTML/style directly)
   showStats: false,
+  showBoard: false,
+  // Session previewed in the board's bottom split — the real terminal, not a
+  // copy. null = board full height.
+  boardPreviewId: null,
+  boardHighlightFresh: false,     // fade board cards by age
+  boardSplitHeight: 380,          // px, height of the session pane under the board
+  // projectPath the board is scoped to, or null for every project. It lives
+  // here rather than in SessionBoardApp because the control is in the board's
+  // sidebar and the rendering is in the board — two siblings, one truth.
+  boardProjectFilter: null,
   showJsonl: false,
   planViewerOpen: false,
   memoryViewerOpen: false,

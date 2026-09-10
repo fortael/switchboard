@@ -70,6 +70,10 @@ contextBridge.exposeInMainWorld('api', {
   getProjectAvatar: (projectPath) => ipcRenderer.invoke('get-project-avatar', projectPath),
   fetchGitlabAvatar: (projectPath, remoteUrl) => ipcRenderer.invoke('fetch-gitlab-avatar', projectPath, remoteUrl),
   gitGenerateCommitMsg: (projectPath, style) => ipcRenderer.invoke('git-generate-commit-msg', projectPath, style),
+  // sessions: [{ sessionId, projectPath, title }] — whatever the board is
+  // currently showing. Resolves { ok: true, summaries: [{ sessionId, summary }] }
+  // or { ok: false, error }.
+  boardSummarizeSessions: (sessions) => ipcRenderer.invoke('board-summarize-sessions', sessions),
   getGitUserInfo: (projectPath) => ipcRenderer.invoke('get-git-user-info', projectPath),
   deleteWorktree: (projectPath, worktreePath) => ipcRenderer.invoke('delete-worktree', projectPath, worktreePath),
   getFileTree: (projectPath) => ipcRenderer.invoke('get-file-tree', projectPath),

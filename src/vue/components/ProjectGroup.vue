@@ -166,6 +166,7 @@ import SessionItem from './SessionItem.vue';
 import SlugGroup from './SlugGroup.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
 import SbIcon from './SbIcon.vue';
+import { filterSessions } from '../session-filter.js';
 
 const props = defineProps({
   project: { type: Object, required: true },
@@ -229,25 +230,15 @@ const showOlder = ref(false);
 
 // Build mixed items list: individual sessions + slug groups
 const allItems = computed(() => {
-  let sessions = props.project.sessions || [];
-
-  if (!props.showArchived && !props.searchMatchIds) {
-    sessions = sessions.filter(s => !s.archived);
-  }
-  if (props.showStarredOnly) sessions = sessions.filter(s => s.starred);
-  if (props.showRunningOnly) sessions = sessions.filter(s => props.activePtyIds.has(s.sessionId));
-  if (props.showTodayOnly) {
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    sessions = sessions.filter(s => {
-      if (!s.modified) return false;
-      const d = new Date(s.modified);
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` === todayStr;
-    });
-  }
-  if (props.searchMatchIds) {
-    sessions = sessions.filter(s => props.searchMatchIds.has(s.sessionId));
-  }
+  // Shared with the board — see src/vue/session-filter.js.
+  const sessions = filterSessions(props.project.sessions, {
+    showArchived: props.showArchived,
+    showStarredOnly: props.showStarredOnly,
+    showRunningOnly: props.showRunningOnly,
+    showTodayOnly: props.showTodayOnly,
+    searchMatchIds: props.searchMatchIds,
+    activePtyIds: props.activePtyIds,
+  });
 
   // Group by slug
   const slugMap = new Map();

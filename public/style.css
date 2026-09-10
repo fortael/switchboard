@@ -1456,11 +1456,13 @@ body { display: flex; flex-direction: column; }
   display: none;
 }
 
+/* Shares the pill role declared above; no `display` of its own — an
+   inline-block here would beat that rule's inline-flex and drop the label off
+   the pill's vertical centre. Indent lines up with the session rows' text. */
 .sessions-more-toggle {
-  margin: 2px var(--space-3) var(--space-2) var(--space-8);
+  margin: var(--space-1) var(--space-3) var(--space-2) var(--space-8);
   color: var(--text-tertiary);
   user-select: none;
-  display: inline-block;
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
 }
@@ -1571,8 +1573,10 @@ body { display: flex; flex-direction: column; }
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
 }
+/* inline-flex, not inline-block: this is a pill from the shared role above and
+   needs the flex centring to keep its label off the baseline. */
 .slug-group.collapsed .slug-group-more {
-  display: inline-block;
+  display: inline-flex;
 }
 .slug-group-more:hover {
   color: var(--orange-500);
@@ -2211,6 +2215,10 @@ body { display: flex; flex-direction: column; }
   margin-right: -20px;
 }
 
+/* No vertical padding here. FitAddon sizes the terminal from this element's
+   height without discounting padding, so every vertical pixel becomes
+   overflow: xterm draws a scrollbar for it and the last rows end up under the
+   pane's bottom edge. */
 .terminal-container {
   position: absolute;
   inset: -5px 20px 0 0;
@@ -2218,7 +2226,7 @@ body { display: flex; flex-direction: column; }
   /* Left gutter matches the session header's --space-5, so the first
      terminal column sits on the same vertical as the header's avatar.
      The right inset is the xterm-scrollbar hide, not spacing. */
-  padding: var(--space-3) 0 var(--space-3) var(--space-5);
+  padding: 0 0 0 var(--space-5);
   overflow: hidden;
 }
 
@@ -6003,7 +6011,11 @@ body.hide-avatars .grid-card-avatar {
   border-radius: var(--radius-xs);
   font-size: var(--text-xs);
   line-height: var(--leading-normal);
-  white-space: nowrap;
+  /* Was `nowrap` with no width cap, so a sentence-length tooltip ran straight
+     out of its own box. */
+  max-width: 320px;
+  white-space: normal;
+  overflow-wrap: anywhere;
   pointer-events: none;
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-md);

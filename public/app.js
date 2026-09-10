@@ -18,6 +18,11 @@ const openSessions = new Map();
 window._openSessions = openSessions;
 let activeSessionId = sessionStorage.getItem('activeSessionId') || null;
 function setActiveSession(id) {
+  // Switching away from a session the user had already read is the second half
+  // of the board's DONE → IDLE move; see readPendingSessions below.
+  for (const sid of readPendingSessions) {
+    if (sid !== id) setReadPending(sid, false);
+  }
   activeSessionId = id;
   if (id) sessionStorage.setItem('activeSessionId', id);
   else sessionStorage.removeItem('activeSessionId');
@@ -65,6 +70,14 @@ let searchMatchProjectPaths = null; // Set<string> of project paths matched by n
 //
 const attentionSessions = new Set(); // sessions needing user action (OSC 9)
 const responseReadySessions = new Set(); // Claude finished, user hasn't looked (terminal state)
+// Claude finished, the user has looked, and the session is still the open one.
+// The sidebar clears its blue dot the moment a session is opened — that is the
+// behaviour people expect from an unread marker — but the board's DONE column
+// means "finished and not yet dismissed", so a card must not leave DONE under
+// the click that opened it. clearUnread() parks the id here instead of simply
+// dropping it, and setActiveSession() releases it as soon as focus moves to a
+// different session. Board state = responseReady || readPending.
+const readPendingSessions = new Set();
 const sessionBusyState = new Map(); // sessionId → boolean (currently active)
 const lastActivityTime = new Map(); // sessionId → Date of last terminal output
 window.lastActivityTime = lastActivityTime; // exposed for Vue components
@@ -72,12 +85,27 @@ window.lastActivityTime = lastActivityTime; // exposed for Vue components
 // Noise patterns — these don't count as activity
 const activityNoiseRe = /file-history-snapshot|^\s*$/;
 
+// A finished turn is the moment the .jsonl gets its last write, so it is also
+// the moment the cached message count and context usage stop matching what the
+// session is really at. The sidebar's timeago comes from terminal output and
+// keeps ticking regardless, which is what made a stale row look current.
+// Debounced: several sessions can settle at once.
+let counterRefreshTimer = null;
+function scheduleCounterRefresh() {
+  clearTimeout(counterRefreshTimer);
+  counterRefreshTimer = setTimeout(() => {
+    counterRefreshTimer = null;
+    loadProjects();
+  }, 1500);
+}
+
 // Central activity dispatcher
 function setActivity(sessionId, active) {
   if (responseReadySessions.has(sessionId)) return;
 
   const wasActive = sessionBusyState.get(sessionId) || false;
   sessionBusyState.set(sessionId, active);
+  if (wasActive && !active) scheduleCounterRefresh();
 
   if (wasActive && !active && sessionId !== activeSessionId) {
     responseReadySessions.add(sessionId);
@@ -93,8 +121,23 @@ function trackActivity(sessionId, data) {
   lastActivityTime.set(sessionId, new Date());
 }
 
+// The board reads this set straight off the store, so every write has to be
+// mirrored there — app.js owns the truth, Vue only renders it.
+function setReadPending(sessionId, pending) {
+  if (pending) {
+    readPendingSessions.add(sessionId);
+    window.vueStore?.readPendingSessions?.add(sessionId);
+  } else {
+    readPendingSessions.delete(sessionId);
+    window.vueStore?.readPendingSessions?.delete(sessionId);
+  }
+}
+
 function clearUnread(sessionId) {
-  responseReadySessions.delete(sessionId);
+  const wasUnread = responseReadySessions.delete(sessionId);
+  // Opening a finished session is not the same as leaving it: hold the card in
+  // DONE until setActiveSession() moves the focus somewhere else.
+  if (wasUnread && sessionId === activeSessionId) setReadPending(sessionId, true);
   window.vueSidebar?.clearNotifications(sessionId);
 }
 
@@ -387,6 +430,7 @@ function updateRunningIndicators() {
       item.classList.remove('needs-attention', 'response-ready', 'cli-busy');
       attentionSessions.delete(id);
       responseReadySessions.delete(id);
+      setReadPending(id, false);
       sessionBusyState.delete(id);
     }
     const dot = item.querySelector('.session-status-dot');
@@ -864,6 +908,10 @@ loadProjects().then(async () => {
       terminalArea.style.display = 'none';
       if (window.vueStore) window.vueStore.showStats = true;
       window.vueStats?.load();
+    } else if (_uiState.panel === 'board') {
+      hideAllViewers();
+      terminalArea.style.display = 'none';
+      if (window.vueStore) window.vueStore.showBoard = true;
     }
   } catch {}
 });
@@ -1160,6 +1208,11 @@ window.__sb = {
     window.vueSidebar?.setSearch(null, null);
     saveUiState({ sidebarTab: tabName });
 
+    // Not every branch below routes through hideAllViewers() (the sessions tab
+    // with nothing open only un-hides the placeholder), so retire the board
+    // here rather than trusting each one to do it.
+    if (tabName !== 'board' && window.vueStore) window.vueStore.showBoard = false;
+
     if (tabName === 'sessions') {
       saveUiState({ panel: 'terminal', sidebarTab: tabName });
       if (gridViewActive) {
@@ -1184,6 +1237,14 @@ window.__sb = {
       terminalArea.style.display = 'none';
       if (window.vueStore) window.vueStore.showStats = true;
       window.vueStats?.load();
+    } else if (tabName === 'board') {
+      // Same box as stats: a main-area panel over the hidden terminal. The
+      // board derives everything it draws from the live store, so there is
+      // nothing to load here.
+      saveUiState({ panel: 'board' });
+      hideAllViewers();
+      terminalArea.style.display = 'none';
+      if (window.vueStore) window.vueStore.showBoard = true;
     } else if (tabName === 'memory') {
       saveUiState({ panel: 'memory' });
       hideAllViewers();

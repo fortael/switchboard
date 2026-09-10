@@ -59,7 +59,10 @@ db.exec(`
     slug TEXT,
     aiTitle TEXT,
     contextTokens INTEGER DEFAULT 0,
-    contextLimit INTEGER DEFAULT 0
+    contextLimit INTEGER DEFAULT 0,
+    changedFiles INTEGER DEFAULT 0,
+    linesAdded INTEGER DEFAULT 0,
+    linesRemoved INTEGER DEFAULT 0
   )
 `);
 
@@ -166,6 +169,23 @@ const migrations = [
     try { db.exec('DELETE FROM session_cache'); } catch {}
     try { db.exec('DELETE FROM cache_meta'); } catch {}
   },
+  // v9: Add changedFiles — how many distinct files the session edited, counted
+  // from its own transcript. Git cannot answer this per session, and a session
+  // may be working in a worktree of its own. Clear the cache so one re-index
+  // fills the column everywhere.
+  (db) => {
+    try { db.exec('ALTER TABLE session_cache ADD COLUMN changedFiles INTEGER DEFAULT 0'); } catch {}
+    try { db.exec('DELETE FROM session_cache'); } catch {}
+    try { db.exec('DELETE FROM cache_meta'); } catch {}
+  },
+  // v10: Add linesAdded/linesRemoved, counted from each edit's own result. See
+  // read-session-file.js for why cost-state's totals are not used.
+  (db) => {
+    try { db.exec('ALTER TABLE session_cache ADD COLUMN linesAdded INTEGER DEFAULT 0'); } catch {}
+    try { db.exec('ALTER TABLE session_cache ADD COLUMN linesRemoved INTEGER DEFAULT 0'); } catch {}
+    try { db.exec('DELETE FROM session_cache'); } catch {}
+    try { db.exec('DELETE FROM cache_meta'); } catch {}
+  },
 ];
 
 const currentDbVersion = (() => {
@@ -219,15 +239,17 @@ const stmts = {
   cacheCountByAccount: db.prepare("SELECT COUNT(*) as cnt FROM session_cache WHERE accountId = ?"),
   cacheGetByAccount: db.prepare('SELECT * FROM session_cache WHERE accountId = ?'),
   cacheUpsert: db.prepare(`
-    INSERT INTO session_cache (sessionId, folder, projectPath, summary, firstPrompt, created, modified, messageCount, slug, aiTitle, accountId, contextTokens, contextLimit)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO session_cache (sessionId, folder, projectPath, summary, firstPrompt, created, modified, messageCount, slug, aiTitle, accountId, contextTokens, contextLimit, changedFiles, linesAdded, linesRemoved)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(sessionId) DO UPDATE SET
       folder = excluded.folder, projectPath = excluded.projectPath,
       summary = excluded.summary, firstPrompt = excluded.firstPrompt,
       created = excluded.created, modified = excluded.modified,
       messageCount = excluded.messageCount, slug = excluded.slug,
       aiTitle = COALESCE(session_cache.aiTitle, excluded.aiTitle), accountId = excluded.accountId,
-      contextTokens = excluded.contextTokens, contextLimit = excluded.contextLimit
+      contextTokens = excluded.contextTokens, contextLimit = excluded.contextLimit,
+      changedFiles = excluded.changedFiles,
+      linesAdded = excluded.linesAdded, linesRemoved = excluded.linesRemoved
   `),
   cacheGetByFolder: db.prepare('SELECT sessionId, modified FROM session_cache WHERE folder = ? AND accountId = ?'),
   cacheGetFolder: db.prepare('SELECT folder FROM session_cache WHERE sessionId = ?'),
@@ -314,7 +336,8 @@ const upsertCachedSessionsBatch = db.transaction((sessions, accountId) => {
     stmts.cacheUpsert.run(
       s.sessionId, s.folder, s.projectPath, s.summary,
       s.firstPrompt, s.created, s.modified, s.messageCount || 0,
-      s.slug || null, s.aiTitle || null, accountId, s.contextTokens || 0, s.contextLimit || 0
+      s.slug || null, s.aiTitle || null, accountId, s.contextTokens || 0, s.contextLimit || 0, s.changedFiles || 0,
+      s.linesAdded || 0, s.linesRemoved || 0
     );
   }
 });

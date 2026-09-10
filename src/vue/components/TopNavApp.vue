@@ -32,6 +32,7 @@
         <SbIcon name="settings" :size="14" tone="muted" />
       </button>
       <button
+        v-if="canToggleSidebar"
         class="sbx-topnav__util"
         :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
         @click="emit('toggle-sidebar')"
@@ -51,6 +52,8 @@ defineProps({
   activeId: { type: String, default: '' },
   theme: { type: String, default: 'dark' },
   sidebarCollapsed: { type: Boolean, default: false },
+  // The board owns the full width; there is no sidebar to summon there.
+  canToggleSidebar: { type: Boolean, default: true },
 });
 
 const emit = defineEmits(['select', 'settings', 'toggle-sidebar', 'toggle-theme']);
