@@ -2,7 +2,7 @@
 //
 // `--settings <file-or-json>` loads *additional* settings for one run: the
 // user's own ~/.claude/settings.json and the project's .claude/settings.json
-// are still read and still win where they overlap. So Switchboard can subscribe
+// are still read and still win where they overlap. So WootonPad can subscribe
 // to lifecycle events for a session it launched without writing anything into
 // files the user owns, and without a cleanup step that has to survive a crash.
 
@@ -37,7 +37,7 @@ const HOOK_EVENTS = [
 ];
 
 // Seconds. The endpoint answers before it parses anything, so a healthy round
-// trip is sub-millisecond; this bound only matters when Switchboard has died
+// trip is sub-millisecond; this bound only matters when WootonPad has died
 // with sessions still running. Short enough that a dead app costs a session a
 // couple of seconds per turn rather than the 600s default.
 const HOOK_TIMEOUT_SECONDS = 5;

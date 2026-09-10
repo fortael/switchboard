@@ -29,6 +29,9 @@ const { wslHostAddressFrom } = require('./shell-profiles');
 // it would only serve to fill memory.
 const MAX_BODY_BYTES = 256 * 1024;
 
+// Wire name, not a stale one. It is written into the settings file every
+// running session was spawned with, so renaming it would silently stop
+// every already-running CLI from being able to report its state.
 const HEADER_TOKEN = 'x-switchboard-hook-token';
 const HOOK_PATH = '/hook';
 

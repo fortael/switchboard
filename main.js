@@ -218,7 +218,7 @@ function activeAccountClaudeEnv() {
   return { CLAUDE_CONFIG_DIR: account.configDir };
 }
 
-// Build stats in the same format as stats-cache.json using Switchboard's own DB.
+// Build stats in the same format as stats-cache.json using WootonPad's own DB.
 // This ensures all accounts see charts even before running `claude /stats`.
 function computeStatsFromDb(accountId) {
   const sessions = getAllCached(accountId);
@@ -271,6 +271,185 @@ function hookServer() {
 // instead of a rendered byte stream. Everything below routes by which map the
 // id is in, so a session's transport stays an implementation detail of
 // open-terminal and nothing downstream has to care.
+// A tool call that needs a decision parks here until the renderer answers.
+// The SDK is waiting on the promise, so the session is genuinely stopped — the
+// same pause a terminal session shows as a prompt, only this one is a dialog.
+const pendingPermissions = new Map();   // requestId → { resolve, sessionId, kind, payload }
+let permissionSeq = 0;
+
+// Answering the question un-blocks the turn, so the status has to move off
+// requires_action there and then. Waiting for the next hook is not enough: an
+// allow that the CLI then withdraws, or a denial it does not retry, leaves no
+// hook at all and the session would sit marked as waiting on a dialog that is
+// no longer on screen.
+function settlePermission(requestId, decision) {
+  const entry = pendingPermissions.get(requestId);
+  if (!entry) return false;
+  pendingPermissions.delete(requestId);
+  entry.resolve(decision);
+  sessionStatus.apply({
+    session_id: entry.sessionId,
+    hook_event_name: 'PermissionDenied',   // "decision made, carry on" → running
+  });
+  return true;
+}
+
+function denyPending(sessionId, reason) {
+  for (const [id, entry] of [...pendingPermissions]) {
+    if (entry.sessionId !== sessionId) continue;
+    pendingPermissions.delete(id);
+    // Three channels, three refusal shapes. An elicitation answered with a
+    // permission result is not a refusal, it is a malformed reply.
+    entry.resolve(ABANDONED[entry.kind] || { behavior: 'deny', message: reason });
+  }
+}
+
+/** How each channel spells "nobody is going to answer this". */
+const ABANDONED = {
+  elicitation: { action: 'cancel' },
+  dialog: { behavior: 'cancelled' },
+};
+
+/**
+ * The dialogs a session is currently stopped on, for a renderer that has just
+ * loaded. A reload loses the window's messages but not the CLI's patience: the
+ * tool call is still parked on its promise, and without this the session would
+ * sit blocked with nothing on screen to answer.
+ */
+ipcMain.handle('sdk-pending-requests', (_event, sessionId) =>
+  [...pendingPermissions.values()]
+    .filter(entry => entry.sessionId === sessionId && entry.payload)
+    .map(entry => ({ ...entry.payload, kind: entry.kind })));
+
+function askPermission(sessionId, toolName, input, options) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      resolve({ behavior: 'deny', message: 'WootonPad is not showing this session' });
+      return;
+    }
+    const requestId = `perm-${++permissionSeq}`;
+    const payload = {
+      requestId,
+      toolName,
+      input,
+      // Everything the CLI would offer as "don't ask again" for this tool.
+      suggestions: options?.suggestions || [],
+      // What the CLI itself would have shown. The SDK's own guidance is to
+      // prefer these over a sentence rebuilt from the tool name — they cover
+      // tools this build has never heard of, and they match the official
+      // client word for word.
+      title: options?.title || '',
+      displayName: options?.displayName || '',
+      description: options?.description || '',
+      blockedPath: options?.blockedPath || '',
+      decisionReason: options?.decisionReason || '',
+      toolUseID: options?.toolUseID || '',
+    };
+    // Registered before the abort listener, which fires synchronously when the
+    // signal has already been aborted — settling an entry that is not in the
+    // map yet would leave the promise parked forever.
+    pendingPermissions.set(requestId, { resolve, sessionId, kind: 'permission', payload });
+
+    // The CLI can withdraw the request — a turn interrupted while the dialog
+    // is up. Settle it so the promise cannot outlive the question.
+    options?.signal?.addEventListener('abort', () => {
+      if (!settlePermission(requestId, { behavior: 'deny', message: 'Cancelled' })) return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk-permission-cancelled', sessionId, requestId);
+      }
+    }, { once: true });
+
+    log.info(`[sdk] session=${sessionId} asking to use ${toolName}`);
+    mainWindow.webContents.send('sdk-permission-request', sessionId, payload);
+  });
+}
+
+/**
+ * An MCP server asking the user for something — a form to fill in, or a link
+ * to sign in through. A separate channel from tool permissions in the CLI, and
+ * a separate one here, but it parks in the same map: what matters downstream is
+ * that the session is stopped waiting on a person.
+ */
+function askElicitation(sessionId, request) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      resolve({ action: 'decline' });
+      return;
+    }
+    const requestId = `elicit-${++permissionSeq}`;
+    const payload = {
+      requestId,
+      serverName: request?.serverName || '',
+      message: request?.message || '',
+      mode: request?.mode || 'form',
+      url: request?.url || '',
+      requestedSchema: request?.requestedSchema || null,
+      title: request?.title || '',
+      displayName: request?.displayName || '',
+      description: request?.description || '',
+    };
+    // Same shape of entry as a permission, so cancellation, session exit and
+    // the status move on answering all work without a second code path. The
+    // decision is passed through untouched — the SDK validates it, not us.
+    pendingPermissions.set(requestId, { resolve, sessionId, kind: 'elicitation', payload });
+
+    sessionStatus.apply({
+      session_id: sessionId,
+      hook_event_name: 'PermissionRequest',
+      tool_name: `mcp:${request?.serverName || 'server'}`,
+    });
+
+    log.info(`[sdk] session=${sessionId} elicitation from ${request?.serverName} mode=${request?.mode || 'form'}`);
+    mainWindow.webContents.send('sdk-elicitation-request', sessionId, payload);
+  });
+}
+
+/**
+ * A `request_user_dialog` the CLI asks the host to draw — today only the
+ * refusal fallback, which offers to retry a declined turn on another model.
+ * sdk-session.js has already filtered out kinds this build cannot render, so
+ * anything arriving here is one RequestDialog knows.
+ */
+function askUserDialog(sessionId, request) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      resolve({ behavior: 'cancelled' });
+      return;
+    }
+    const requestId = `dialog-${++permissionSeq}`;
+    const payload = {
+      requestId,
+      dialogKind: request?.dialogKind || '',
+      payload: request?.payload || {},
+      toolUseID: request?.toolUseID || '',
+    };
+    pendingPermissions.set(requestId, { resolve, sessionId, kind: 'dialog', payload });
+
+    sessionStatus.apply({
+      session_id: sessionId,
+      hook_event_name: 'PermissionRequest',
+      tool_name: request?.dialogKind || 'dialog',
+    });
+
+    log.info(`[sdk] session=${sessionId} dialog ${request?.dialogKind}`);
+    mainWindow.webContents.send('sdk-dialog-request', sessionId, payload);
+  });
+}
+
+// --- IPC: sdk-permission-response ---
+ipcMain.on('sdk-permission-response', (_event, requestId, decision) => {
+  settlePermission(requestId, decision);  // no-op if already cancelled
+});
+
+// --- IPC: sdk-elicitation-response / sdk-dialog-response ---
+ipcMain.on('sdk-elicitation-response', (_event, requestId, decision) => {
+  settlePermission(requestId, decision);
+});
+
+ipcMain.on('sdk-dialog-response', (_event, requestId, decision) => {
+  settlePermission(requestId, decision);
+});
+
 function startSdkSessionFor(sessionId, projectPath, isNew, sessionOptions) {
   return sdkSession.startSdkSession(sessionId, {
     projectPath,
@@ -290,10 +469,30 @@ function startSdkSessionFor(sessionId, projectPath, isNew, sessionOptions) {
     // same state machine — see session-status.js.
     onHook: (id, input) => sessionStatus.apply({ ...input, session_id: id }),
 
+    // Called when the permission flow falls through to a prompt. The session
+    // is blocked on this promise, so the status has to say so — otherwise the
+    // sidebar shows a session that looks busy and never finishes.
+    canUseTool: (toolName, input, options) => {
+      sessionStatus.apply({
+        session_id: sessionId,
+        hook_event_name: 'PermissionRequest',
+        tool_name: toolName,
+      });
+      return askPermission(sessionId, toolName, input, options);
+    },
+
+    // Same stop, different channels — see askElicitation and askUserDialog.
+    onElicitation: (id, request) => askElicitation(id, request),
+    onUserDialog: (id, request) => askUserDialog(id, request),
+
     // Only consulted when onHook is absent; kept wired so a future caller that
     // opts out of hooks still reports something.
     onState: (id, state) => {
-      if (state === 'exited') sessionStatus.remove(id);
+      if (state === 'exited') {
+        // A dialog whose session has gone would hang the renderer forever.
+        denyPending(id, 'The session ended');
+        sessionStatus.remove(id);
+      }
     },
 
     onSessionId: (oldId, newId) => {
@@ -2148,6 +2347,15 @@ const SETTING_DEFAULTS = {
   shellProfile: 'auto',
   showAvatars: true,
   commitMessagePrompt: '',
+  // 'pty'  — spawn the CLI in a terminal, the way this app always has.
+  // 'sdk'  — drive the same CLI through the Agent SDK and render the
+  //          conversation as structured messages. Same account, same
+  //          transcript on disk; different transport and different view.
+  sessionMode: 'pty',
+  // Stills the board's card flight. The OS-level prefers-reduced-motion is
+  // honoured on its own; this is for people whose system says nothing but who
+  // still want the movement gone.
+  reduceMotion: false,
 };
 
 ipcMain.handle('get-shell-profiles', () => {
@@ -2206,6 +2414,7 @@ ipcMain.handle('get-active-terminals', () => {
 // --- IPC: stop-session ---
 ipcMain.handle('stop-session', (_event, sessionId) => {
   if (sdkSession.isSdkSession(sessionId)) {
+    denyPending(sessionId, 'The session was stopped');
     sessionStatus.remove(sessionId);
     return sdkSession.stopSdkSession(sessionId);
   }
@@ -2636,7 +2845,7 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
         claudeCmd = sessionOptions.preLaunchCmd + ' ' + claudeCmd;
       }
 
-      // Start MCP server for this session so Claude CLI sends diffs/file opens to Switchboard
+      // Start MCP server for this session so Claude CLI sends diffs/file opens to WootonPad
       // (skip if user disabled IDE emulation in global settings)
       if (sessionOptions?.mcpEmulation !== false) {
         try {
@@ -2875,6 +3084,13 @@ ipcMain.handle('sdk-interrupt', async (_event, sessionId) => {
 ipcMain.handle('sdk-set-permission-mode', async (_event, sessionId, mode) => {
   return sdkSession.setSdkPermissionMode(sessionId, mode);
 });
+
+// --- IPC: sdk session controls (model / effort / context) ---
+ipcMain.handle('sdk-commands', (_event, sessionId) => sdkSession.listSdkCommands(sessionId));
+ipcMain.handle('sdk-models', (_event, sessionId) => sdkSession.listSdkModels(sessionId));
+ipcMain.handle('sdk-set-model', (_event, sessionId, model) => sdkSession.setSdkModel(sessionId, model));
+ipcMain.handle('sdk-set-effort', (_event, sessionId, effort) => sdkSession.setSdkEffort(sessionId, effort));
+ipcMain.handle('sdk-context-usage', (_event, sessionId) => sdkSession.getSdkContextUsage(sessionId));
 
 // --- IPC: terminal-resize (fire-and-forget) ---
 ipcMain.on('terminal-resize', (_event, sessionId, cols, rows) => {

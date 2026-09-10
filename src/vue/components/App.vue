@@ -181,6 +181,10 @@
       </div>
       <SessionPanelRail v-if="store.headerSession" />
       <SessionSidePanelApp v-if="sidePanelVisible" />
+      <!-- Covers the terminal area for a session that has no terminal. Sits
+           inside #terminal-area so the rail, the side panel and their gutters
+           are laid out identically for both transports. -->
+      <SessionSdkApp v-if="sdkSessionVisible" :key="store.headerSession.sessionId" />
       <!-- Legacy terminal header kept for JS references (hidden) -->
       <div id="terminal-header" style="display:none;">
         <div id="terminal-header-info">
@@ -234,7 +238,9 @@ import SidebarApp from './SidebarApp.vue';
 import SessionHeaderApp from './SessionHeaderApp.vue';
 import SessionSidePanelApp from './SessionSidePanelApp.vue';
 import SessionPanelRail from './SessionPanelRail.vue';
+import SessionSdkApp from './SessionSdkApp.vue';
 import { loadSidePanelTab } from '../side-panel-tabs.js';
+import { OPEN_ORDER, mostUrgent, worstColumn, stateFromStore } from '../session-column.js';
 import PlansApp from './PlansApp.vue';
 import AccountsApp from './AccountsApp.vue';
 import AccountDropdownApp from './AccountDropdownApp.vue';
@@ -407,35 +413,34 @@ function toggleTheme() {
 }
 
 // ── Active-session rail ──────────────────────────────────────────
-// One entry per project that currently has a live PTY, worst status first so
-// the projects wanting attention sit at the front of the rail.
-const ATTENTION_ORDER = { waiting: 0, done: 1, running: 2, idle: 3 };
+// One entry per project that currently has a live session, worst status first
+// so the projects wanting an answer sit at the front of the rail.
+const REASONS = {
+  waiting: 'needs input', done: 'response ready', running: 'working', idle: 'running',
+};
 
 const attentionProjects = computed(() => {
+  const state = stateFromStore(store);
   const out = [];
   for (const p of store.projects) {
     const live = p.sessions.filter(s => store.activePtyIds.has(s.sessionId));
     if (!live.length) continue;
-    // Everything in this list has a live PTY, so 'running' is the floor —
-    // 'idle' would contradict the session header, which says Running.
-    let status = 'running';
-    let reason = 'running';
-    if (live.some(s => store.attentionSessions.has(s.sessionId))) {
-      status = 'waiting'; reason = 'needs input';
-    } else if (live.some(s => store.responseReadySessions.has(s.sessionId))) {
-      status = 'done'; reason = 'response ready';
-    } else if (live.some(s => store.sessionBusyState.get(s.sessionId))) {
-      reason = 'working';
-    }
+    const status = worstColumn(live, state);
     out.push({
       projectPath: p.projectPath,
       name: p.projectPath.split('/').filter(Boolean).pop() || p.projectPath,
       status,
-      reason,
+      // Everything in this list is live, so 'idle' still reads as running —
+      // saying otherwise would contradict the session header.
+      reason: REASONS[status],
       count: live.length,
+      recency: Math.max(...live.map(s => new Date(s.modified || 0).getTime() || 0)),
     });
   }
-  return out.sort((a, b) => ATTENTION_ORDER[a.status] - ATTENTION_ORDER[b.status]);
+  // Waiting first, then the most recent within each band — the rail is a
+  // worklist, so its front should always be the next thing to deal with.
+  return out.sort((a, b) =>
+    OPEN_ORDER[a.status] - OPEN_ORDER[b.status] || b.recency - a.recency);
 });
 
 // AttentionRail addresses entries by display name; the rail and the store
@@ -457,8 +462,10 @@ function onSelectAttentionProject(projectPath) {
   const project = store.projects.find(p => p.projectPath === projectPath);
   const live = project?.sessions.filter(s => store.activePtyIds.has(s.sessionId)) || [];
   if (!live.length) return;
-  const newest = live.reduce((a, b) => (new Date(b.modified || 0) > new Date(a.modified || 0) ? b : a));
-  window.__sb?.openSession?.(newest);
+  // Not the newest — the most urgent. A project with a dozen live sessions has
+  // one that is actually holding a dialog, and that is the one the click means.
+  const target = mostUrgent(live, stateFromStore(store));
+  if (target) window.__sb?.openSession?.(target);
 }
 
 // ── Tab switching ────────────────────────────────────────────────
@@ -516,6 +523,13 @@ function onViewMode(mode) {
 // share that space, and the shell in particular is worth having there.
 const sidePanelVisible = computed(() =>
   !!store.sidePanelTab && !!store.headerSession
+);
+
+// An SDK-backed session has no xterm to show. Keyed by session id in the
+// template so switching sessions rebuilds the transcript rather than appending
+// one conversation onto another.
+const sdkSessionVisible = computed(() =>
+  !!store.headerSession && store.sdkSessionIds.has(store.headerSession.sessionId)
 );
 
 watch(sidePanelVisible, () => {

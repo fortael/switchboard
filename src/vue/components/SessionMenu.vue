@@ -301,7 +301,7 @@ async function loadMeta() {
   if (meta.value || metaPending.value) return;
   const call = window.api?.getSessionMeta;
   if (typeof call !== 'function') {
-    metaError.value = 'Session details are unavailable in this build — restart Switchboard.';
+    metaError.value = 'Session details are unavailable in this build — restart WootonPad.';
     return;
   }
   metaPending.value = true;
@@ -406,7 +406,7 @@ async function summarize() {
   if (summaryPending.value) return;
   const call = window.api?.boardSummarizeSessions;
   if (typeof call !== 'function') {
-    summaryError.value = 'Summaries are unavailable in this build — restart Switchboard.';
+    summaryError.value = 'Summaries are unavailable in this build — restart WootonPad.';
     return;
   }
   summaryPending.value = true;

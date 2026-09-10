@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createInputQueue, userMessage } = require('../sdk-session');
+const fs = require('node:fs');
+const path = require('node:path');
+const { createInputQueue, userMessage, DIALOG_KINDS } = require('../sdk-session');
 
 test('a queued message is delivered to a later reader', async () => {
   const q = createInputQueue();
@@ -57,6 +59,18 @@ test('the queue is iterable with for-await', async () => {
   const seen = [];
   for await (const m of q) seen.push(m);
   assert.deepEqual(seen, ['one', 'two']);
+});
+
+// supportedDialogKinds is a promise to the CLI, not a preference: declaring a
+// kind makes it start parking those dialogs here instead of falling back to
+// its no-dialog behaviour. A name on this list with no renderer behind it
+// would strand the turn, so the list and the renderer are checked together.
+test('every declared dialog kind is one the dialog component renders', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'vue', 'components', 'RequestDialog.vue'), 'utf8');
+  for (const kind of DIALOG_KINDS) {
+    assert.ok(source.includes(kind), `RequestDialog.vue does not mention ${kind}`);
+  }
 });
 
 test('a prompt is wrapped in the shape the SDK expects', () => {

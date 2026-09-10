@@ -269,6 +269,26 @@
 
             <div class="settings-field">
               <div class="settings-field-info">
+                <span class="settings-label">Reduce motion</span>
+                <div class="settings-description">Stop board cards from flying between columns when a session changes state. Already off if your system asks for reduced motion.</div>
+              </div>
+              <div class="settings-field-control">
+                <SbSwitch v-model="form.reduceMotion" />
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <div class="settings-field-info">
+                <span class="settings-label">Chat view (experimental)</span>
+                <div class="settings-description">Render sessions as a chat instead of a terminal. Same Claude, same account, same transcript on disk — it drives the CLI through the Agent SDK rather than a terminal. New sessions only; existing ones keep their terminal.</div>
+              </div>
+              <div class="settings-field-control">
+                <SbSwitch v-model="form.sdkMode" />
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <div class="settings-field-info">
                 <span class="settings-label">IDE Emulation</span>
                 <div class="settings-description">Emulate an IDE so Claude can open files and diffs in a side panel. Disable to use your own IDE instead. Changes take effect for new sessions only.</div>
               </div>
@@ -420,6 +440,8 @@ const form = reactive({
   sessionMaxAgeDays: 3,
   terminalTheme: 'wootonpadDark',
   mcpEmulation: true,
+  sdkMode: false,
+  reduceMotion: false,
   shellProfile: 'auto',
   showAvatars: true,
   monoFont: 'default',
@@ -479,6 +501,8 @@ async function loadSettings() {
     form.sessionMaxAgeDays = current.sessionMaxAgeDays ?? 3;
     form.terminalTheme = current.terminalTheme ?? 'wootonpadDark';
     form.mcpEmulation = current.mcpEmulation !== false;
+    form.sdkMode = current.sessionMode === 'sdk';
+    form.reduceMotion = current.reduceMotion === true;
     form.shellProfile = current.shellProfile ?? 'auto';
     form.showAvatars = current.showAvatars !== false;
     form.monoFont = current.monoFont ?? 'default';
@@ -533,6 +557,8 @@ async function save() {
       sessionMaxAgeDays: form.sessionMaxAgeDays || 3,
       terminalTheme: form.terminalTheme || 'wootonpadDark',
       mcpEmulation: form.mcpEmulation,
+      sessionMode: form.sdkMode ? 'sdk' : 'pty',
+      reduceMotion: form.reduceMotion,
       shellProfile: form.shellProfile || 'auto',
       showAvatars: form.showAvatars,
       monoFont: form.monoFont || 'default',
@@ -553,6 +579,7 @@ async function save() {
     window._setSessionMaxAge?.(settings.sessionMaxAgeDays);
     window._applyTerminalTheme?.(settings.terminalTheme);
     window._setShowAvatars?.(settings.showAvatars);
+    window._setReduceMotion?.(settings.reduceMotion);
     if (window.TERMINAL_FONTS?.[settings.monoFont]) {
       window._applyTerminalFont?.(window.TERMINAL_FONTS[settings.monoFont].family);
     }

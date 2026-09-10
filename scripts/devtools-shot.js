@@ -10,7 +10,7 @@
 const fs = require('fs');
 const WebSocket = require('ws');
 
-const out = process.argv[2] || '/tmp/switchboard.png';
+const out = process.argv[2] || '/tmp/wootonpad.png';
 const port = Number(process.argv[3] || 9222);
 const waitMs = Number(process.argv[4] || 0);
 

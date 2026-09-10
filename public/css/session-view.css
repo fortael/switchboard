@@ -22,7 +22,7 @@
   flex-shrink: 0;
   height: 46px;
   padding: 0 var(--space-5);
-  background: var(--surface-panel-raised);
+  background: var(--surface-panel);
   /* No bottom hairline: the raised surface already separates the header from
      the terminal, and the rule ran the full width — across the gutter above
      the floating side panel, where there is nothing for it to divide. */
@@ -280,4 +280,724 @@
   .sbx-sesshead__chip--pty {
     max-width: 110px;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SDK-backed session — SessionSdkApp.vue
+
+   The same conversation a PTY session shows in a terminal, rendered as
+   structured messages instead. It reuses the `jsonl-*` block styles from
+   style.css wholesale, so only the frame around them lives here: the
+   scrolling transcript, the composer, and the drift banner.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.sbx-sdk {
+  position: absolute;
+  top: 46px;              /* clears .sbx-sesshead, as the side panel does */
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* Above #terminals. Both live in #terminal-area and the terminal comes later
+     in the DOM, so without this the chat renders correctly and is painted over
+     by an xterm that has nothing to show. */
+  z-index: 4;
+  background: var(--surface-panel);
+  font-family: var(--font-ui);
+}
+
+/* The board split hides the session header, so there is nothing to clear. */
+#main.has-board-split .sbx-sdk { top: 0; }
+
+/* The mirror of the composer's dissolve. Content scrolling up out of the
+   transcript fades into the surface instead of being cut off by the header's
+   edge, so both ends of the conversation end the same way. */
+.sbx-sdk::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: var(--space-8, 40px);
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(to bottom, var(--surface-panel), transparent);
+}
+
+/* Give up the width the floating side panel takes, the same way the terminal
+   split does — otherwise the transcript runs underneath it. */
+#terminal-area.has-side-panel .sbx-sdk {
+  right: calc(var(--sbx-sidepanel-w) + var(--sbx-sidepanel-gap, 12px) * 2);
+}
+
+/* The composer floats over this rather than sitting beside it, so the last
+   message keeps scrolling underneath and dissolves into the surface instead of
+   stopping at a hard edge. The bottom padding is the room it needs. */
+.sbx-sdk__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-8, 40px) var(--space-5) 96px;
+}
+
+/* ─── Chat transcript ───────────────────────────────────────────── */
+
+/* What the user said, as a bubble on the right. The transcript viewer keeps
+   its full-width band — it is a document. A chat is a conversation you scroll
+   back through looking for the thing you asked, and a side plus a colour finds
+   it in one glance where a slightly different grey does not. */
+.sbx-sdk__body .jsonl-user {
+  width: fit-content;
+  max-width: 78%;
+  margin: var(--space-4) 0 var(--space-3) auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--indigo-400) 32%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--indigo-400) 32%, transparent);
+  border-radius: var(--radius-lg);
+  /* One squared corner, on the side it is anchored to. */
+  border-bottom-right-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--indigo-400) 16%, var(--surface-card));
+}
+
+.sbx-sdk__body .jsonl-user .jsonl-text {
+  font-weight: var(--weight-regular);
+}
+
+/* A tool call in a chat is a line you can open, not nine screens of diff
+   between two sentences. message-render.js folds the body away; this is the
+   affordance that says so. */
+.jsonl-tool-block--foldable > .jsonl-tool-header {
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+
+.jsonl-tool-block--foldable > .jsonl-tool-header:hover {
+  background: var(--surface-card-hover);
+}
+
+.jsonl-tool-block--foldable > .jsonl-tool-header::after {
+  content: '▸';
+  margin-left: var(--space-1);
+  color: var(--text-disabled);
+  font-size: 9px;
+  transition: transform var(--duration-fast) var(--ease-standard);
+  display: inline-block;
+}
+
+.jsonl-tool-block--foldable.is-open > .jsonl-tool-header::after {
+  transform: rotate(90deg);
+}
+
+/* ─── Working / streaming ───────────────────────────────────────── */
+
+/* The answer arrives a token at a time, which reads as finished the instant it
+   pauses. The caret says otherwise until the real message replaces this. */
+.sbx-streaming .jsonl-text::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--text-tertiary);
+  animation: sbx-caret 1s steps(1) infinite;
+}
+
+@keyframes sbx-caret {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* Sits at the end of the transcript for as long as the turn runs. Present
+   before the first token and through every silent stretch — a tool running, a
+   long think — which is the whole point: those are the moments that look like
+   nothing is happening. */
+.sbx-working {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-disabled);
+  font-size: var(--text-2xs);
+}
+
+.sbx-working__dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.sbx-working__dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--blue-500);
+  animation: sbx-working-dot 1.2s ease-in-out infinite;
+}
+
+.sbx-working__dots i:nth-child(2) { animation-delay: 0.15s; }
+.sbx-working__dots i:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes sbx-working-dot {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* A board that is not allowed to fly cards is not allowed to bounce dots. */
+@media (prefers-reduced-motion: reduce) {
+  .sbx-working__dots i,
+  .sbx-streaming .jsonl-text::after {
+    animation: none;
+  }
+}
+
+/* Unrecognised messages are a message from the future, not a glitch to hide:
+   a build that has fallen behind the CLI should say so out loud. */
+.sbx-sdk__drift {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--orange-500) 10%, transparent);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+}
+
+/* Overlays the transcript's last rows. Absolute, not a flex row: a flex row
+   would push the content up and there would be nothing to fade. */
+.sbx-sdk__composer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0 var(--space-5) var(--space-4);
+  background: var(--surface-panel);
+}
+
+/* The dissolve. Text scrolling up through this band goes from readable to the
+   surface colour with no visible line where the composer begins. */
+.sbx-sdk__composer::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: var(--space-8, 32px);
+  pointer-events: none;
+  background: linear-gradient(to top, var(--surface-panel), transparent);
+}
+
+.sbx-sdk__field {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-panel);
+  transition: border-color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-sdk__field:focus-within {
+  border-color: var(--border-default);
+}
+
+/* One row until the content asks for more; SessionSdkApp sets the height from
+   the content on every keystroke, capped, after which this scrolls. */
+.sbx-sdk__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: calc(var(--text-sm) * 1.6);
+  max-height: 220px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  resize: none;
+  overflow-y: auto;
+}
+
+.sbx-sdk__input:focus {
+  outline: none;
+}
+
+.sbx-sdk__input::placeholder {
+  color: var(--text-disabled);
+}
+
+/* Enter sends. The glyph says so without a sentence explaining it. */
+.sbx-sdk__enter {
+  flex-shrink: 0;
+  align-self: flex-end;
+  padding-bottom: 1px;
+  color: var(--text-disabled);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  user-select: none;
+}
+
+.sbx-sdk__stop {
+  flex-shrink: 0;
+  align-self: flex-end;
+  width: var(--hit-xs);
+  height: var(--hit-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard),
+              color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-sdk__stop:hover {
+  color: var(--status-danger);
+  background: color-mix(in srgb, var(--status-danger) 10%, transparent);
+}
+
+.sbx-sdk__stop .sb-icon { display: block; }
+
+/* Borrowed from the transcript viewer so an unknown message reads as the same
+   kind of object as everything around it, just flagged. */
+.jsonl-unknown > .jsonl-collapsible-header,
+.jsonl-unknown .jsonl-collapsible-header {
+  color: var(--orange-500);
+}
+
+.jsonl-notice {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.jsonl-notice--warn { color: var(--orange-500); }
+.jsonl-notice--error { color: var(--status-danger); }
+
+.sbx-sdk__loading {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+/* ─── Blocking request ──────────────────────────────────────────── */
+
+/* While a dialog is up the session is genuinely stopped and the transcript is
+   nothing but context. Pushing it back — softened and dimmed — leaves it
+   readable enough to answer from without competing with the question. */
+.sbx-sdk.is-asking .sbx-sdk__body {
+  filter: blur(2px);
+  opacity: 0.8;
+  transition: filter var(--duration-normal, 200ms) var(--ease-standard),
+              opacity var(--duration-normal, 200ms) var(--ease-standard);
+}
+
+.sbx-sdk__body {
+  transition: filter var(--duration-normal, 200ms) var(--ease-standard),
+              opacity var(--duration-normal, 200ms) var(--ease-standard);
+}
+
+/* The session is stopped on this. It sits inside the composer, directly above
+   the field — in flow, not floating: an absolute position had to guess the
+   composer's height, and guessed wrong the moment the control row was added.
+   Warning tone, the same one the sidebar uses for the same state. */
+.sbx-req {
+  margin-bottom: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--orange-500) 45%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-md);
+}
+
+.sbx-req:focus { outline: none; }
+
+/* A question is a conversation, not a warning. */
+.sbx-req--ask {
+  border-color: color-mix(in srgb, var(--accent-primary, var(--orange-500)) 40%, transparent);
+}
+
+.sbx-req__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.sbx-req__head .sb-icon {
+  flex-shrink: 0;
+  display: block;
+  color: var(--orange-500);
+}
+
+.sbx-req--ask .sbx-req__head .sb-icon { color: var(--accent-primary, var(--orange-500)); }
+
+.sbx-req__q {
+  font-weight: var(--weight-medium);
+}
+
+/* The file or URL the question is about — present when naming it in the
+   question itself would make the line too long to read. */
+.sbx-req__subject {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sbx-req__count {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+.sbx-req__desc {
+  margin: 0;
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+}
+
+/* ─── Steps ─────────────────────────────────────────────────────── */
+
+/* One chip per question, using the short header the CLI writes for exactly
+   this. Answered ones stay live: going back to change the first answer is the
+   only reason a run of questions needs a trail at all. */
+.sbx-req__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.sbx-req__step {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: var(--text-disabled);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+
+.sbx-req__step:disabled { cursor: default; opacity: 0.5; }
+
+.sbx-req__step.is-done {
+  border-color: color-mix(in srgb, var(--status-success, var(--green-500)) 40%, transparent);
+  color: var(--text-secondary);
+}
+
+.sbx-req__step.is-current {
+  border-color: var(--accent-primary, var(--orange-500));
+  background: color-mix(in srgb, var(--accent-primary, var(--orange-500)) 12%, transparent);
+  color: var(--text-primary);
+}
+
+/* ─── Options ───────────────────────────────────────────────────── */
+
+.sbx-req__options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sbx-req__option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard),
+              border-color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-req__option.is-cursor {
+  border-color: var(--border-default);
+  background: var(--surface-card-hover);
+}
+
+.sbx-req__option.is-picked {
+  border-color: var(--accent-primary, var(--orange-500));
+}
+
+.sbx-req__option-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sbx-req__option-label {
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.sbx-req__option-desc {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.sbx-req__tick {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent-primary, var(--orange-500));
+}
+
+/* The digit that answers this row. Every clickable answer carries one, so the
+   list can be read once and driven by the number keys after that. */
+.sbx-req__key {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  background: var(--surface-panel);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.sbx-req__option.is-cursor .sbx-req__key,
+.sbx-req__option.is-picked .sbx-req__key {
+  border-color: var(--accent-primary, var(--orange-500));
+  color: var(--text-primary);
+}
+
+/* ─── Body panels ───────────────────────────────────────────────── */
+
+.sbx-req__detail,
+.sbx-req__preview {
+  max-height: 140px;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* An option's preview belongs to the option under the cursor, so it reads as
+   part of the list rather than as a second thing to look at. */
+.sbx-req__preview {
+  border-left: 2px solid var(--accent-primary, var(--orange-500));
+}
+
+.sbx-req__text {
+  width: 100%;
+  max-height: 120px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  resize: none;
+}
+
+.sbx-req__text:focus {
+  outline: none;
+  border-color: var(--border-default);
+}
+
+.sbx-req__error {
+  margin: 0;
+  font-size: var(--text-2xs);
+  color: var(--status-danger);
+}
+
+.sbx-req__url {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  word-break: break-all;
+}
+
+.sbx-req__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sbx-req__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sbx-req__field-name {
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+}
+
+.sbx-req__field-name em {
+  color: var(--status-danger);
+  font-style: normal;
+}
+
+.sbx-req__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.sbx-req__actions .sbx-req__key { margin-right: 4px; }
+
+.sbx-req__spacer,
+.sbx-sdk__spacer { flex: 1 1 auto; }
+
+/* ─── Composer controls ─────────────────────────────────────────── */
+
+/* One quiet line under the field. These change how the next turn runs, so
+   they belong with the field rather than in a menu — but they are not the
+   thing you look at, so nothing here draws a box until you touch it. */
+.sbx-sdk__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: 0 var(--space-1);
+}
+
+.sbx-sdk__select {
+  flex-shrink: 0;
+  max-width: 150px;
+  padding: 2px var(--space-1);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard),
+              color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-sdk__select:hover {
+  background: var(--surface-card-hover);
+  color: var(--text-primary);
+}
+
+.sbx-sdk__select:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+.sbx-sdk__context {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+/* ─── Slash commands ────────────────────────────────────────────── */
+
+/* The session's own command list, above the field. Sized to the content and
+   scrolled rather than growing: forty-nine commands would otherwise push the
+   conversation off the screen. */
+.sbx-sdk__commands {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  margin-bottom: var(--space-2);
+  padding: var(--space-1);
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-md);
+}
+
+.sbx-sdk__command {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sbx-sdk__command-name {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+}
+
+.sbx-sdk__command-hint {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+/* The description the CLI wrote for itself. Takes the slack and truncates: a
+   row that wrapped would turn the menu into a wall of prose. */
+.sbx-sdk__command-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sbx-sdk__command:hover .sbx-sdk__command-name,
+.sbx-sdk__command.is-active .sbx-sdk__command-name {
+  color: var(--text-primary);
+}
+
+.sbx-sdk__command:hover,
+.sbx-sdk__command.is-active {
+  background: var(--surface-card-hover);
+  color: var(--text-primary);
+}
+
+/* What this session is, for when the answer matters: version, how many tools
+   and skills it has, which MCP servers are attached. */
+.sbx-sdk__about {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  cursor: default;
 }

@@ -1,4 +1,4 @@
-/* Switchboard — Accounts view
+/* WootonPad — Accounts view
    Main-area detail panel for the account selected in the Accounts sidebar
    (src/vue/components/AccountViewerApp.vue), plus the sidebar row state that
    marks which account the panel is showing.
@@ -9,7 +9,7 @@
    which map onto semantic tokens (status/link/code) that already flip. */
 
 /* ── Sidebar row ──────────────────────────────────────────────────────
-   `active` (green) means "this is the account Switchboard is running on".
+   `active` (green) means "this is the account WootonPad is running on".
    `--selected` means "this is the one the panel is showing" — a different
    question, so a different mark: the focus accent down the leading edge. */
 .session-item.account-item--selected .session-row {

@@ -18,9 +18,18 @@ const openSessions = new Map();
 window._openSessions = openSessions;
 let activeSessionId = sessionStorage.getItem('activeSessionId') || null;
 function setActiveSession(id) {
-  // Focus moving elsewhere no longer retires a DONE card. A finished turn is
-  // finished whether or not you are still looking at it, so the card stays
-  // until the session view is closed — see __sb.closeSessionView.
+  // Leaving a session you have already read retires its card. Only a read one:
+  // a session in responseReady has never been looked at and keeps its card
+  // until it is.
+  //
+  // "Read and left" is the honest reading of closed here. You can only look at
+  // one session at a time, and a session you are not looking at has no close
+  // button to press — so switching away is the only gesture that means done
+  // with it. Requiring the explicit close left cards stranded in DONE with no
+  // way to clear them.
+  for (const sid of readPendingSessions) {
+    if (sid !== id) setReadPending(sid, false);
+  }
   activeSessionId = id;
   if (id) sessionStorage.setItem('activeSessionId', id);
   else sessionStorage.removeItem('activeSessionId');
@@ -67,13 +76,21 @@ let searchMatchProjectPaths = null; // Set<string> of project paths matched by n
 // OSC 0 idle signal is the authoritative source for marking sessions as idle.
 //
 const attentionSessions = new Set(); // sessions needing user action (OSC 9)
+// The subset of the above that is *blocked*: a permission prompt, a question, an
+// MCP elicitation. The difference matters because attention has two sources
+// with opposite lifetimes. A notification is dismissed by being read, so
+// opening the session clears it. A session parked on a dialog is still parked
+// after you look at it and after you close the view — nothing but an answer
+// releases it, and the status tracker in the main process is the only thing
+// that knows one arrived.
+const blockedSessions = new Set();
 const responseReadySessions = new Set(); // Claude finished, user hasn't looked (terminal state)
 // Claude finished and the user has already seen it — either because the
 // session was open when the turn landed, or because they opened it afterwards.
 // The sidebar clears its blue dot on open, which is what people expect from an
 // unread marker, but the board's DONE column means "finished and not yet put
-// away". So the id is parked here rather than dropped, and only closing the
-// session view retires it. Board state = responseReady || readPending.
+// away". So the id is parked here rather than dropped, and leaving the session
+// or closing its view retires it. Board state = responseReady || readPending.
 const readPendingSessions = new Set();
 const sessionBusyState = new Map(); // sessionId → boolean (currently active)
 const lastActivityTime = new Map(); // sessionId → Date of last terminal output
@@ -94,6 +111,13 @@ function scheduleCounterRefresh() {
     counterRefreshTimer = null;
     loadProjects();
   }, 1500);
+}
+
+// SDK-backed sessions render from `sdk-message`, not from terminal bytes.
+// The set drives which component App.vue mounts over the session area.
+function markSessionMode(sessionId, mode) {
+  if (mode === 'sdk') window.vueStore?.sdkSessionIds?.add(sessionId);
+  else window.vueStore?.sdkSessionIds?.delete(sessionId);
 }
 
 // Central activity dispatcher
@@ -143,13 +167,23 @@ function clearUnread(sessionId) {
   // Opening a finished session is not the same as leaving it: hold the card in
   // DONE until setActiveSession() moves the focus somewhere else.
   if (wasUnread && sessionId === activeSessionId) setReadPending(sessionId, true);
-  window.vueSidebar?.clearNotifications(sessionId);
+  window.vueSidebar?.clearResponseReady(sessionId);
 }
 
 function clearNotifications(sessionId) {
   clearUnread(sessionId);
+  // Looking at a blocked session is not answering it. Opening one used to clear
+  // its attention here, which turned it green and dropped the card into IDLE
+  // while Claude was still sitting on the dialog.
+  if (blockedSessions.has(sessionId)) return;
   attentionSessions.delete(sessionId);
   window.vueSidebar?.clearNotifications(sessionId);
+}
+
+/** Only the status tracker moves this — see applySessionStatus. */
+function setBlocked(sessionId, blocked) {
+  if (blocked) blockedSessions.add(sessionId);
+  else blockedSessions.delete(sessionId);
 }
 // Terminal themes, utils (cleanDisplayName, formatDate, escapeHtml, shellEscape)
 // are defined in terminal-themes.js and utils.js (loaded before app.js).
@@ -337,27 +371,33 @@ function applySessionStatus(sessionId, status) {
     // sets must not keep a spinner for a session that is gone.
     sessionBusyState.delete(sessionId);
     window.vueStore?.sessionBusyState?.delete(sessionId);
+    setBlocked(sessionId, false);   // a session that is gone is not waiting
     clearNotifications(sessionId);
     setReadPending(sessionId, false);
     return;
   }
 
   if (state === 'requires_action') {
-    // The session is blocked on the user — a permission prompt, a plan to
-    // approve, an MCP elicitation. Distinct from "finished a turn", which is
-    // what setActivity(false) records, and it must not be dropped just because
-    // the session is currently open: attention is why you would look at it.
+    // The session is blocked on the user — a permission prompt, a set of
+    // questions, an MCP elicitation. Distinct from "finished a turn", which is
+    // what setActivity(false) records.
+    //
+    // Recorded for the open session too. It used to be skipped there, on the
+    // grounds that you can already see the dialog — but the board reads this
+    // same set to place a card, and a session waiting on an answer would drop
+    // out of WAITING INPUT into IDLE for exactly as long as you had it open.
+    // The card has to say what the session is doing, not what you are.
     sessionBusyState.delete(sessionId);
     window.vueSidebar?.setBusy(sessionId, false);
-    if (sessionId !== activeSessionId) {
-      attentionSessions.add(sessionId);
-      window.vueSidebar?.addAttention(sessionId);
-    }
+    setBlocked(sessionId, true);
+    attentionSessions.add(sessionId);
+    window.vueSidebar?.addAttention(sessionId);
     return;
   }
 
   // 'running' | 'idle' — a real turn boundary, so whatever the session was
   // blocked on is resolved.
+  setBlocked(sessionId, false);
   if (attentionSessions.has(sessionId)) {
     attentionSessions.delete(sessionId);
     window.vueSidebar?.clearNotifications(sessionId);
@@ -488,6 +528,7 @@ function updateRunningIndicators() {
     item.classList.toggle('has-running-pty', running);
     if (!running) {
       item.classList.remove('needs-attention', 'response-ready', 'cli-busy');
+      setBlocked(id, false);   // no process, nothing left to answer
       attentionSessions.delete(id);
       responseReadySessions.delete(id);
       setReadPending(id, false);
@@ -690,6 +731,9 @@ async function launchNewSession(project, sessionOptions) {
     return;
   }
   if (typeof setSessionMcpActive === 'function') setSessionMcpActive(sessionId, !!result.mcpActive);
+  // A session's transport decides which view renders it — terminal bytes or
+  // structured messages. main.js reports which one it started.
+  markSessionMode(sessionId, result.mode);
 
   showSession(sessionId);
   pollActiveSessions();
@@ -763,6 +807,9 @@ async function openSession(session, customOptions) {
     return;
   }
   if (typeof setSessionMcpActive === 'function') setSessionMcpActive(sessionId, !!result.mcpActive);
+  // A session's transport decides which view renders it — terminal bytes or
+  // structured messages. main.js reports which one it started.
+  markSessionMode(sessionId, result.mode);
 
   showSession(sessionId);
   pollActiveSessions();
@@ -906,11 +953,17 @@ setTimeout(() => {
     if (global.showAvatars === false) {
       document.body.classList.add('hide-avatars');
     }
+    window._setReduceMotion?.(global.reduceMotion === true);
   }
 })();
 
 window._setShowAvatars = (val) => {
   document.body.classList.toggle('hide-avatars', !val);
+};
+
+// The board reads this off the store when deciding whether to fly a card.
+window._setReduceMotion = (val) => {
+  if (window.vueStore) window.vueStore.reduceMotion = val === true;
 };
 
 window._applyUiFont = (fontKey) => {
@@ -1381,7 +1434,11 @@ window.__sb = {
     if (closing) {
       setReadPending(closing, false);
       responseReadySessions.delete(closing);
-      window.vueSidebar?.clearNotifications(closing);
+      // The unread mark only. A session blocked on a dialog is still blocked
+      // after you look away — closing the view is not an answer, and clearing
+      // its attention here is what used to turn a waiting session green and
+      // drop it back into IDLE. Only the status tracker retires that.
+      window.vueSidebar?.clearResponseReady(closing);
     }
     // In the board's bottom split the pane belongs to the board, so closing it
     // is the board's own state change; the board stays up.

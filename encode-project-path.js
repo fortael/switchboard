@@ -1,4 +1,4 @@
-// Mirror Claude CLI's project-folder naming so Switchboard-created folders
+// Mirror Claude CLI's project-folder naming so WootonPad-created folders
 // match the ones the CLI writes for the same project path.
 // Reverse-engineered from claude CLI 2.1.126.
 function encodeProjectPath(projectPath) {

@@ -2,7 +2,7 @@
 //
 // The PTY path spawns `claude` in a terminal and reads back a byte stream that
 // has already been rendered for a human: colours, cursor moves, a redrawn box.
-// Everything Switchboard wants from it — which tool is running, whether the
+// Everything WootonPad wants from it — which tool is running, whether the
 // turn is over, what the assistant actually said — has to be inferred from
 // that rendering, which is why session-status.js exists at all.
 //
@@ -47,6 +47,14 @@ const log = {
   error: (m) => deps.log?.error(m),
   debug: (m) => deps.log?.debug(m),
 };
+
+/**
+ * `request_user_dialog` kinds this app can actually draw — see the comment at
+ * the call site. Adding a name here without a matching branch in
+ * RequestDialog.vue is worse than leaving it out: the CLI would start parking
+ * dialogs on a screen that cannot answer them.
+ */
+const DIALOG_KINDS = ['refusal_fallback_prompt'];
 
 /** @type {Map<string, object>} sessionId → entry */
 const sessions = new Map();
@@ -115,7 +123,7 @@ function userMessage(text) {
 /**
  * Start an SDK-backed session.
  *
- * @param {string} sessionId          UUID Switchboard already allocated
+ * @param {string} sessionId          UUID WootonPad already allocated
  * @param {object} opts
  * @param {string} opts.projectPath   cwd for the session
  * @param {boolean} [opts.isNew]      false means resume `sessionId`
@@ -163,7 +171,7 @@ async function startSdkSession(sessionId, opts) {
     abortController: abort,
     // The user's own CLI, not the 200MB copy the SDK would otherwise bundle:
     // same version, same account resolution, same `.jsonl` layout as every
-    // PTY session Switchboard has already indexed.
+    // PTY session WootonPad has already indexed.
     pathToClaudeCodeExecutable: deps.resolveClaudeBinary(),
     // Partial messages are what makes the answer appear as it is written
     // rather than in one lump when the turn ends.
@@ -198,6 +206,30 @@ async function startSdkSession(sessionId, opts) {
   if (opts.permissionMode) options.permissionMode = opts.permissionMode;
   if (opts.model) options.model = opts.model;
   if (opts.canUseTool) options.canUseTool = opts.canUseTool;
+
+  // The second way a session can stop and wait for a person: an MCP server
+  // asking for input directly rather than through a tool call. Without this
+  // the SDK declines every one of them automatically, which looks from the
+  // outside like a server that silently refuses to connect.
+  if (opts.onElicitation) {
+    options.onElicitation = (request) => opts.onElicitation(entry.realSessionId, request);
+  }
+
+  // The third way, and the one that fails closed: the CLI only emits a dialog
+  // kind that the host has declared it can draw. Declare nothing and the flow
+  // behind it degrades silently — a refusal ends the turn with the classic
+  // error instead of offering to retry on the fallback model.
+  //
+  // So the list is exactly what RequestDialog renders, no more. A kind that
+  // turns up anyway is answered `cancelled`, which is what the SDK requires of
+  // a host that does not recognise one: the CLI then applies that dialog's own
+  // default rather than waiting out its park deadline.
+  if (opts.onUserDialog && DIALOG_KINDS.length) {
+    options.supportedDialogKinds = [...DIALOG_KINDS];
+    options.onUserDialog = (request) => (DIALOG_KINDS.includes(request?.dialogKind)
+      ? opts.onUserDialog(entry.realSessionId, request)
+      : Promise.resolve({ behavior: 'cancelled' }));
+  }
 
   // Lifecycle hooks, in process. The PTY path has to reach these through a
   // local HTTP server and a generated settings file (hook-server.js) because
@@ -316,6 +348,41 @@ async function interruptSdkSession(sessionId) {
   }
 }
 
+/**
+ * Session-scoped knobs the composer's control bar drives. Each is a control
+ * request, so each needs a live session and a streaming input — which is
+ * exactly what this module keeps.
+ */
+async function sdkControl(sessionId, fn) {
+  const entry = find(sessionId);
+  if (!entry || entry.exited || !entry.query) return { ok: false, error: 'No such session' };
+  try {
+    return { ok: true, value: await fn(entry.query) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/** Commands with their descriptions, for the composer's menu. */
+const listSdkCommands = (sessionId) => sdkControl(sessionId, q => q.supportedCommands());
+
+/** Available models, for the picker. */
+const listSdkModels = (sessionId) => sdkControl(sessionId, q => q.supportedModels());
+
+/** Switch the model for everything after this turn. */
+const setSdkModel = (sessionId, model) => sdkControl(sessionId, q => q.setModel(model || undefined));
+
+/**
+ * Effort is not a dedicated setter: it rides the session-scoped flag layer,
+ * which is also the only place 'max' is accepted.
+ */
+const setSdkEffort = (sessionId, effortLevel) =>
+  sdkControl(sessionId, q => q.applyFlagSettings({ effortLevel }));
+
+/** What the CLI's own /context would show, for the ring in the control bar. */
+const getSdkContextUsage = (sessionId) =>
+  sdkControl(sessionId, q => q.getContextUsage({ detail: 'summary' }));
+
 /** Change the permission mode of a live session. */
 async function setSdkPermissionMode(sessionId, mode) {
   const entry = find(sessionId);
@@ -364,6 +431,11 @@ function activeSdkSessions() {
 module.exports = {
   configure,
   startSdkSession,
+  listSdkCommands,
+  listSdkModels,
+  setSdkModel,
+  setSdkEffort,
+  getSdkContextUsage,
   sendSdkInput,
   interruptSdkSession,
   setSdkPermissionMode,
@@ -371,6 +443,7 @@ module.exports = {
   stopAllSdkSessions,
   isSdkSession,
   activeSdkSessions,
+  DIALOG_KINDS,
   // exported for tests
   createInputQueue,
   userMessage,

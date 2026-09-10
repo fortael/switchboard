@@ -25,6 +25,8 @@ const TERMINAL_THEMES = {
     brightBlack: '#8d8f99', brightRed: '#b8332e', brightGreen: '#17916a', brightYellow: '#946608', brightBlue: '#255bb0', brightMagenta: '#5c37a1', brightCyan: '#0c7180', brightWhite: '#15161a',
   },
 
+  // Key kept from the old name: it is what `terminalTheme` holds in the
+  // settings of anyone already using it. The label is the one people read.
   switchboard: {
     label: 'WootonPad Classic', mode: 'dark',
     background: '#1a1a2e', foreground: '#e0e0e0', cursor: '#e94560', selectionBackground: '#3a3a5e',

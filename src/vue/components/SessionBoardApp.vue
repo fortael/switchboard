@@ -54,12 +54,15 @@
 </template>
 
 <script setup>
-import { computed, onUnmounted } from 'vue';
+import { computed, onUnmounted, watch, nextTick } from 'vue';
 import { store } from '../store.js';
 import SbIcon from './SbIcon.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
 import SessionCard from './SessionCard.vue';
 import { filterSessions } from '../session-filter.js';
+// Aliased: `columnOf` below is this board's own map of every card's lane, which
+// is a different question from "which lane is this one session in".
+import { columnOf as laneOf, stateFromStore } from '../session-column.js';
 import { tick } from '../time-tick.js';
 
 // Lifecycle order, left to right. Nothing here is stored: a card's column is
@@ -73,18 +76,9 @@ const COLUMNS = [
   { id: 'done', label: 'DONE' },
 ];
 
-// Precedence, not a partition: a session can carry more than one of these
-// marks at once. Blocked-on-the-user outranks everything (it is the only state
-// that cannot progress without a human), and running outranks done because a
-// session the user opened and then sent back to work is working, not finished
-// — otherwise readPending would pin it in DONE for the whole next turn.
-function columnFor(id) {
-  if (store.attentionSessions.has(id)) return 'waiting';
-  if (store.sessionBusyState.get(id)) return 'running';
-  // readPending = finished, read, still the open session. See app.js.
-  if (store.responseReadySessions.has(id) || store.readPendingSessions.has(id)) return 'done';
-  return 'idle';
-}
+// The precedence lives in session-column.js, because the Recent rail sorts by
+// the same thing and the two used to disagree at the edges.
+const columnFor = (id) => laneOf(id, stateFromStore(store));
 
 function shortPath(projectPath) {
   return projectPath.split('/').filter(Boolean).slice(-2).join('/') || projectPath;
@@ -142,6 +136,110 @@ const summary = computed(() => {
 // it. #terminal-area is never reparented: file-panel.js owns that subtree, so
 // the split is done by moving the two absolutely positioned panes with CSS
 // (.has-board-split in css/board-view.css) and refitting afterwards.
+// ── Card flight ───────────────────────────────────────────────────
+//
+// A card's column is derived, so a session finishing a turn simply re-renders
+// somewhere else — the card blinks out of one column and into another and you
+// have no idea what moved. This animates the move it already made: the card
+// starts where it was, lifts off the board, tilts, and lands in its new column.
+//
+// FLIP, because the layout is what moved: read the old box, let Vue paint the
+// new one, then start the card from the old position and animate the offset
+// away. Nothing here changes layout — it is a transform on a node that is
+// already in its final place, so it cannot fight the board's own reflow.
+
+const FLIGHT_MS = 560;
+
+/** sessionId → column id, the thing whose change is worth animating. */
+const columnOf = computed(() => {
+  const map = new Map();
+  for (const col of columns.value) {
+    for (const group of col.groups) {
+      for (const session of group.items) map.set(session.sessionId, col.id);
+    }
+  }
+  return map;
+});
+
+function prefersReducedMotion() {
+  if (store.reduceMotion) return true;
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}
+
+function cardEl(sessionId) {
+  return document.querySelector(`.sbx-board [data-session-id="${CSS.escape(sessionId)}"]`);
+}
+
+// The card cannot fly on its own: .sbx-board__col clips with overflow:hidden
+// and .sbx-board__colbody scrolls, so a transform that leaves the destination
+// column is simply cut off — the animation ran, and almost none of it was on
+// screen. z-index does not help; clipping is not a paint-order problem.
+//
+// So the thing that flies is a clone, parented to <body> where nothing clips
+// it, while the real card waits invisibly in its new home. On landing the
+// clone goes and the real one reappears — same pixels, no layout involved.
+function fly(firstRects) {
+  for (const [id, first] of firstRects) {
+    const el = cardEl(id);
+    if (!el) continue;
+    const last = el.getBoundingClientRect();
+    const dx = last.left - first.left;
+    const dy = last.top - first.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+
+    const clone = el.cloneNode(true);
+    clone.classList.add('is-flying');
+    clone.style.position = 'fixed';
+    clone.style.left = `${first.left}px`;
+    clone.style.top = `${first.top}px`;
+    clone.style.width = `${first.width}px`;
+    clone.style.height = `${first.height}px`;
+    clone.style.margin = '0';
+    clone.style.pointerEvents = 'none';
+    // The column, not the card, declares the state colour — a clone on <body>
+    // would otherwise lose its leading edge mid-flight.
+    clone.style.setProperty('--sbx-board-tone',
+      getComputedStyle(el).getPropertyValue('--sbx-board-tone'));
+    document.body.appendChild(clone);
+
+    el.style.visibility = 'hidden';
+
+    const tilt = dx > 0 ? 5 : -5;   // lean into the direction of travel
+    const animation = clone.animate([
+      { transform: 'translate(0, 0) rotate(0deg) scale(1)' },
+      { transform: `translate(${dx * 0.45}px, ${dy * 0.45}px) rotate(${tilt}deg) scale(1.06)`,
+        offset: 0.4 },
+      { transform: `translate(${dx}px, ${dy}px) rotate(0deg) scale(1)` },
+    ], { duration: FLIGHT_MS, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+
+    const land = () => {
+      clone.remove();
+      el.style.visibility = '';
+    };
+    animation.addEventListener('finish', land);
+    animation.addEventListener('cancel', land);
+    // A card removed mid-flight never fires finish, and a clone left behind
+    // would sit over the whole window.
+    setTimeout(land, FLIGHT_MS + 120);
+  }
+}
+
+// `flush: 'pre'` is the whole trick: the callback runs before Vue patches the
+// DOM, so these are the boxes the cards are still occupying.
+watch(columnOf, (next, previous) => {
+  if (!previous || prefersReducedMotion()) return;
+
+  const firstRects = new Map();
+  for (const [id, column] of next) {
+    const was = previous.get(id);
+    if (!was || was === column) continue;
+    const el = cardEl(id);
+    if (el) firstRects.set(id, el.getBoundingClientRect());
+  }
+  if (!firstRects.size) return;
+  nextTick(() => fly(firstRects));
+}, { flush: 'pre' });
+
 function refitSoon() {
   requestAnimationFrame(() => window._refitOpenTerminals?.());
 }

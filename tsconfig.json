@@ -1,0 +1,24 @@
+{
+  "// why": [
+    "Type checking only — nothing is emitted. Vite strips types for the bundle",
+    "and node --test strips them for the tests; neither of those checks anything.",
+    "`npm run typecheck` is what fails when the Agent SDK grows a message type",
+    "the normalizer has no branch for. That is the entire point of the file.",
+    "Scoped deliberately: the rest of the renderer is plain JS and stays that way."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "checkJs": false,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"]
+}

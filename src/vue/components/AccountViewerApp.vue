@@ -243,7 +243,7 @@
             <div v-for="row in externalRows" :key="row.path" class="acct-path">
               <span class="acct-path__name">{{ row.name }}</span>
               <span class="acct-path__value" :title="row.path">{{ row.path }}</span>
-              <span class="acct-path__meta" title="Outside the config directory — Switchboard offers the path but does not read it.">outside config dir</span>
+              <span class="acct-path__meta" title="Outside the config directory — WootonPad offers the path but does not read it.">outside config dir</span>
               <span class="acct-path__meta">{{ formatBytes(row.size) }}</span>
               <button
                 class="acct-copy"

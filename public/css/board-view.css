@@ -1,4 +1,4 @@
-/* Switchboard — Session board
+/* WootonPad — Session board
    Main-area view for src/vue/components/SessionBoardApp.vue: every session
    with a live PTY, dealt into four lifecycle columns.
 
@@ -16,7 +16,7 @@
   inset: 0;
   display: flex;
   flex-direction: column;
-  background: var(--surface-app);
+  background: var(--surface-panel);
 }
 
 .sbx-board {
@@ -33,8 +33,7 @@
   gap: var(--space-3);
   min-height: var(--bar-height, 46px);
   padding: 0 var(--space-5);
-  background: var(--surface-panel-raised);
-  border-bottom: var(--border-width-hairline) solid var(--border-subtle);
+  background: var(--surface-panel);
   flex-shrink: 0;
 }
 
@@ -331,7 +330,9 @@ body.hide-avatars .sbx-board__avatar { display: none; }
   height: 7px;
   z-index: 5;
   cursor: row-resize;
-  background: transparent;
+  /* Carries the pane's own surface rather than being invisible chrome, so the
+     seam between the board and the session below it reads as a join. */
+  background: var(--surface-panel);
 }
 
 .sbx-board-splitter::after {
@@ -789,4 +790,13 @@ body.hide-avatars .sbx-boardside__avatar { display: none; }
    it painted straight over it. Nothing to show there, so hide it. */
 #main.is-board:not(.has-board-split) #terminal-area {
   display: none;
+}
+
+/* The clone that actually crosses the board. It lives on <body> for the length
+   of the flight so no column can clip it; see SessionBoardApp's "Card flight".
+   No shadow: the card reads as itself moving, not as a different object that
+   lifted off the page — and a resting card has none either. */
+.sbx-board__card.is-flying {
+  z-index: 9999;
+  will-change: transform;
 }

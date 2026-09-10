@@ -225,7 +225,7 @@
 
 .sbx-sidepanel__pane--shell {
   overflow: hidden;
-  padding: var(--space-1) 0 var(--space-1) var(--space-2);
+  padding: 0;
   background: var(--surface-app);
 }
 

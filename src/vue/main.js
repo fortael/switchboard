@@ -27,6 +27,10 @@ window.vueSidebar = {
     store.attentionSessions.delete(sessionId);
     store.responseReadySessions.delete(sessionId);
   },
+  // Reading a finished turn is not the same as answering a question. Opening a
+  // session clears the unread mark; if the session is also sitting on a dialog
+  // it is still sitting on it, and the board must keep saying so.
+  clearResponseReady(sessionId) { store.responseReadySessions.delete(sessionId); },
   setFilters({ showStarredOnly, showRunningOnly, showTodayOnly, showArchived }) {
     if (showStarredOnly !== undefined) store.showStarredOnly = showStarredOnly;
     if (showRunningOnly !== undefined) store.showRunningOnly = showRunningOnly;

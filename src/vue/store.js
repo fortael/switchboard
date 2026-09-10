@@ -10,15 +10,21 @@ export const store = reactive({
 
   // Session runtime state
   activePtyIds: new Set(),
+  // Sessions driven by the Agent SDK rather than a PTY. They carry the same
+  // conversation and write the same transcript; only the transport and the
+  // component that renders them differ. app.js records this from what
+  // open-terminal reports.
+  sdkSessionIds: new Set(),
   activeSessionId: null,
   sessionBusyState: new Map(),
   attentionSessions: new Set(),
   responseReadySessions: new Set(),
-  // Sessions whose finished turn the user has already seen but not put away.
+  // Sessions whose finished turn the user has already seen but not yet left.
   // The sidebar's blue dot clears the instant you click a session, so
   // responseReadySessions alone would yank a board card out of DONE under the
-  // cursor. app.js parks the id here instead and drops it when the session
-  // view is closed, which is the moment the board calls "done with it".
+  // cursor. app.js parks the id here instead and drops it when focus moves to
+  // another session or the view is closed — the two gestures that mean "done
+  // with it".
   readPendingSessions: new Set(),
   lastActivityTime: new Map(),
   pendingSessions: new Set(),
@@ -46,6 +52,8 @@ export const store = reactive({
   activeTab: 'sessions',
   sidebarCollapsed: false,
   theme: 'dark',                 // 'dark' | 'light' — mirrored onto <html data-theme>
+  // Board cards fly between columns unless this, or the OS setting, says no.
+  reduceMotion: false,
   sessionFilterTab: 'recent',    // FilterTabs selection: recent | running | pinned
   sidebarViewMode: 'list',       // 'list' | 'grid'
   attentionProject: null,        // projectPath highlighted in the active-sessions rail

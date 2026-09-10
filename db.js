@@ -14,6 +14,8 @@ if (!fs.existsSync(DATA_DIR)) {
   }
 }
 
+// Directory renamed, file not: the name inside is nobody's business but
+// SQLite's, and renaming it would mean a third migration for no gain.
 const DB_PATH = path.join(DATA_DIR, 'switchboard.db');
 
 // Migrate from old locations if needed

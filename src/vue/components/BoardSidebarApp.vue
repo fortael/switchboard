@@ -239,7 +239,7 @@ async function summarize() {
   // a TypeError.
   const call = window.api?.boardSummarizeSessions;
   if (typeof call !== 'function') {
-    error.value = 'Summaries are unavailable in this build — restart Switchboard.';
+    error.value = 'Summaries are unavailable in this build — restart WootonPad.';
     entries.value = [];
     return;
   }

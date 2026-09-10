@@ -283,6 +283,10 @@ function startNewSession() {
   if (nsPreLaunch.value.trim()) options.preLaunchCmd = nsPreLaunch.value.trim();
   options.addDirs = nsAddDirs.value.trim();
   if (nsEffective?.mcpEmulation === false) options.mcpEmulation = false;
+  // This dialog assembles its options from its own fields rather than from
+  // resolveDefaultSessionOptions, so anything settings-driven has to be
+  // carried over explicitly or it is silently lost.
+  if (nsEffective?.sessionMode === 'sdk') options.mode = 'sdk';
   const cb = nsOnStart;
   closeNewSession();
   cb?.(options);

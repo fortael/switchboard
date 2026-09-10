@@ -1,4 +1,4 @@
-/* ── Switchboard Design System Tokens ─────────────────────────────────── */
+/* ── WootonPad Design System Tokens ──────────────────────────────────── */
 /* Inter and JetBrains Mono used to be declared here against
    fonts.gstatic.com URLs that return 404, so both silently fell back to
    system fonts. They are now bundled — see public/css/fonts-brand.css,
@@ -659,7 +659,10 @@ body { display: flex; flex-direction: column; }
   width: 340px;
   min-width: 200px;
   max-width: 600px;
-  background: var(--surface-panel);
+  /* The app surface, not the panel one. Project groups inside it are cards on
+     their own raised background, so a raised sidebar behind them left the list
+     reading as two panels stacked rather than as cards on a floor. */
+  background: var(--surface-app);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -1855,6 +1858,10 @@ body { display: flex; flex-direction: column; }
   inset: 0;
   display: flex;
   flex-direction: column;
+  /* The surface the terminal and the side-panel island sit on. Without it the
+     gutters around them showed #main through, which read as a hole rather than
+     as the pane's own background. */
+  background: var(--surface-panel);
 }
 
 #terminal-header {

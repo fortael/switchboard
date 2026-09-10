@@ -113,8 +113,40 @@ contextBridge.exposeInMainWorld('api', {
   onSdkMessage: (callback) => {
     ipcRenderer.on('sdk-message', (_event, sessionId, message) => callback(sessionId, message));
   },
+  onSdkPermissionRequest: (callback) => {
+    ipcRenderer.on('sdk-permission-request', (_event, sessionId, request) => callback(sessionId, request));
+  },
+  onSdkPermissionCancelled: (callback) => {
+    ipcRenderer.on('sdk-permission-cancelled', (_event, sessionId, requestId) => callback(sessionId, requestId));
+  },
+  sdkPermissionResponse: (requestId, decision) => {
+    ipcRenderer.send('sdk-permission-response', requestId, decision);
+  },
+  // An MCP server asking the user directly — a form or a sign-in link. Same
+  // pause as a permission prompt, a different reply shape.
+  onSdkElicitationRequest: (callback) => {
+    ipcRenderer.on('sdk-elicitation-request', (_event, sessionId, request) => callback(sessionId, request));
+  },
+  sdkElicitationResponse: (requestId, decision) => {
+    ipcRenderer.send('sdk-elicitation-response', requestId, decision);
+  },
+  // A blocking dialog the CLI asked this app to draw — today the offer to
+  // retry a refused turn on the fallback model.
+  onSdkDialogRequest: (callback) => {
+    ipcRenderer.on('sdk-dialog-request', (_event, sessionId, request) => callback(sessionId, request));
+  },
+  sdkDialogResponse: (requestId, decision) => {
+    ipcRenderer.send('sdk-dialog-response', requestId, decision);
+  },
+  // What this session is still stopped on, for a renderer that just reloaded.
+  sdkPendingRequests: (sessionId) => ipcRenderer.invoke('sdk-pending-requests', sessionId),
   sdkInterrupt: (sessionId) => ipcRenderer.invoke('sdk-interrupt', sessionId),
   sdkSetPermissionMode: (sessionId, mode) => ipcRenderer.invoke('sdk-set-permission-mode', sessionId, mode),
+  sdkCommands: (sessionId) => ipcRenderer.invoke('sdk-commands', sessionId),
+  sdkModels: (sessionId) => ipcRenderer.invoke('sdk-models', sessionId),
+  sdkSetModel: (sessionId, model) => ipcRenderer.invoke('sdk-set-model', sessionId, model),
+  sdkSetEffort: (sessionId, effort) => ipcRenderer.invoke('sdk-set-effort', sessionId, effort),
+  sdkContextUsage: (sessionId) => ipcRenderer.invoke('sdk-context-usage', sessionId),
   onSessionForked: (callback) => {
     ipcRenderer.on('session-forked', (_event, oldId, newId) => callback(oldId, newId));
   },

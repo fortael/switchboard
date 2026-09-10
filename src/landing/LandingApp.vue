@@ -27,21 +27,25 @@
     <section class="lp-demo-section">
       <div class="lp-section-inner">
         <h2 class="lp-section-title">Try the real interface</h2>
+        <p class="lp-section-subtitle lp-demo-subtitle">
+          Not a screenshot. Every tab, filter and panel below is the app's own Vue
+          component running on mock data — click around.
+        </p>
 
         <!-- The demo below renders the app's own components (TopNavApp,
              CommandBar, AttentionRail, FilterTabs, SidebarApp,
-             SessionHeaderApp …) inside App.vue's wrapper markup, driven by
+             SessionHeaderApp, SessionPanelRail, SessionSidePanelApp,
+             SessionBoardApp …) inside App.vue's wrapper markup, driven by
              mock-data.js. Change a component in src/vue/components and this
              picks it up with no edit here. -->
         <div class="lp-app-window" :data-theme="store.theme">
-          <!-- macOS-style title bar -->
-          <div class="lp-titlebar">
-            <div class="lp-traffic-lights">
-              <span class="lp-tl lp-tl-close"></span>
-              <span class="lp-tl lp-tl-min"></span>
-              <span class="lp-tl lp-tl-max"></span>
-            </div>
-            <span class="lp-titlebar-name">Wooton Pad</span>
+          <!-- The window has no title bar of its own: main.js runs with
+               titleBarStyle 'hiddenInset', so the top nav IS the top of the
+               window and only reserves a gap for the traffic lights. -->
+          <div class="lp-traffic-lights" aria-hidden="true">
+            <span class="lp-tl lp-tl-close"></span>
+            <span class="lp-tl lp-tl-min"></span>
+            <span class="lp-tl lp-tl-max"></span>
           </div>
 
           <!-- ── App shell — mirrors src/vue/components/App.vue ──────── -->
@@ -51,6 +55,7 @@
               :active-id="store.activeTab"
               :theme="store.theme"
               :sidebar-collapsed="store.sidebarCollapsed"
+              :can-toggle-sidebar="true"
               @select="setTab"
               @settings="onGlobalSettings"
               @toggle-sidebar="store.sidebarCollapsed = !store.sidebarCollapsed"
@@ -102,15 +107,20 @@
                   </template>
                 </CommandBar>
 
+                <!-- Not scoped to the sessions tab any more: live sessions are
+                     worth watching from wherever you are. The board is the one
+                     exception — it already shows every one of them as a card. -->
                 <AttentionRail
-                  v-if="store.activeTab === 'sessions'"
+                  v-if="store.activeTab !== 'board'"
                   :items="attentionProjects"
                   :active-name="attentionActiveName"
                   @select="onSelectAttentionName"
                 />
 
+                <!-- Shared with the board: same sessions, same filter flags. -->
                 <FilterTabs
-                  v-if="store.activeTab === 'sessions'"
+                  v-if="sessionListVisible || store.activeTab === 'board'"
+                  :class="{ 'sbx-filtertabs--no-views': store.activeTab === 'board' }"
                   :tabs="FILTER_TABS"
                   :active="store.sessionFilterTab"
                   :view-mode="store.sidebarViewMode"
@@ -122,8 +132,8 @@
                     <button
                       type="button"
                       class="sbx-filtertabs__view"
-                      data-tooltip="Re-sort sessions"
-                      aria-label="Re-sort sessions"
+                      data-tooltip="Refresh sessions"
+                      aria-label="Refresh sessions"
                       @click="onResort"
                     >
                       <SbIcon name="refresh-cw" :size="13" tone="muted" />
@@ -131,68 +141,99 @@
                   </template>
                 </FilterTabs>
 
-                <div id="sidebar-content" v-show="store.activeTab === 'sessions'">
+                <div id="sidebar-content" class="sbx-sidebar-panel" v-show="sessionListVisible">
                   <SidebarApp :callbacks="sidebarCallbacks" />
                 </div>
-                <div id="plans-content" v-show="store.activeTab === 'plans'">
+                <div id="plans-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'plans'">
                   <PlansApp ref="plansRef" :callbacks="planCallbacks" />
                 </div>
-                <div id="stats-content" v-show="store.activeTab === 'stats'" class="lp-demo-empty-tab">
-                  <div class="plans-empty">The activity heatmap needs a local Claude install — grab the app to see it.</div>
-                </div>
-                <div id="memory-content" v-show="store.activeTab === 'memory'">
-                  <MemoryApp ref="memoryRef" :callbacks="memoryCallbacks" />
-                </div>
-                <div id="accounts-content" v-show="store.activeTab === 'accounts'">
+                <div id="accounts-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'accounts'">
                   <AccountsApp ref="accountsRef" :callbacks="accountsCallbacks" />
                 </div>
-                <div id="projects-content" v-show="store.activeTab === 'projects'">
+                <div id="projects-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'projects'">
                   <ProjectsApp ref="projectsRef" :callbacks="projectsCallbacks" />
+                </div>
+                <!-- Not a .sbx-sidebar-panel: this one owns two bounded scroll
+                     boxes rather than being a single scrolling column. -->
+                <div id="board-sidebar-content" class="sbx-boardside-panel" v-show="store.activeTab === 'board'">
+                  <BoardSidebarApp :callbacks="boardSidebarCallbacks" />
                 </div>
               </div>
 
               <div id="sidebar-resize-handle" v-show="!store.sidebarCollapsed"></div>
 
-              <div id="main">
-                <div id="vue-session-header">
-                  <SessionHeaderApp />
+              <div
+                id="main"
+                :class="{ 'is-board': store.showBoard, 'has-board-split': boardSplitActive }"
+                :style="{ '--sbx-board-split': store.boardSplitHeight + 'px' }"
+              >
+                <div id="board-viewer" v-show="store.showBoard">
+                  <SessionBoardApp ref="boardRef" />
                 </div>
 
-                <!-- No PTY on a landing page: a static transcript rendered
-                     from mock-data.js, not an xterm instance. -->
-                <div v-if="activeSession" class="lp-term">
-                  <template v-for="(line, i) in terminalLines" :key="i">
-                    <div v-if="line.t === 'logo'" class="lp-term-logo-block">
-                      <div v-for="(art, ri) in line.logo" :key="ri" class="lp-term-line lp-term-logo-row">
-                        <span class="lp-term-logo-art">{{ art }}</span>
-                        <span class="lp-term-logo-meta" :class="'lp-logo-meta-' + ri">{{ line.info[ri] }}</span>
+                <!-- Drag the seam between the board and the session below it. -->
+                <div
+                  v-if="boardSplitActive"
+                  class="sbx-board-splitter"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize the session pane"
+                  @mousedown.prevent="startBoardResize"
+                ></div>
+
+                <div
+                  v-show="!store.showBoard || boardSplitActive"
+                  id="terminal-area"
+                  :class="{ 'has-side-panel': sidePanelVisible }"
+                  :style="{ '--sbx-sidepanel-w': store.sidePanelWidth + 'px' }"
+                >
+                  <div id="vue-session-header">
+                    <SessionHeaderApp />
+                  </div>
+
+                  <!-- The panel toggles, Stop and Close all live on this rail
+                       now — overlaid on the terminal's top-right corner rather
+                       than in the session header, so they reach the board's
+                       bottom split too. -->
+                  <SessionPanelRail v-if="store.headerSession" />
+                  <SessionSidePanelApp v-if="sidePanelVisible" />
+
+                  <!-- No PTY on a landing page: a static transcript rendered
+                       from mock-data.js, not an xterm instance. -->
+                  <div v-if="activeSession" class="lp-term">
+                    <template v-for="(line, i) in terminalLines" :key="i">
+                      <div v-if="line.t === 'logo'" class="lp-term-logo-block">
+                        <div v-for="(art, ri) in line.logo" :key="ri" class="lp-term-line lp-term-logo-row">
+                          <span class="lp-term-logo-art">{{ art }}</span>
+                          <span class="lp-term-logo-meta" :class="'lp-logo-meta-' + ri">{{ line.info[ri] }}</span>
+                        </div>
                       </div>
-                    </div>
-                    <div v-else-if="line.t === 'blank'" class="lp-term-blank"></div>
-                    <div v-else-if="line.t === 'opt-sel'" class="lp-term-line lp-term-opt-sel">
-                      <span class="lp-opt-cursor">❯</span>{{ line.v }}
-                    </div>
-                    <div v-else-if="line.t === 'sh-prompt'" class="lp-term-line lp-term-sh-prompt">
-                      <span class="lp-sh-cwd">{{ line.cwd }}</span>
-                      <span v-if="line.branch" class="lp-sh-branch">&nbsp;on <span class="lp-sh-branch-name">{{ line.branch }}</span></span>
-                    </div>
-                    <div v-else-if="line.t === 'sh-cmd'" class="lp-term-line lp-term-sh-cmd">
-                      <span class="lp-sh-arrow">❯</span> {{ line.v }}
-                    </div>
-                    <div v-else-if="line.t === 'sh-cursor'" class="lp-term-line lp-term-sh-cmd">
-                      <span class="lp-sh-arrow">❯</span> <span class="lp-sh-block-cursor">█</span>
-                    </div>
-                    <div v-else-if="line.t === 'spin'" class="lp-term-line lp-term-spin">
-                      <span class="lp-spinner-char">{{ spinChar }}</span> {{ line.v }}
-                    </div>
-                    <div v-else-if="line.t === 'wait'" class="lp-term-line lp-term-wait">
-                      <span class="lp-wait-cursor">▋</span> {{ line.v }}
-                    </div>
-                    <div v-else class="lp-term-line" :class="'lp-term-' + line.t">{{ line.v }}</div>
-                  </template>
-                </div>
+                      <div v-else-if="line.t === 'blank'" class="lp-term-blank"></div>
+                      <div v-else-if="line.t === 'opt-sel'" class="lp-term-line lp-term-opt-sel">
+                        <span class="lp-opt-cursor">❯</span>{{ line.v }}
+                      </div>
+                      <div v-else-if="line.t === 'sh-prompt'" class="lp-term-line lp-term-sh-prompt">
+                        <span class="lp-sh-cwd">{{ line.cwd }}</span>
+                        <span v-if="line.branch" class="lp-sh-branch">&nbsp;on <span class="lp-sh-branch-name">{{ line.branch }}</span></span>
+                      </div>
+                      <div v-else-if="line.t === 'sh-cmd'" class="lp-term-line lp-term-sh-cmd">
+                        <span class="lp-sh-arrow">❯</span> {{ line.v }}
+                      </div>
+                      <div v-else-if="line.t === 'sh-cursor'" class="lp-term-line lp-term-sh-cmd">
+                        <span class="lp-sh-arrow">❯</span> <span class="lp-sh-block-cursor">█</span>
+                      </div>
+                      <div v-else-if="line.t === 'spin'" class="lp-term-line lp-term-spin">
+                        <span class="lp-spinner-char">{{ spinChar }}</span> {{ line.v }}
+                      </div>
+                      <div v-else-if="line.t === 'wait'" class="lp-term-line lp-term-wait">
+                        <span class="lp-wait-cursor">▋</span> {{ line.v }}
+                      </div>
+                      <div v-else class="lp-term-line" :class="'lp-term-' + line.t">{{ line.v }}</div>
+                    </template>
+                  </div>
 
-                <div v-else class="lp-demo-placeholder">Select a session from the sidebar to begin.</div>
+                  <div v-else class="lp-demo-placeholder">Select a session from the sidebar to begin.</div>
+                </div>
               </div>
             </div>
           </div>
@@ -227,6 +268,35 @@
             <p>Switch between personal and work accounts in one click. Separate credentials, histories, and usage quotas — no re-login.</p>
           </div>
 
+          <!-- Session board — wide -->
+          <div class="lp-bento-card lp-bento-wide lp-bento-accent-cyan">
+            <div class="lp-bento-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7"/><path d="M12 7v4"/><path d="M16 7v9"/></svg>
+            </div>
+            <h3>Session Board</h3>
+            <p>Every session dealt into four lifecycle columns, derived live from what each one is actually doing. One click opens it in a pane below the board without leaving the overview.</p>
+            <div class="lp-bento-pill">idle · waiting input · in progress · done</div>
+          </div>
+
+          <!-- Attention -->
+          <div class="lp-bento-card lp-bento-accent-yellow">
+            <div class="lp-bento-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg>
+            </div>
+            <h3>Knows Who's Waiting</h3>
+            <p>A rail above the session list marks every project with a live session — working, finished, or blocked on a permission prompt you haven't answered.</p>
+          </div>
+
+          <!-- Session side panel — wide -->
+          <div class="lp-bento-card lp-bento-wide lp-bento-accent-green">
+            <div class="lp-bento-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
+            </div>
+            <h3>Session Side Panel</h3>
+            <p>A rail of icons floats over the terminal. Open one pane at a time beside the session it belongs to: the working tree with inline diffs and a commit box, the project's compose services, or a scratch shell in the same directory. Stop and close live there too.</p>
+            <div class="lp-bento-pill">changes · containers · shell</div>
+          </div>
+
           <!-- IDE diff viewer -->
           <div class="lp-bento-card lp-bento-accent-purple">
             <div class="lp-bento-icon">
@@ -242,7 +312,17 @@
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M11 18H8a2 2 0 0 1-2-2V9"/><path d="M9 3 6 6l3 3"/></svg>
             </div>
             <h3>Git Integration</h3>
-            <p>Branch, added/deleted lines, unpushed commits, and one-click branch switching in the project panel.</p>
+            <p>Branch, added/deleted lines, commits with an unpushed count, push, and one-click branch switching — scoped to the session's own worktree, not just the project.</p>
+          </div>
+
+          <!-- AI commit -->
+          <div class="lp-bento-card lp-bento-accent-pink">
+            <div class="lp-bento-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+            </div>
+            <h3>AI Commit Messages</h3>
+            <p>Generate a commit message with Claude next to the session that made the changes, then commit without switching views.</p>
+            <div class="lp-bento-pill">short · detailed</div>
           </div>
 
           <!-- Docker -->
@@ -251,26 +331,25 @@
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12.5c0 .5-.1 1-.2 1.5H2.2A10 10 0 0 1 12 2a10 10 0 0 1 10 10.5z"/><path d="M2.2 14C3.2 18.5 7.2 22 12 22a10 10 0 0 0 9.8-8H2.2z"/><rect x="5" y="9" width="2" height="3" rx=".5"/><rect x="9" y="9" width="2" height="3" rx=".5"/><rect x="13" y="9" width="2" height="3" rx=".5"/></svg>
             </div>
             <h3>Docker Monitoring</h3>
-            <p>Container status per project at a glance — know if your stack is running before handing off to Claude.</p>
+            <p>Compose service status at a glance, per project and per session — know if your stack is running before handing off to Claude.</p>
           </div>
 
-          <!-- AI commit — wide -->
-          <div class="lp-bento-card lp-bento-wide lp-bento-accent-pink">
-            <div class="lp-bento-icon">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
-            </div>
-            <h3>AI Commit Messages</h3>
-            <p>Generate short, detailed, or conventional-commit messages with Claude from the project panel. One click, no context switching.</p>
-            <div class="lp-bento-pill">short · detailed · conventional</div>
-          </div>
-
-          <!-- Plans & Memory -->
+          <!-- Plans & agent files -->
           <div class="lp-bento-card lp-bento-accent-yellow">
             <div class="lp-bento-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>
             </div>
-            <h3>Plans &amp; Memory</h3>
-            <p>Browse and edit Claude's planning files and CLAUDE.md memory directly in the app.</p>
+            <h3>Plans &amp; Agent Files</h3>
+            <p>Browse and edit Claude's plan files from their own tab, and every CLAUDE.md the project uses from the project panel.</p>
+          </div>
+
+          <!-- Activity stats -->
+          <div class="lp-bento-card lp-bento-accent-orange">
+            <div class="lp-bento-icon">
+              <svg width="24" height="24" viewBox="0 0 512 512" fill="currentColor"><path d="M128 496H48V304h80zm224 0h-80V208h80zm112 0h-80V96h80zm-224 0h-80V16h80z"/></svg>
+            </div>
+            <h3>Activity &amp; Usage</h3>
+            <p>A heatmap of your coding activity on each account's page, with token consumption and cost tracked per account and refreshed on demand.</p>
           </div>
 
           <!-- GitLab + avatars -->
@@ -289,15 +368,6 @@
             </div>
             <h3>File Tree</h3>
             <p>Browse the project directory and open any file in the viewer panel without leaving the app.</p>
-          </div>
-
-          <!-- Activity stats — wide -->
-          <div class="lp-bento-card lp-bento-wide lp-bento-accent-orange">
-            <div class="lp-bento-icon">
-              <svg width="24" height="24" viewBox="0 0 512 512" fill="currentColor"><path d="M128 496H48V304h80zm224 0h-80V208h80zm112 0h-80V96h80zm-224 0h-80V16h80z"/></svg>
-            </div>
-            <h3>Activity Stats &amp; Usage Tracking</h3>
-            <p>GitHub-style heatmap of your coding activity across all projects. Token consumption and cost tracked per account, refreshed on demand.</p>
           </div>
 
           <!-- External launcher -->
@@ -326,19 +396,14 @@
     <section class="lp-project-demo-section">
       <div class="lp-section-inner">
         <div class="lp-project-demo-text">
-          <h2 class="lp-section-title" style="margin:0 0 16px;">Your IDE is optional</h2>
-          <p class="lp-project-demo-desc">Review changes, edit files, and commit — right inside Wooton Pad. Complex analysis no longer needs an editor open; Claude handles it all via CLI.</p>
+          <h2 class="lp-section-title lp-project-demo-title">Your IDE is optional</h2>
+          <p class="lp-project-demo-desc">Every project gets a page of its own: overview, commits, files, its live sessions and the agent files it loads. Review a diff, edit a file, write the commit — without an editor open anywhere.</p>
         </div>
 
-        <div class="lp-app-window lp-project-window">
-          <div class="lp-titlebar">
-            <div class="lp-traffic-lights">
-              <span class="lp-tl lp-tl-close"></span>
-              <span class="lp-tl lp-tl-min"></span>
-              <span class="lp-tl lp-tl-max"></span>
-            </div>
-            <span class="lp-titlebar-name">Wooton Pad — my-api</span>
-          </div>
+        <!-- No traffic lights on this one: it is a crop of the main area, not a
+             second window, and the project panel's own header starts hard
+             against the top-left corner where they would sit. -->
+        <div class="lp-app-window lp-project-window" :data-theme="store.theme">
           <div class="lp-project-body">
             <ProjectViewerApp ref="projectViewerRef" :callbacks="projectViewerCallbacks" />
           </div>
@@ -400,8 +465,9 @@
 // mocked and the Electron-facing callbacks are routed through the window.__sb
 // / window.api stubs installed in src/landing/main.js. Nothing in
 // src/vue/** is landing-aware.
-import { ref, computed, onMounted, nextTick, watch } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { store } from '../vue/store.js';
+import { setSidePanelTab } from '../vue/side-panel-tabs.js';
 
 import SbIcon from '../vue/components/SbIcon.vue';
 import TopNavApp from '../vue/components/TopNavApp.vue';
@@ -411,11 +477,14 @@ import FilterTabs from '../vue/components/FilterTabs.vue';
 import AttentionRail from '../vue/components/AttentionRail.vue';
 import SidebarApp from '../vue/components/SidebarApp.vue';
 import SessionHeaderApp from '../vue/components/SessionHeaderApp.vue';
+import SessionPanelRail from '../vue/components/SessionPanelRail.vue';
+import SessionSidePanelApp from '../vue/components/SessionSidePanelApp.vue';
+import SessionBoardApp from '../vue/components/SessionBoardApp.vue';
+import BoardSidebarApp from '../vue/components/BoardSidebarApp.vue';
 import AccountDropdownApp from '../vue/components/AccountDropdownApp.vue';
 import AccountsApp from '../vue/components/AccountsApp.vue';
 import ProjectsApp from '../vue/components/ProjectsApp.vue';
 import PlansApp from '../vue/components/PlansApp.vue';
-import MemoryApp from '../vue/components/MemoryApp.vue';
 import ProjectViewerApp from '../vue/components/ProjectViewerApp.vue';
 import {
   MOCK_ACCOUNTS,
@@ -424,7 +493,6 @@ import {
   MOCK_TERMINAL_LINES,
   MOCK_USAGE,
   MOCK_PLANS,
-  MOCK_MEMORIES,
   MOCK_SELECTED_SESSION_ID,
   MOCK_VIEWER_PROJECT_PATH,
 } from './mock-data.js';
@@ -444,15 +512,16 @@ const accountDropdownRef = ref(null);
 const accountsRef = ref(null);
 const projectsRef = ref(null);
 const plansRef = ref(null);
-const memoryRef = ref(null);
 const projectViewerRef = ref(null);
+const boardRef = ref(null);
 
 // ── Tab config (same list App.vue feeds TopNavApp) ───────────────
+// Agent Files and Stats are gone: agent files moved into the project panel's
+// own "Agent files" tab and the activity heatmap into the account page.
 const TABS = [
   { id: 'sessions', icon: 'sparkles', label: 'Sessions' },
+  { id: 'board', icon: 'square-kanban', label: 'Board' },
   { id: 'plans', icon: 'book-open', label: 'Plans' },
-  { id: 'memory', icon: 'brain', label: 'Agent Files' },
-  { id: 'stats', icon: 'chart-no-axes-column', label: 'Stats' },
   { id: 'projects', icon: 'folder', label: 'Projects' },
   { id: 'accounts', icon: 'users', label: 'Accounts' },
 ];
@@ -465,12 +534,69 @@ const FILTER_TABS = [
   { id: 'archived', label: 'Archived' },
 ];
 
+// ── Board split ──────────────────────────────────────────────────
+// One click on a card opens the session in a pane under the board — the same
+// arrangement App.vue builds, so the panel rail has to work there too.
+const boardSplitActive = computed(() =>
+  store.activeTab === 'board' && !!store.boardPreviewId
+);
+
+const BOARD_SPLIT_MIN = 160;
+const BOARD_SPLIT_MARGIN = 220;   // leave at least this much board visible
+
+function startBoardResize(event) {
+  const main = event.currentTarget.closest('#main');
+  if (!main) return;
+  const bottom = main.getBoundingClientRect().bottom;
+  const max = Math.max(BOARD_SPLIT_MIN, main.clientHeight - BOARD_SPLIT_MARGIN);
+
+  const onMove = (e) => {
+    store.boardSplitHeight = Math.round(
+      Math.min(max, Math.max(BOARD_SPLIT_MIN, bottom - e.clientY))
+    );
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.body.style.cursor = '';
+  };
+
+  document.body.style.cursor = 'row-resize';
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
 // ── Search ───────────────────────────────────────────────────────
+const sessionListVisible = computed(() => store.activeTab === 'sessions');
+
+// One pane at a time, over an open session — same rule App.vue applies.
+const sidePanelVisible = computed(() => !!store.sidePanelTab && !!store.headerSession);
+
+// The app's window has a minimum width; a browser tab does not. Below this the
+// 340px panel leaves the terminal too narrow to read, so the demo puts the
+// panel away and leaves the rail — which is exactly what a user would do, and
+// keeps the control that reopens it on screen.
+const PANEL_MIN_VIEWPORT = 1180;
+// Only reopen what this closed. A panel the visitor put away themselves stays
+// away when the window is resized.
+let closedByWidth = null;
+
+function syncPanelToWidth() {
+  const wide = window.innerWidth >= PANEL_MIN_VIEWPORT;
+  if (!wide && store.sidePanelTab) {
+    closedByWidth = store.sidePanelTab;
+    setSidePanelTab(null);
+  } else if (wide && closedByWidth && !store.sidePanelTab) {
+    setSidePanelTab(closedByWidth);
+    closedByWidth = null;
+  }
+}
+
 const searchPlaceholder = computed(() => {
   switch (store.activeTab) {
     case 'plans': return 'Search plans...';
-    case 'memory': return 'Search agent files...';
     case 'projects': return 'Search projects…';
+    case 'board': return 'Search the board...';
     default: return 'Search sessions...';
   }
 });
@@ -560,9 +686,13 @@ function onSelectAttentionProject(projectPath) {
 }
 
 // ── Tab switching ────────────────────────────────────────────────
+// app.js owns the main-area swap in the real app; on the landing the board is
+// the only tab that claims #main, so the rule fits here.
 function setTab(tabId) {
+  if (!TABS.some(t => t.id === tabId)) return;
   if (tabId === store.activeTab) return;
   store.activeTab = tabId;
+  store.showBoard = tabId === 'board';
   store.searchQuery = '';
   store.searchMatchIds = null;
   store.searchMatchProjectPaths = null;
@@ -594,15 +724,11 @@ function onGlobalSettings() { window.__sb?.openGlobalSettings?.(); }
 function onResort() { window.__sb?.resort?.(); }
 function onAddProject() { window.__sb?.addProject?.(); }
 
+// Per-session actions are not here: SessionMenu calls window.__sb directly, so
+// the list only forwards what the rows themselves still do. Same five App.vue
+// passes — keep them in step.
 const sidebarCallbacks = {
   openSession: (s) => window.__sb?.openSession?.(s),
-  stopSession: (id) => window.__sb?.stopSession?.(id),
-  toggleStar: (id) => window.__sb?.toggleStar?.(id),
-  archiveSession: (id) => window.__sb?.archiveSession?.(id),
-  forkSession: (id) => window.__sb?.forkSession?.(id),
-  showJsonl: (id) => window.__sb?.showJsonl?.(id),
-  launchConfig: (id) => window.__sb?.launchConfig?.(id),
-  renameSession: (id, name) => window.__sb?.renameSession?.(id, name),
   newSession: (project, btn) => window.__sb?.newSession?.(project, btn),
   openSettings: (path) => window.__sb?.openSettings?.(path),
   archiveSessions: (sessions) => window.__sb?.archiveSessions?.(sessions),
@@ -610,9 +736,15 @@ const sidebarCallbacks = {
 };
 
 const planCallbacks = { openPlan: (plan) => window.__sb?.openPlan?.(plan) };
-const memoryCallbacks = { openMemory: (file) => window.__sb?.openMemory?.(file) };
+
+// A summary's link has to land exactly where a card click lands, so it goes
+// through the board's own handler rather than repeating it here.
+const boardSidebarCallbacks = {
+  selectSession: (s) => boardRef.value?.selectSession(s),
+};
 
 const accountsCallbacks = {
+  openAccountViewer: (id) => window.__sb?.openAccountViewer?.(id),
   switchAccount: (id) => window.__sb?.switchAccount?.(id),
   openAccountHomeSession: (acc) => window.__sb?.openAccountHomeSession?.(acc),
   renameAccount: (id, name) => window.__sb?.renameAccount?.(id, name),
@@ -658,28 +790,13 @@ const terminalLines = computed(() =>
   store.activeSessionId ? (MOCK_TERMINAL_LINES[store.activeSessionId] || []) : []
 );
 
-// ── ProjectGroup lazy-collapse workaround ────────────────────────
-// ProjectGroup.vue:198 initialises `collapsed` as `ref(() => …)`. A ref holds
-// the function rather than calling it, so `collapsed.value` is always truthy
-// and every freshly mounted group renders collapsed. Fixing that belongs in
-// src/vue, which the landing must not touch — so expand each group once, the
-// first time it appears, and leave later user toggles alone.
-const expandedGroups = new Set();
-
-function expandNewGroups() {
-  for (const header of document.querySelectorAll('.lp-app-window #sidebar-content .project-header')) {
-    if (expandedGroups.has(header.id)) continue;
-    expandedGroups.add(header.id);
-    if (header.classList.contains('collapsed')) header.querySelector('.arrow')?.click();
-  }
-}
-
-watch(
-  () => [store.activeTab, store.sessionFilterTab, store.searchMatchIds, store.sidebarCollapsed],
-  () => nextTick(expandNewGroups)
-);
-
 onMounted(async () => {
+  // SessionBoardApp hands a double-clicked card over to the session view.
+  window.vueApp = { setTab };
+
+  syncPanelToWidth();
+  window.addEventListener('resize', syncPanelToWidth);
+
   fetch('https://api.github.com/repos/fortael/wootonpad')
     .then(r => r.json())
     .then(d => { if (d.stargazers_count != null) stars.value = d.stargazers_count; })
@@ -697,13 +814,13 @@ onMounted(async () => {
   accountsRef.value?.setUsage(MOCK_USAGE);
   projectsRef.value?.setProjects(MOCK_PROJECTS);
   plansRef.value?.setPlans(MOCK_PLANS);
-  memoryRef.value?.setMemories(MOCK_MEMORIES);
   projectViewerRef.value?.open({ projectPath: MOCK_VIEWER_PROJECT_PATH });
 
   await nextTick();
-  expandNewGroups();
   store.activeSessionId = MOCK_SELECTED_SESSION_ID;
   store.attentionProject = activeSession.value?.projectPath || null;
 });
+
+onBeforeUnmount(() => window.removeEventListener('resize', syncPanelToWidth));
 </script>
 
