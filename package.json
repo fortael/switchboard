@@ -26,6 +26,7 @@
     "fonts:generate": "node scripts/generate-brand-fonts.js"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.267",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-unicode-graphemes": "^0.4.0",
@@ -79,6 +80,7 @@
       "!node_modules/better-sqlite3/build/Release/obj/**",
       "!node_modules/better-sqlite3/build/Release/test_extension.node",
       "!node_modules/node-pty/src/**",
+      "!node_modules/@anthropic-ai/claude-agent-sdk-*/**",
       "!node_modules/node-pty/build/Release/obj/**",
       "!node_modules/**/*.map",
       "!node_modules/**/*.ts",

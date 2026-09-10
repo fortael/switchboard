@@ -108,6 +108,13 @@ contextBridge.exposeInMainWorld('api', {
   onWindowFullscreen: (callback) => {
     ipcRenderer.on('window-fullscreen', (_event, isFullscreen) => callback(isFullscreen));
   },
+  // SDK-backed sessions: the conversation as structured messages, where a PTY
+  // session sends terminal bytes over `terminal-data`.
+  onSdkMessage: (callback) => {
+    ipcRenderer.on('sdk-message', (_event, sessionId, message) => callback(sessionId, message));
+  },
+  sdkInterrupt: (sessionId) => ipcRenderer.invoke('sdk-interrupt', sessionId),
+  sdkSetPermissionMode: (sessionId, mode) => ipcRenderer.invoke('sdk-set-permission-mode', sessionId, mode),
   onSessionForked: (callback) => {
     ipcRenderer.on('session-forked', (_event, oldId, newId) => callback(oldId, newId));
   },

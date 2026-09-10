@@ -25,6 +25,7 @@ const { startMcpServer, shutdownMcpServer, shutdownAll: shutdownAllMcp, resolveP
 const { startHookServer, stopHookServer } = require('./hook-server');
 const { buildHookSettings } = require('./hook-settings');
 const { SessionStatusTracker } = require('./session-status');
+const sdkSession = require('./sdk-session');
 const { fetchAndTransformUsage, getOAuthToken, probeUsage } = require('./claude-auth');
 log.transports.file.level = app.isPackaged ? 'info' : 'debug';
 log.transports.console.level = app.isPackaged ? 'info' : 'debug';
@@ -263,6 +264,53 @@ const sessionStatus = new SessionStatusTracker({
 // who never opens a session never opens a socket.
 function hookServer() {
   return startHookServer({ log, onEvent: payload => sessionStatus.apply(payload) });
+}
+
+// --- SDK-backed sessions ---
+// The same conversation as a PTY session, carried as structured messages
+// instead of a rendered byte stream. Everything below routes by which map the
+// id is in, so a session's transport stays an implementation detail of
+// open-terminal and nothing downstream has to care.
+function startSdkSessionFor(sessionId, projectPath, isNew, sessionOptions) {
+  return sdkSession.startSdkSession(sessionId, {
+    projectPath,
+    isNew,
+    forkFrom: sessionOptions?.forkFrom || null,
+    permissionMode: sessionOptions?.dangerouslySkipPermissions
+      ? 'bypassPermissions'
+      : (sessionOptions?.permissionMode || undefined),
+    model: sessionOptions?.model || undefined,
+    // The same account resolution every other spawn path uses, so an SDK
+    // session writes its transcript into the folder this account's cache
+    // watches rather than the default home.
+    env: activeAccountClaudeEnv(),
+
+    // Lifecycle events arrive as callbacks here rather than over the HTTP
+    // endpoint a PTY session needs, but they are the same payloads feeding the
+    // same state machine — see session-status.js.
+    onHook: (id, input) => sessionStatus.apply({ ...input, session_id: id }),
+
+    // Only consulted when onHook is absent; kept wired so a future caller that
+    // opts out of hooks still reports something.
+    onState: (id, state) => {
+      if (state === 'exited') sessionStatus.remove(id);
+    },
+
+    onSessionId: (oldId, newId) => {
+      sessionStatus.rekey(oldId, newId);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('session-forked', oldId, newId);
+      }
+    },
+
+    onMessage: (id, message) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk-message', id, message);
+      }
+    },
+
+    onStderr: (id, data) => log.debug(`[sdk] session=${id} stderr: ${String(data).trim().slice(0, 300)}`),
+  });
 }
 
 // --- Single-instance: parse --project <path> from argv ---
@@ -1959,6 +2007,11 @@ function claudeChildPath() {
   return [process.env.PATH || '', ...extra].filter(Boolean).join(path.delimiter);
 }
 
+// The SDK would otherwise use the `claude` it bundles — a second copy of the
+// CLI, on its own release cadence, resolving its own account. Point it at the
+// same binary every PTY session already runs.
+sdkSession.configure({ log, resolveClaudeBinary, claudeChildPath });
+
 function posixQuote(value) {
   return /^[A-Za-z0-9_./:@%+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -2125,6 +2178,11 @@ ipcMain.handle('get-active-sessions', () => {
     // lifecycle. They are not sessions the sidebar or the grid may know about.
     if (!session.exited && !session.isEphemeral) active.push(sessionId);
   }
+  // SDK sessions are just as live; the sidebar's green dot must not depend on
+  // which transport a session happens to use.
+  for (const id of sdkSession.activeSdkSessions()) {
+    if (!active.includes(id)) active.push(id);
+  }
   return active;
 });
 
@@ -2147,6 +2205,10 @@ ipcMain.handle('get-active-terminals', () => {
 
 // --- IPC: stop-session ---
 ipcMain.handle('stop-session', (_event, sessionId) => {
+  if (sdkSession.isSdkSession(sessionId)) {
+    sessionStatus.remove(sessionId);
+    return sdkSession.stopSdkSession(sessionId);
+  }
   const session = activeSessions.get(sessionId);
   if (!session || session.exited) return { ok: false, error: 'not running' };
   session.pty.kill();
@@ -2338,6 +2400,19 @@ ipcMain.handle('delete-session', async (_event, sessionId) => {
 // --- IPC: open-terminal ---
 ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, sessionOptions) => {
   if (!mainWindow) return { ok: false, error: 'no window' };
+
+  // An SDK session has no PTY and no terminal to reattach to — the renderer
+  // rebuilds its view from the transcript, which is the same .jsonl the cache
+  // already indexes. Reattaching is therefore a no-op that must not fall
+  // through into the spawn path below and start a second one.
+  if (sdkSession.isSdkSession(sessionId)) {
+    return { ok: true, mode: 'sdk', reattached: true };
+  }
+
+  if (sessionOptions?.mode === 'sdk' && !sessionOptions?.isPlainTerminal) {
+    const result = await startSdkSessionFor(sessionId, projectPath, isNew, sessionOptions);
+    return result.ok ? { ok: true, mode: 'sdk' } : result;
+  }
 
   // Reattach to existing session
   if (activeSessions.has(sessionId)) {
@@ -2777,10 +2852,28 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
 
 // --- IPC: terminal-input (fire-and-forget) ---
 ipcMain.on('terminal-input', (_event, sessionId, data) => {
+  // An SDK session takes whole prompts, not keystrokes: there is no terminal
+  // to echo into and no line discipline to run. The renderer's composer sends
+  // one message per submit.
+  if (sdkSession.isSdkSession(sessionId)) {
+    sdkSession.sendSdkInput(sessionId, data);
+    return;
+  }
   const session = activeSessions.get(sessionId);
   if (session && !session.exited) {
     session.pty.write(data);
   }
+});
+
+// --- IPC: sdk-interrupt ---
+// The Escape key of an SDK session: stops the turn, keeps the session.
+ipcMain.handle('sdk-interrupt', async (_event, sessionId) => {
+  return sdkSession.interruptSdkSession(sessionId);
+});
+
+// --- IPC: sdk-set-permission-mode ---
+ipcMain.handle('sdk-set-permission-mode', async (_event, sessionId, mode) => {
+  return sdkSession.setSdkPermissionMode(sessionId, mode);
 });
 
 // --- IPC: terminal-resize (fire-and-forget) ---
@@ -2814,6 +2907,9 @@ ipcMain.on('terminal-resize', (_event, sessionId, cols, rows) => {
 
 // --- IPC: close-terminal ---
 ipcMain.on('close-terminal', (_event, sessionId) => {
+  // Closing the view does not end an SDK session, exactly as it does not kill
+  // a PTY: stop-session is what ends either of them.
+  if (sdkSession.isSdkSession(sessionId)) return;
   const session = activeSessions.get(sessionId);
   if (session) {
     session.rendererAttached = false;
@@ -3073,6 +3169,7 @@ app.on('before-quit', () => {
   // Shut down all MCP servers
   shutdownAllMcp();
   stopHookServer();
+  sdkSession.stopAllSdkSessions();
 
   // Close filesystem watcher
   if (projectsWatcher) {
