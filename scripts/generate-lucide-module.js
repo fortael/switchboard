@@ -22,6 +22,10 @@ const ICONS = [
   'panel-right-open', 'panel-right-close',
   // Accounts view
   'copy', 'check', 'key-round', 'file-json', 'triangle-alert', 'circle-check',
+  // Session context menu
+  'pin', 'pin-off', 'git-fork', 'trash-2', 'message-square', 'square-stop', 'pencil',
+  // Agent files — scheduled tasks
+  'play',
 ];
 
 const SRC = path.join(__dirname, '..', 'node_modules', 'lucide-static', 'icons');

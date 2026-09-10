@@ -391,30 +391,6 @@
   color: var(--text-tertiary);
 }
 
-.acct-spark { display: flex; flex-direction: column; gap: var(--space-2); }
-
-.acct-spark__row {
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 48px;
-}
-
-.acct-spark__col {
-  flex: 1;
-  height: 100%;
-  display: flex;
-  align-items: flex-end;
-}
-
-.acct-spark__bar {
-  width: 100%;
-  min-height: 2px;
-  border-radius: 2px 2px 0 0;
-  background: color-mix(in srgb, var(--status-running) 65%, transparent);
-}
-
-.acct-spark__caption { font-size: var(--text-2xs); color: var(--text-disabled); }
 
 /* ── Config files ─────────────────────────────────────────────────── */
 .acct-tabs {

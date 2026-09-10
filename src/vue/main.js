@@ -11,6 +11,7 @@ window.vueStore = store;
 window.vueSidebar = {
   store,
   setProjects(projects) { store.projects = projects.map(p => ({ ...p })); },
+  setAllProjects(projects) { store.allProjects = projects.map(p => ({ ...p })); },
   setActivePtyIds(ids) { store.activePtyIds = new Set(ids); },
   setActiveSession(id) { store.activeSessionId = id; },
   setBusy(sessionId, busy) {
@@ -72,11 +73,9 @@ window.createViewerPanel = function(container, opts = {}) {
 
 // Stubs for component bridge APIs — App.vue onMounted fills these in
 window.vuePlans = {};
-window.vueMemory = {};
 window.vueAccounts = {};
 window.vueProjects = {};
 window.vuePlanViewer = {};
-window.vueMemoryViewer = {};
 window.vueStatusBar = {};
 window.vueAccountDropdown = {};
 window.vueGrid = {};

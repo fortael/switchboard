@@ -71,10 +71,27 @@
         </button>
       </div>
 
-      <!-- Tabs -->
-      <div class="pv-tabs">
-        <button v-for="t in TABS" :key="t.id" class="pv-tab" :class="{ active: activeTab === t.id }" @click="activeTab = t.id">{{ t.label }}</button>
-      </div>
+      <!-- Tabs. The app's own tab row rather than a second one that looks
+           almost like it — the list/grid switch is hidden, the actions slot
+           carries whatever the open tab needs. -->
+      <FilterTabs
+        class="sbx-filtertabs--no-views pv-filtertabs"
+        :tabs="TABS"
+        :active="activeTab"
+        @select="activeTab = $event"
+      >
+        <template #actions>
+          <button
+            v-if="activeTab === 'sessions'"
+            type="button"
+            class="sbx-board__toggle"
+            :class="{ 'is-active': highlightFresh }"
+            :aria-pressed="highlightFresh"
+            data-tooltip="Fade cards by how long ago the session last did anything"
+            @click="highlightFresh = !highlightFresh"
+          >Highlight fresh</button>
+        </template>
+      </FilterTabs>
 
       <div class="pv-tab-body">
         <div v-if="loading" class="pv-loading">Loading…</div>
@@ -193,12 +210,22 @@
                 </div>
               </div>
 
-              <div class="pv-card" v-if="sessions.length">
-                <div class="pv-card-title">Recent sessions</div>
+              <!-- A shortlist only; the Sessions tab is where they are worked
+                   with, so this one just points at it. -->
+              <div class="pv-card" v-if="projectSessions.length">
+                <div class="pv-card-title">
+                  <span>Recent sessions</span>
+                  <button type="button" class="pv-card-link" @click="activeTab = 'sessions'">See all</button>
+                </div>
                 <div class="pv-session-list">
-                  <div v-for="s in sessions" :key="s.id" class="pv-session-row" @click="openSession(s)">
-                    <div class="pv-session-name">{{ s.name }}</div>
-                    <div class="pv-session-date">{{ fmtDate(s.updatedAt) }}</div>
+                  <div
+                    v-for="s in projectSessions.slice(0, 5)"
+                    :key="s.sessionId"
+                    class="pv-session-row"
+                    @click="openSessionFull(s)"
+                  >
+                    <div class="pv-session-name">{{ sessionTitle(s) }}</div>
+                    <div class="pv-session-date">{{ fmtDate(s.modified) }}</div>
                   </div>
                 </div>
               </div>
@@ -256,11 +283,11 @@
 
           <!-- Unpushed commits panel -->
           <template v-if="unpushedCommits.length">
-            <div class="pv-commits-section-label pv-commits-section-label--unpushed">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-              {{ unpushedCommits.length }} unpushed commit{{ unpushedCommits.length > 1 ? 's' : '' }}
-            </div>
             <div class="pv-commit-panel">
+              <div class="pv-commits-section-label pv-commits-section-label--unpushed">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                {{ unpushedCommits.length }} unpushed commit{{ unpushedCommits.length > 1 ? 's' : '' }}
+              </div>
               <div class="pv-commit-panel-meta">
                 <span class="pv-commit-panel-stat">
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
@@ -280,21 +307,26 @@
           </template>
 
           <!-- History -->
-          <div v-if="detail.commits.length" class="pv-commits-section-label">History</div>
-          <div class="pv-commit-list-full">
-            <div v-for="c in detail.commits" :key="c.hash" class="pv-commit-item">
-              <span class="pv-commit-hash">{{ c.hash }}</span>
-              <span class="pv-commit-msg">{{ c.message }}</span>
-              <span class="pv-commit-author">{{ c.author }}</span>
-              <span class="pv-commit-date">{{ c.date }}</span>
+          <div class="pv-card">
+            <div class="pv-card-title">
+              <span>History</span>
+              <span v-if="detail.commits.length" class="pv-count-badge">{{ detail.commits.length }}</span>
             </div>
-            <div v-if="!detail.commits.length" class="pv-empty">No commits found.</div>
+            <div class="pv-commit-list-full">
+              <div v-for="c in detail.commits" :key="c.hash" class="pv-commit-item">
+                <span class="pv-commit-hash">{{ c.hash }}</span>
+                <span class="pv-commit-msg">{{ c.message }}</span>
+                <span class="pv-commit-author">{{ c.author }}</span>
+                <span class="pv-commit-date">{{ c.date }}</span>
+              </div>
+              <div v-if="!detail.commits.length" class="pv-empty">No commits found.</div>
+            </div>
           </div>
         </template>
 
         <!-- ── FILES TAB ─────────────────────────────────────────── -->
         <template v-else-if="activeTab === 'files'">
-          <div class="pv-files-layout">
+          <div class="pv-card pv-files-layout">
             <div class="pv-tree-panel">
               <div class="pv-tree-search">
                 <input v-model="treeSearch" class="pv-tree-search-input" placeholder="Filter files…" />
@@ -315,33 +347,110 @@
         </template>
 
         <!-- ── SESSIONS TAB ──────────────────────────────────────── -->
+        <!-- The board's cards, four to a row: same component, same menu, same
+             freshness fade. Single click selects, double click hands the
+             session over to the Sessions tab full height. -->
         <template v-else-if="activeTab === 'sessions'">
-          <div v-if="activeSessions.length" class="pv-active-sessions">
-            <div class="pv-commits-section-label" style="margin-top:0">
-              <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="#34d399"/></svg>
-              Active
+          <template v-for="group in sessionGroups" :key="group.id">
+            <div v-if="group.sessions.length" class="pv-card pv-sessions-card">
+              <div class="pv-card-title">
+                <span>{{ group.label }}</span>
+                <span class="pv-count-badge">{{ group.sessions.length }}</span>
+              </div>
+              <div class="pv-session-grid">
+                <SessionCard
+                  v-for="s in group.sessions"
+                  :key="s.sessionId"
+                  :session="s"
+                  :highlight-fresh="highlightFresh"
+                  :selected="s.sessionId === selectedSessionId"
+                  @preview="selectedSessionId = $event.sessionId"
+                  @open="openSessionFull"
+                />
+              </div>
             </div>
-            <div v-for="s in activeSessions" :key="s.id" class="pv-asession-row" @click="openSession(s)">
-              <div class="pv-asession-name">{{ s.name || s.id?.slice(0, 12) || '?' }}</div>
-              <span class="pv-asession-badge" :class="s.busy ? 'busy' : 'idle'">{{ s.busy ? 'working' : 'idle' }}</span>
-            </div>
+          </template>
+          <div v-if="!sessionGroups.some(g => g.sessions.length)" class="pv-card pv-empty-changes">
+            No sessions in this project yet.
           </div>
-          <div v-if="sessions.length" class="pv-active-sessions" :style="activeSessions.length ? 'margin-top:16px' : ''">
-            <div class="pv-commits-section-label" :style="activeSessions.length ? '' : 'margin-top:0'">Recent</div>
-            <div v-for="s in sessions" :key="s.id" class="pv-asession-row" @click="openSession(s)">
-              <div class="pv-asession-name">{{ s.name }}</div>
-              <div class="pv-session-date">{{ fmtDate(s.updatedAt) }}</div>
+        </template>
+
+        <!-- ── AGENT FILES TAB ───────────────────────────────────── -->
+        <!-- What the CLI reads before it does anything here: this project's
+             CLAUDE.md, its .claude/ commands and memory, plus the global files
+             that apply to every project. -->
+        <template v-else-if="activeTab === 'agents'">
+          <div v-if="agentsLoading" class="pv-loading">Loading…</div>
+          <template v-else>
+            <div v-for="group in agentGroups" :key="group.id" class="pv-card">
+              <div class="pv-card-title">
+                <span>{{ group.label }}</span>
+                <span class="pv-count-badge">{{ group.files.length }}</span>
+              </div>
+              <div class="pv-file-list">
+                <div
+                  v-for="f in group.files"
+                  :key="f.filePath"
+                  class="pv-file-row pv-file-row--clickable pv-file-row--agent"
+                  :title="f.filePath"
+                  @click="openAgentFile(f)"
+                >
+                  <SbIcon :name="isSchedule(f) ? 'calendar-days' : 'notebook-pen'" :size="13" tone="muted" />
+                  <span class="pv-file-name">{{ f.filename }}</span>
+                  <span class="pv-agent-path">{{ f.displayPath }}</span>
+                  <span class="pv-agent-date">{{ fmtDate(f.modified) }}</span>
+                  <!-- A scheduled task is the one agent file you do something
+                       with rather than read. -->
+                  <button
+                    v-if="isSchedule(f)"
+                    class="schedule-play-btn"
+                    :class="{ running: runningSchedule === f.filePath, done: doneSchedule === f.filePath }"
+                    data-tooltip="Run now"
+                    aria-label="Run now"
+                    @click.stop="runSchedule(f)"
+                  >
+                    <SbIcon :name="runningSchedule === f.filePath ? 'refresh-cw' : (doneSchedule === f.filePath ? 'check' : 'play')" :size="11" tone="muted" />
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-          <div v-if="!activeSessions.length && !sessions.length" class="pv-empty">No sessions found.</div>
+            <div v-if="!agentGroups.length" class="pv-card pv-empty-changes">
+              No agent files for this project.
+            </div>
+          </template>
         </template>
 
         <!-- ── README TAB ────────────────────────────────────────── -->
         <template v-else-if="activeTab === 'readme'">
-          <div v-if="readmeHtml" class="pv-readme" v-html="readmeHtml"></div>
+          <div v-if="readmeHtml" class="pv-card pv-readme" v-html="readmeHtml"></div>
           <div v-else class="pv-loading">Loading…</div>
         </template>
 
+      </div>
+
+      <!-- ── Agent file pane ───────────────────────────────────────────
+           A layer under the tab body rather than a full-screen overlay: the
+           list stays on screen, so closing the pane is the way back and the
+           next file is one click away. The editor is the app's own file
+           viewer — same toolbar, same wrap/preview/goto-line/save, same
+           reload-on-disk-change — not a second one that looks like it. -->
+      <div v-if="agentFile" class="pv-bottom" :style="{ height: agentPaneHeight + 'px' }">
+        <div
+          class="pv-bottom__splitter"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize the file pane"
+          @mousedown.prevent="startAgentResize"
+        ></div>
+        <ViewerContentApp
+          ref="agentViewerRef"
+          language="markdown"
+          storage-key="markdownPreviewMode"
+          :show-copy-path="true"
+          :show-copy-content="true"
+          :on-save="saveAgentFile"
+          :on-close="closeAgentFile"
+        />
       </div>
     </template>
 
@@ -389,15 +498,20 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { store } from '../store.js';
 import FileTreeNode from './FileTreeNode.vue';
+import FilterTabs from './FilterTabs.vue';
 import SbButton from './SbButton.vue';
 import SbSwitch from './SbSwitch.vue';
+import SbIcon from './SbIcon.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
+import ViewerContentApp from './ViewerContentApp.vue';
+import SessionCard from './SessionCard.vue';
 
 const TABS = computed(() => [
   { id: 'overview', label: 'Overview' },
   { id: 'commits', label: unpushedCount.value ? `Commits (${unpushedCount.value})` : 'Commits' },
   { id: 'files', label: 'Files' },
-  { id: 'sessions', label: activeSessions.value.length ? `Sessions (${activeSessions.value.length})` : 'Sessions' },
+  { id: 'sessions', label: liveSessions.value.length ? `Sessions (${liveSessions.value.length})` : 'Sessions' },
+  { id: 'agents', label: 'Agent files' },
   ...(detail.value?.readmePath ? [{ id: 'readme', label: 'README' }] : []),
 ]);
 
@@ -455,9 +569,66 @@ const fileTree = ref([]);
 const treeLoading = ref(false);
 const treeSearch = ref('');
 
-// Sessions
-const sessions = ref([]);
-const activeSessions = ref([]);
+// Sessions. The cards read whole session objects out of the store — the same
+// ones the sidebar and the board draw — rather than the flattened
+// { id, name, updatedAt } shape get-project-sessions returns, which carries
+// none of the context, churn or file counts a card shows.
+const highlightFresh = ref(true);
+const selectedSessionId = ref(null);
+
+// Everything this project (or the worktree being viewed) has, newest first.
+// store.allProjects, not store.projects: the sidebar's filter tab drops
+// archived sessions from the latter, and this page shows them in their own
+// group regardless of what the sidebar is filtered to.
+const projectSessions = computed(() => {
+  const path = viewedPath.value || project.value?.projectPath;
+  if (!path) return [];
+  const proj = store.allProjects.find(p => p.projectPath === path);
+  return [...(proj?.sessions || [])]
+    .sort((a, b) => new Date(b.modified || 0) - new Date(a.modified || 0));
+});
+
+const liveSessions = computed(() =>
+  projectSessions.value.filter(s => store.activePtyIds.has(s.sessionId))
+);
+
+// How many of each the tab is willing to draw. Recent is a worklist and can
+// run long; archived is a shelf you glance at, so it stops at eight.
+const RECENT_LIMIT = 12;
+const ARCHIVED_LIMIT = 8;
+
+const sessionGroups = computed(() => {
+  const live = new Set(liveSessions.value.map(s => s.sessionId));
+  const rest = projectSessions.value.filter(s => !live.has(s.sessionId));
+  return [
+    { id: 'active', label: 'Active', sessions: liveSessions.value },
+    {
+      id: 'recent',
+      label: 'Recent',
+      sessions: rest.filter(s => !s.archived).slice(0, RECENT_LIMIT),
+    },
+    {
+      id: 'archived',
+      label: 'Archived',
+      sessions: rest.filter(s => s.archived).slice(0, ARCHIVED_LIMIT),
+    },
+  ];
+});
+
+// Agent files — this project's, plus the global ones that apply to it.
+const agentData = ref(null);
+const agentsLoading = ref(false);
+
+const agentGroups = computed(() => {
+  const data = agentData.value;
+  if (!data) return [];
+  const path = project.value?.projectPath;
+  const own = data.projects?.find(p => p.projectPath === path);
+  const groups = [];
+  if (own?.files?.length) groups.push({ id: 'project', label: 'This project', files: own.files });
+  if (data.global?.files?.length) groups.push({ id: 'global', label: 'Global', files: data.global.files });
+  return groups;
+});
 
 // Git user identity
 const gitUser = ref({ name: '', email: '' });
@@ -547,6 +718,10 @@ watch([viewedPath, _openCount], async ([p]) => {
   avatarDataUrl.value = null;
   readmeHtml.value = '';
   if (activeTab.value === 'readme') activeTab.value = 'overview';
+  // Opening a second project while Agent files is already the open tab does
+  // not change activeTab, so the tab watcher never fires — reload here or the
+  // list stays on the project you just left (or, after close(), stays empty).
+  if (activeTab.value === 'agents') loadAgentFiles();
   loadAvatar();
   // Show stale cache immediately — no blank flash
   const cached = await window.api.getProjectGitCache(p).catch(() => null);
@@ -557,26 +732,19 @@ watch([viewedPath, _openCount], async ([p]) => {
     detail.value = null;
     loading.value = true;
   }
-  // Load branches + sessions in parallel with fresh detail
+  // Sessions are not fetched here — they come straight off the store, which
+  // app.js already keeps current for the sidebar and the board.
   const rootPath = project.value?.projectPath;
-  const [det, br, sess, terminals, userInfo] = await Promise.all([
+  const [det, br, userInfo] = await Promise.all([
     window.api.getProjectDetail(p).catch(() => null),
     window.api.gitBranches(p).catch(() => null),
-    window.api.getProjectSessions(rootPath || p).catch(() => null),
-    window.api.getActiveTerminals().catch(() => null),
     window.api.getGitUserInfo(p).catch(() => null),
   ]);
   detail.value = det || detail.value;
   if (det) _pushProjectInfo(p, det);
   branches.value = br?.ok ? br.branches : [];
   remoteBranches.value = br?.ok ? (br.remotes || []) : [];
-  if (sess?.ok) sessions.value = sess.sessions;
   if (userInfo?.ok) gitUser.value = { name: userInfo.name, email: userInfo.email };
-  if (terminals) {
-    activeSessions.value = Object.values(terminals)
-      .filter(t => t.projectPath === (rootPath || p) && !t.exited)
-      .map(t => ({ id: t.id, name: t.title || t.id?.slice(0, 12), busy: t.busy || false }));
-  }
   // Reconcile worktrees against actual git state (source of truth: git worktree list)
   if (det?.worktreePaths !== undefined) {
     const wtPattern = /^(.+?)\/\.claude\/worktrees\/([^/]+)\/?$/;
@@ -615,7 +783,102 @@ watch(activeTab, async (tab) => {
     const content = res?.ok ? res.content : '';
     readmeHtml.value = content && window.marked ? window.marked.parse(content) : content;
   }
+  // get-memories walks every project folder, so it runs when the tab is asked
+  // for and not before.
+  if (tab === 'agents' && !agentData.value) loadAgentFiles();
 });
+
+// Scheduled tasks are agent files too — schedule-runner.js reads them from the
+// same directories. Running one on demand used to live in the Agent Files tab;
+// it moved here with the rest of the list.
+const runningSchedule = ref(null);
+const doneSchedule = ref(null);
+
+function isSchedule(file) { return file.filename.startsWith('schedule-'); }
+
+async function runSchedule(file) {
+  runningSchedule.value = file.filePath;
+  const result = await window.api.runScheduleNow(file.filePath).catch(() => null);
+  runningSchedule.value = null;
+  if (result && !result.ok) { showGitMsg(result.error || 'Schedule run failed', true); return; }
+  doneSchedule.value = file.filePath;
+  setTimeout(() => { doneSchedule.value = null; }, 2000);
+}
+
+async function loadAgentFiles() {
+  if (agentsLoading.value) return;
+  agentsLoading.value = true;
+  try {
+    agentData.value = await window.api.getMemories().catch(() => null);
+  } finally {
+    agentsLoading.value = false;
+  }
+}
+
+// ── Agent file pane ───────────────────────────────────────────────
+// ViewerContentApp is the app's file editor — toolbar, wrap toggle, markdown
+// preview, go-to-line, save and reload-on-disk-change. It is mounted here
+// rather than in the main area so opening a file does not navigate the whole
+// page away from the project.
+const agentFile = ref(null);
+const agentViewerRef = ref(null);
+const agentPaneHeight = ref(Number(localStorage.getItem('pvAgentPaneHeight')) || 380);
+
+async function openAgentFile(file) {
+  const res = await window.api.readFileForPanel(file.filePath).catch(() => null);
+  if (!res?.ok) { showGitMsg(res?.error || `Could not read ${file.filename}`, true); return; }
+  const wasOpen = !!agentFile.value;
+  agentFile.value = file;
+  // The pane mounts on the first open; on later ones the viewer is already
+  // there and just swaps documents.
+  if (!wasOpen) await nextTick();
+  agentViewerRef.value?.open(file.filename, file.filePath, res.content);
+}
+
+function closeAgentFile() {
+  agentViewerRef.value?.destroy();
+  agentFile.value = null;
+}
+
+// The pane belongs to the Agent files tab; leaving it takes the pane with it.
+watch(activeTab, (tab) => { if (tab !== 'agents' && agentFile.value) closeAgentFile(); });
+
+// Passed to the viewer, which owns the save button and its flash.
+async function saveAgentFile(filePath, content) {
+  const res = await window.api.saveFileForPanel(filePath, content).catch(() => null);
+  if (res?.ok === false) showGitMsg(res.error || 'Save failed', true);
+  return res;
+}
+
+// Drag the seam. Same shape as the board's split: clamp so neither the list
+// above nor the editor below can be squeezed out of existence.
+function startAgentResize(event) {
+  const root = event.currentTarget.closest('.pv-root');
+  if (!root) return;
+  const startY = event.clientY;
+  const startHeight = agentPaneHeight.value;
+  const maxHeight = root.getBoundingClientRect().height - 220;
+  let frame = null;
+
+  function onMove(e) {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      const next = startHeight - (e.clientY - startY);
+      agentPaneHeight.value = Math.min(Math.max(next, 160), Math.max(160, maxHeight));
+    });
+  }
+  function onUp() {
+    if (frame) cancelAnimationFrame(frame);
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.body.style.userSelect = '';
+    localStorage.setItem('pvAgentPaneHeight', String(agentPaneHeight.value));
+  }
+  document.body.style.userSelect = 'none';
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
 
 // ── Diff overlay ──────────────────────────────────────────────────
 watch([activeDiff, activeFile], async ([diff, file]) => {
@@ -814,7 +1077,18 @@ async function deleteWorktree(wt) {
   props.callbacks.worktreeDeleted?.(wt.projectPath);
 }
 
-function openSession(s) { window.__sb?.openSessionById?.(s.id); }
+// Full height on the Sessions tab, the same landing a board card's double
+// click gives you — the project page has no pane to run a terminal in.
+function openSessionFull(session) {
+  window.vueApp?.setTab?.('sessions');
+  window.__sb?.openSession?.(session);
+}
+
+function sessionTitle(s) {
+  const name = s.name || s.summary;
+  return (window.cleanDisplayName ? window.cleanDisplayName(name) : name) || s.sessionId;
+}
+
 function openExternal(url) { window.api?.openExternal?.(url); }
 
 async function loadAvatar() {
@@ -846,7 +1120,7 @@ let _gitRefreshTimer = null;
 onMounted(() => {
   _gitRefreshTimer = setInterval(async () => {
     const p = viewedPath.value;
-    if (!p || !activeSessions.value.length) return;
+    if (!p || !liveSessions.value.length) return;
     const det = await window.api.getProjectDetail(p).catch(() => null);
     if (det) detail.value = det;
   }, 30000);
@@ -862,7 +1136,12 @@ defineExpose({
     viewedPath.value = proj?.projectPath || '';
     _openCount.value++;
   },
-  close() { project.value = null; worktrees.value = []; viewedPath.value = ''; detail.value = null; activeDiff.value = null; activeFile.value = null; },
+  close() {
+    project.value = null; worktrees.value = []; viewedPath.value = '';
+    detail.value = null; activeDiff.value = null; activeFile.value = null;
+    if (agentFile.value) closeAgentFile();
+    agentData.value = null;
+  },
   setTab(tab) { activeTab.value = tab; },
   setViewedPath,
 });

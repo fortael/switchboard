@@ -1,0 +1,331 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Session context menu — src/vue/components/SessionMenu.vue
+
+   One menu, two hosts: the session rows in the sidebar and the cards on the
+   board. It replaces the five hover buttons a row used to carry, so the
+   trigger has to sit in the same corner in both and the popup has to escape
+   both clipping contexts — hence the Teleport to <body> and the fixed
+   positioning the component computes.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Trigger ─────────────────────────────────────────────────────────── */
+.sbx-smenu__trigger {
+  width: var(--hit-xs);
+  height: var(--hit-xs);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard),
+              border-color var(--duration-fast) var(--ease-standard);
+}
+
+@media (hover: hover) {
+  .sbx-smenu__trigger:hover {
+    background: var(--surface-card-hover);
+    border-color: var(--border-default);
+  }
+}
+
+/* The row only reveals its actions on hover, so an open menu whose trigger
+   has scrolled out from under the cursor would otherwise vanish. */
+.sbx-smenu__trigger.is-open {
+  background: var(--surface-card-hover);
+  border-color: var(--border-default);
+}
+
+.sbx-smenu__trigger:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+/* ── Popup ───────────────────────────────────────────────────────────── */
+.sbx-smenu {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--surface-panel-raised);
+  border: var(--border-width-hairline) solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-ui);
+}
+
+.sbx-smenu__actions {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1);
+}
+
+.sbx-smenu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--hit-sm);
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  /* A <button> does not inherit the app font, so it would drop out of the
+     App Font Size setting and land on the UA default. */
+  font-family: inherit;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  transition: background var(--duration-fast) var(--ease-standard),
+              color var(--duration-fast) var(--ease-standard);
+}
+
+@media (hover: hover) {
+  .sbx-smenu__item:not(:disabled):hover {
+    background: var(--surface-card-hover);
+    color: var(--text-primary);
+  }
+}
+
+.sbx-smenu__item:disabled {
+  cursor: default;
+  color: var(--text-disabled);
+}
+
+/* Delete lives here rather than in the action list: it is the only item that
+   cannot be undone, so it is behind the facts you would want to read first. */
+.sbx-smenu__danger {
+  padding: var(--space-1);
+  border-top: var(--border-width-hairline) solid var(--border-subtle);
+}
+
+.sbx-smenu__item--danger {
+  color: var(--status-danger);
+}
+
+@media (hover: hover) {
+  .sbx-smenu__item--danger:hover {
+    background: color-mix(in srgb, var(--status-danger) 12%, transparent);
+    color: var(--status-danger);
+  }
+}
+
+.sbx-smenu__item--danger .sb-icon {
+  color: var(--status-danger);
+}
+
+/* ── Rename ──────────────────────────────────────────────────────────── */
+.sbx-smenu__rename {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+/* The box, border, focus ring and placeholder come from the canonical field
+   role in style.css — this only has to say how wide it is. */
+.sbx-smenu__renameinput {
+  width: 100%;
+}
+
+.sbx-smenu__renamerow {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.sbx-smenu__renamebtn {
+  height: var(--hit-xs);
+  padding: 0 var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+  background: var(--surface-card);
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard),
+              border-color var(--duration-fast) var(--ease-standard),
+              color var(--duration-fast) var(--ease-standard);
+}
+
+@media (hover: hover) {
+  .sbx-smenu__renamebtn:hover {
+    background: var(--surface-card-hover);
+    border-color: var(--border-default);
+    color: var(--text-primary);
+  }
+}
+
+.sbx-smenu__renamebtn.is-primary {
+  color: var(--text-on-accent);
+  background: var(--orange-500);
+  border-color: var(--orange-500);
+}
+
+@media (hover: hover) {
+  .sbx-smenu__renamebtn.is-primary:hover {
+    background: var(--orange-500);
+    border-color: var(--orange-500);
+    color: var(--text-on-accent);
+    filter: brightness(1.08);
+  }
+}
+
+/* ── Summarize output ────────────────────────────────────────────────── */
+.sbx-smenu__summary,
+.sbx-smenu__info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-subtle);
+}
+
+.sbx-smenu__summaryhead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.sbx-smenu__sectiontitle {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-disabled);
+}
+
+.sbx-smenu__stop {
+  flex: none;
+  height: var(--hit-xs);
+  padding: 0 var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-2xs);
+  color: var(--status-danger);
+  background: transparent;
+  border: var(--border-width-hairline) solid color-mix(in srgb, var(--status-danger) 40%, transparent);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .sbx-smenu__stop:hover {
+    background: color-mix(in srgb, var(--status-danger) 14%, transparent);
+  }
+}
+
+.sbx-smenu__summarytext {
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.sbx-smenu__muted {
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+  color: var(--text-disabled);
+}
+
+.sbx-smenu__error {
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+  color: var(--status-danger);
+  word-break: break-word;
+}
+
+.sbx-smenu__usage {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+/* ── Facts ───────────────────────────────────────────────────────────── */
+.sbx-smenu__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.sbx-smenu__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.sbx-smenu__row dt {
+  flex: none;
+  width: 84px;
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+.sbx-smenu__row dd {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Clamped, not truncated: the opening request is often the only thing that
+   identifies a session, and one line of it rarely is. */
+.sbx-smenu__prompt {
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+  color: var(--text-tertiary);
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.sbx-smenu__copy {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: var(--border-width-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+.sbx-smenu__copy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (hover: hover) {
+  .sbx-smenu__copy:hover {
+    background: var(--surface-card-hover);
+    border-color: var(--border-default);
+    color: var(--text-secondary);
+  }
+}

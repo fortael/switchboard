@@ -92,7 +92,7 @@ if (app.isPackaged || process.env.FORCE_UPDATER) {
   });
 }
 const {
-  getMeta, getAllMeta, toggleStar, setName, setArchived,
+  getMeta, getAllMeta, toggleStar, setName, setArchived, deleteSessionMeta,
   isCachePopulated, getAllCached, getCachedByFolder, getCachedFolder, getCachedSession, upsertCachedSessions,
   deleteCachedSession, deleteCachedFolder,
   getFolderMeta, getAllFolderMeta, setFolderMeta,
@@ -1004,8 +1004,26 @@ function sessionTranscriptTail(sessionId, limit = BOARD_SUMMARY_MAX_PER_SESSION)
   return turns.join('\n---\n').slice(-limit);
 }
 
-ipcMain.handle('board-summarize-sessions', async (_event, sessions) => {
+// The child of the summarize run currently in flight, so the sidebar's Stop
+// button has something to kill. One at a time: the renderer disables Summarize
+// while a run is pending, and a second run would only queue behind this one on
+// the same account anyway.
+let boardSummaryChild = null;
+let boardSummaryCancelled = false;
+
+ipcMain.handle('board-summarize-abort', () => {
+  if (!boardSummaryChild) return { ok: false, error: 'nothing running' };
+  boardSummaryCancelled = true;
+  try { boardSummaryChild.kill(); } catch {}
+  return { ok: true };
+});
+
+ipcMain.handle('board-summarize-sessions', async (_event, sessions, options) => {
   const { spawn } = require('child_process');
+  // One session asked for from a session's own menu, rather than the board's
+  // whole set: the whole prompt budget goes to it and the answer gets room to
+  // name what the last few turns actually did.
+  const detail = !!options?.detail;
   const list = (Array.isArray(sessions) ? sessions : []).slice(0, BOARD_SUMMARY_MAX_SESSIONS);
   if (!list.length) return { ok: false, error: 'No sessions on the board to summarize' };
   try {
@@ -1015,7 +1033,8 @@ ipcMain.handle('board-summarize-sessions', async (_event, sessions) => {
       if (budget <= 0) break;
       // Passed as the limit rather than sliced afterwards: sessionTranscriptTail
       // cuts from the front, and the last thing a session said is the point.
-      const tail = sessionTranscriptTail(session.sessionId, Math.min(BOARD_SUMMARY_MAX_PER_SESSION, budget));
+      const perSession = detail ? budget : Math.min(BOARD_SUMMARY_MAX_PER_SESSION, budget);
+      const tail = sessionTranscriptTail(session.sessionId, perSession);
       if (!tail) continue;
       budget -= tail.length;
       const title = String(session.title || '').replace(/"/g, "'").slice(0, 120);
@@ -1024,11 +1043,15 @@ ipcMain.handle('board-summarize-sessions', async (_event, sessions) => {
     if (!blocks.length) return { ok: false, error: 'No readable transcripts for these sessions' };
 
     const prompt = 'Each <session> below is the tail of a Claude Code transcript.\n'
-      + 'For each one, write 1-2 sentences in past tense saying what that session just finished doing. '
+      + (detail
+        ? 'Write 2-3 sentences in past tense describing what the last few turns of that session accomplished. '
+        : 'For each one, write 1-2 sentences in past tense saying what that session just finished doing. ')
       + 'Name the concrete files or features the transcript names. Do not mention the transcript, the session id, or yourself.\n'
       // It reads in a sidebar column: left to itself the model writes a
       // paragraph of clause-joined detail that has to be scrolled to finish.
-      + 'Hard limit of 35 words per summary — cut detail rather than run long.\n\n'
+      + (detail
+        ? 'Hard limit of 70 words — cut detail rather than run long.\n\n'
+        : 'Hard limit of 35 words per summary — cut detail rather than run long.\n\n')
       + 'Reply with ONLY a JSON array, no prose and no code fence, one object per session in the order given:\n'
       + '[{"id": "<the session id exactly as given>", "summary": "<1-2 sentences>"}]\n\n'
       + blocks.join('\n\n');
@@ -1047,6 +1070,11 @@ ipcMain.handle('board-summarize-sessions', async (_event, sessions) => {
         { env: { ...process.env, PATH: claudeChildPath(), ...activeAccountClaudeEnv() } }
       );
       const child = spawn(file, args, options);
+      // Published so board-summarize-abort can reach it. Cleared on close, so
+      // Stop after the run has finished is a no-op rather than a kill of
+      // whatever spawned next.
+      boardSummaryChild = child;
+      boardSummaryCancelled = false;
       let stdout = '', stderr = '';
       child.stdout.on('data', d => { stdout += d; });
       child.stderr.on('data', d => { stderr += d; });
@@ -1055,10 +1083,12 @@ ipcMain.handle('board-summarize-sessions', async (_event, sessions) => {
       const timer = setTimeout(() => { child.kill(); reject(new Error('Timed out after 120s')); }, 120000);
       child.on('close', code => {
         clearTimeout(timer);
-        if (code !== 0 && !stdout.trim()) reject(new Error(stderr.trim() || `claude exited with code ${code}`));
+        boardSummaryChild = null;
+        if (boardSummaryCancelled) reject(Object.assign(new Error('Stopped'), { cancelled: true }));
+        else if (code !== 0 && !stdout.trim()) reject(new Error(stderr.trim() || `claude exited with code ${code}`));
         else resolve(stdout.trim());
       });
-      child.on('error', err => { clearTimeout(timer); reject(err); });
+      child.on('error', err => { clearTimeout(timer); boardSummaryChild = null; reject(err); });
     });
 
     if (!raw) return { ok: false, error: 'No output from claude' };
@@ -1097,7 +1127,7 @@ ipcMain.handle('board-summarize-sessions', async (_event, sessions) => {
       .map(item => ({ sessionId: String(item.id), summary: item.summary.trim() }));
     if (!summaries.length) return { ok: false, error: 'claude returned no summaries' };
     return { ok: true, summaries, usage };
-  } catch (e) { return { ok: false, error: e.message }; }
+  } catch (e) { return { ok: false, error: e.message, cancelled: !!e.cancelled }; }
 });
 
 ipcMain.handle('delete-worktree', (_event, projectPath, worktreePath) => {
@@ -1160,18 +1190,6 @@ ipcMain.handle('get-file-tree', (_event, projectPath) => {
   // canonical project path.
   try { return { ok: true, tree: walk(hostPath(projectPath), '', 0) }; }
   catch (e) { return { ok: false, error: e.message }; }
-});
-
-ipcMain.handle('get-project-sessions', (_event, projectPath) => {
-  try {
-    const { buildProjectsFromCache } = require('./session-cache');
-    const projects = buildProjectsFromCache(false);
-    const proj = projects.find(p => p.projectPath === projectPath);
-    const sessions = (proj?.sessions || []).slice(0, 10).map(s => ({
-      id: s.sessionId, name: s.name || s.aiTitle || s.summary?.slice(0, 40) || s.sessionId?.slice(0, 8), updatedAt: s.modified, running: false,
-    }));
-    return { ok: true, sessions };
-  } catch (e) { return { ok: false, sessions: [] }; }
 });
 
 ipcMain.handle('get-file-diff', (_event, projectPath, filePath) => {
@@ -1335,11 +1353,9 @@ ipcMain.handle('save-plan', (_event, filePath, content) => {
   }
 });
 
-// --- IPC: get-stats ---
 // Stats for one account: its own rows in the session cache, enriched with the
-// stats-cache.json `claude /stats` wrote into that account's config dir. Both
-// the active-account handler and the accounts panel go through here so there is
-// only ever one stats data path.
+// stats-cache.json `claude /stats` wrote into that account's config dir. The
+// accounts panel is the only reader — there is one stats data path.
 function buildStatsForAccount(account) {
   const dbStats = computeStatsFromDb(account.id);
   try {
@@ -1360,8 +1376,6 @@ function buildStatsForAccount(account) {
   // No file cache — return DB-computed stats so charts always render
   return dbStats;
 }
-
-ipcMain.handle('get-stats', () => buildStatsForAccount(getActiveAccount()));
 
 // --- IPC: refresh-stats (run /stats + /usage via PTY) ---
 ipcMain.handle('refresh-stats', async () => {
@@ -1500,31 +1514,6 @@ ipcMain.handle('refresh-stats', async () => {
     log.error('Error refreshing stats:', err);
     return { stats: null, usage: {} };
   }
-});
-
-// --- IPC: get-usage (lightweight, API-only, no PTY) ---
-ipcMain.handle('get-usage', async () => {
-  const cacheKey = 'usage:' + ((getSetting('global') || {}).activeAccountId || 'default');
-  try {
-    const usage = await fetchAndTransformUsage(activeConfigDir()) || {};
-    if (!usage._error && !usage._rateLimited && Object.keys(usage).length) {
-      setSetting(cacheKey, usage);
-      return usage;
-    }
-    const cached = getSetting(cacheKey);
-    return cached ? { ...cached, _cached: true } : usage;
-  } catch (err) {
-    log.error('Error fetching usage:', err);
-    const cached = getSetting(cacheKey);
-    return cached ? { ...cached, _cached: true } : {};
-  }
-});
-
-// --- IPC: get-cached-usage (DB-only, no Keychain/API access) ---
-ipcMain.handle('get-cached-usage', () => {
-  const cacheKey = 'usage:' + ((getSetting('global') || {}).activeAccountId || 'default');
-  const cached = getSetting(cacheKey);
-  return cached ? { ...cached, _cached: true } : {};
 });
 
 // --- IPC: get-memories ---
@@ -1677,34 +1666,6 @@ ipcMain.handle('get-memories', () => {
   } catch {}
 
   return result;
-});
-
-// --- IPC: read-memory ---
-ipcMain.handle('read-memory', (_event, filePath) => {
-  try {
-    const resolved = path.resolve(hostPath(filePath));
-    // Allow paths under the active account's Claude home, or any .md that exists
-    if (!resolved.endsWith('.md')) return '';
-    if (!resolved.startsWith(activeConfigDir()) && !fs.existsSync(resolved)) return '';
-    return fs.readFileSync(resolved, 'utf8');
-  } catch (err) {
-    console.error('Error reading memory file:', err);
-    return '';
-  }
-});
-
-// --- IPC: save-memory ---
-ipcMain.handle('save-memory', (_event, filePath, content) => {
-  try {
-    const resolved = path.resolve(hostPath(filePath));
-    if (!resolved.endsWith('.md')) return { ok: false, error: 'not a .md file' };
-    if (!fs.existsSync(resolved)) return { ok: false, error: 'file does not exist' };
-    fs.writeFileSync(resolved, content, 'utf8');
-    return { ok: true };
-  } catch (err) {
-    console.error('Error saving memory file:', err);
-    return { ok: false, error: err.message };
-  }
 });
 
 // --- IPC: search ---
@@ -2186,6 +2147,148 @@ ipcMain.handle('archive-session', (_event, sessionId, archived) => {
   const val = archived ? 1 : 0;
   setArchived(sessionId, val);
   return { archived: val };
+});
+
+// --- IPC: get-session-meta ---
+// Everything about a session that is worth knowing but not worth caching: the
+// session menu asks for it when it opens, once per session. Reading the whole
+// .jsonl here rather than widening session_cache keeps this out of the indexer
+// and off the startup path — nothing on screen depends on it.
+ipcMain.handle('get-session-meta', (_event, sessionId) => {
+  const folder = getCachedFolder(sessionId);
+  if (!folder) return { ok: false, error: 'Session not found in cache' };
+  // activeProjectsDir() is already the host's view of the account's home — for
+  // a WSL account, the UNC path. Same composition read-session-jsonl uses.
+  const jsonlPath = path.join(activeProjectsDir(), folder, sessionId + '.jsonl');
+  let content, stat;
+  try {
+    stat = fs.statSync(jsonlPath);
+    content = fs.readFileSync(jsonlPath, 'utf-8');
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+
+  let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreateTokens = 0;
+  let userTurns = 0, assistantTurns = 0, toolCalls = 0;
+  let firstTimestamp = null, lastTimestamp = null;
+  let firstPrompt = '', gitBranch = null, cwd = null, version = null, effort = null;
+  let costUSD = 0;
+  const models = new Set();
+  const tools = new Map();
+  const touchedFiles = new Set();
+  let linesAdded = 0, linesRemoved = 0;
+
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+
+    if (entry.timestamp) {
+      if (!firstTimestamp) firstTimestamp = entry.timestamp;
+      lastTimestamp = entry.timestamp;
+    }
+    if (entry.gitBranch) gitBranch = entry.gitBranch;
+    if (entry.cwd) cwd = entry.cwd;
+    if (entry.version) version = entry.version;
+    if (entry.effort) effort = entry.effort;
+    // Written at the end of a stretch and not always present — taken as the
+    // best available figure rather than the authority. See read-session-file.js.
+    if (entry.type === 'cost-state' && typeof entry.totalCostUSD === 'number') costUSD = entry.totalCostUSD;
+
+    const isUser = entry.type === 'user' || (entry.type === 'message' && entry.role === 'user');
+    const isAssistant = entry.type === 'assistant' || (entry.type === 'message' && entry.role === 'assistant');
+    if (isUser) userTurns++;
+    if (isAssistant) assistantTurns++;
+
+    const msg = entry.message;
+    if (msg && typeof msg === 'object') {
+      if (msg.model) models.add(msg.model);
+      const u = msg.usage;
+      if (u) {
+        inputTokens += u.input_tokens || 0;
+        outputTokens += u.output_tokens || 0;
+        cacheReadTokens += u.cache_read_input_tokens || 0;
+        cacheCreateTokens += u.cache_creation_input_tokens || 0;
+      }
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block?.type !== 'tool_use') continue;
+          toolCalls++;
+          tools.set(block.name, (tools.get(block.name) || 0) + 1);
+          if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(block.name)) {
+            const target = block.input?.file_path || block.input?.notebook_path;
+            if (target) touchedFiles.add(target);
+          }
+        }
+      }
+    }
+
+    const result = entry.toolUseResult;
+    if (result && typeof result === 'object') {
+      if (Array.isArray(result.structuredPatch) && result.structuredPatch.length) {
+        for (const hunk of result.structuredPatch) {
+          for (const patchLine of hunk.lines || []) {
+            if (patchLine.startsWith('+')) linesAdded++;
+            else if (patchLine.startsWith('-')) linesRemoved++;
+          }
+        }
+      } else if (typeof result.content === 'string' && result.filePath) {
+        linesAdded += result.content.split('\n').length;
+      }
+    }
+
+    if (!firstPrompt && isUser) {
+      const text = typeof msg === 'string' ? msg
+        : (typeof msg?.content === 'string' ? msg.content : (msg?.content?.[0]?.text || ''));
+      if (text && !/<bash-input>|<bash-stdout>|<local-command-caveat>/.test(text)) {
+        firstPrompt = text.slice(0, 600);
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    sessionId,
+    projectPath: getCachedSession(sessionId)?.projectPath || null,
+    created: firstTimestamp || stat.birthtime.toISOString(),
+    lastActivity: lastTimestamp || stat.mtime.toISOString(),
+    userTurns, assistantTurns, toolCalls,
+    topTools: [...tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, count]) => ({ name, count })),
+    inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens,
+    costUSD,
+    models: [...models],
+    effort, version, gitBranch, cwd,
+    changedFiles: touchedFiles.size, linesAdded, linesRemoved,
+    fileBytes: stat.size,
+  };
+});
+
+// --- IPC: delete-session ---
+// Removes the transcript itself, not just the row: a session deleted here is
+// gone from ~/.claude/projects too, so the next scan cannot bring it back.
+// Destructive and unrecoverable — the renderer confirms before calling.
+ipcMain.handle('delete-session', async (_event, sessionId) => {
+  const folder = getCachedFolder(sessionId);
+  if (!folder) return { ok: false, error: 'Session not found in cache' };
+
+  // A live PTY holds the file open and would keep writing to it.
+  const live = activeSessions.get(sessionId);
+  if (live && !live.exited) {
+    try { live.pty.kill(); } catch {}
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  const jsonlPath = path.join(activeProjectsDir(), folder, sessionId + '.jsonl');
+  try {
+    fs.unlinkSync(jsonlPath);
+  } catch (err) {
+    // Already gone on disk is not a failure — the cache rows still have to go.
+    if (err.code !== 'ENOENT') return { ok: false, error: err.message };
+  }
+  deleteCachedSession(sessionId);
+  deleteSearchSession(sessionId);
+  deleteSessionMeta(sessionId);
+  return { ok: true };
 });
 
 // --- IPC: open-terminal ---

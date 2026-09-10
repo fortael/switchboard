@@ -235,6 +235,7 @@ const stmts = {
     INSERT INTO session_meta (sessionId, archived) VALUES (?, ?)
     ON CONFLICT(sessionId) DO UPDATE SET archived = excluded.archived
   `),
+  metaDeleteSession: db.prepare('DELETE FROM session_meta WHERE sessionId = ?'),
   // Session cache statements
   cacheCountByAccount: db.prepare("SELECT COUNT(*) as cnt FROM session_cache WHERE accountId = ?"),
   cacheGetByAccount: db.prepare('SELECT * FROM session_cache WHERE accountId = ?'),
@@ -319,6 +320,12 @@ function toggleStar(sessionId) {
 
 function setArchived(sessionId, archived) {
   stmts.upsertArchived.run(sessionId, archived ? 1 : 0);
+}
+
+// The star/archive/name row. Only for a session being deleted outright — an
+// orphaned row here would resurrect its old name if the id were ever reused.
+function deleteSessionMeta(sessionId) {
+  stmts.metaDeleteSession.run(sessionId);
 }
 
 // --- Session cache functions ---
@@ -571,7 +578,7 @@ function closeDb() {
 }
 
 module.exports = {
-  getMeta, getAllMeta, setName, toggleStar, setArchived,
+  getMeta, getAllMeta, setName, toggleStar, setArchived, deleteSessionMeta,
   isCachePopulated, getAllCached, getCachedByFolder, getCachedFolder, getCachedSession, upsertCachedSessions,
   deleteCachedSession, deleteCachedFolder,
   getFolderMeta, getAllFolderMeta, setFolderMeta,

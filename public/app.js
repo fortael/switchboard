@@ -336,6 +336,9 @@ function refreshSidebar({ resort = false } = {}) {
 
   // Vue sidebar handles its own filtering; just pass the full project list
   window.vueSidebar?.setProjects(projects);
+  // The project page is not downstream of the sidebar's filter tab — it shows
+  // a project's archived sessions whether or not the sidebar is.
+  window.vueSidebar?.setAllProjects(cachedAllProjects);
   window.vueSidebar?.setSearch(searchMatchIds, searchMatchProjectPaths);
   window.vueSidebar?.setFilters({ showStarredOnly, showRunningOnly, showTodayOnly, showArchived });
 }
@@ -353,8 +356,6 @@ function clearSearch() {
     refreshSidebar({ resort: true });
   } else if (activeTab === 'plans') {
     renderPlans();
-  } else if (activeTab === 'memory') {
-    renderMemories();
   } else if (activeTab === 'projects') {
     projectsSearchQuery = '';
     window.vueProjects?.setSearch('');
@@ -903,11 +904,6 @@ loadProjects().then(async () => {
         openProjectViewer(proj);
         if (_uiState.pvTab) setTimeout(() => window.vueProjectViewer?.setTab(_uiState.pvTab), 50);
       }
-    } else if (_uiState.panel === 'stats') {
-      hideAllViewers();
-      terminalArea.style.display = 'none';
-      if (window.vueStore) window.vueStore.showStats = true;
-      window.vueStats?.load();
     } else if (_uiState.panel === 'board') {
       hideAllViewers();
       terminalArea.style.display = 'none';
@@ -1075,9 +1071,7 @@ async function switchAccount(id) {
 
   await window.api.setActiveAccountId(id);
 
-  window.vueStats?.invalidate();
   const activeTab = window.vueStore?.activeTab || 'sessions';
-  if (activeTab === 'stats') window.vueStats?.load();
   if (activeTab === 'projects') loadProjects().then(() => renderProjectsPanel());
   // The detail panel labels one account "Active" — that badge just moved.
   if (activeTab === 'accounts') window.vueAccountViewer?.reload();
@@ -1231,24 +1225,14 @@ window.__sb = {
     } else if (tabName === 'plans') {
       hideAllViewers();
       loadPlans();
-    } else if (tabName === 'stats') {
-      saveUiState({ panel: 'stats' });
-      hideAllViewers();
-      terminalArea.style.display = 'none';
-      if (window.vueStore) window.vueStore.showStats = true;
-      window.vueStats?.load();
     } else if (tabName === 'board') {
-      // Same box as stats: a main-area panel over the hidden terminal. The
-      // board derives everything it draws from the live store, so there is
-      // nothing to load here.
+      // A main-area panel over the hidden terminal. The board derives
+      // everything it draws from the live store, so there is nothing to load
+      // here.
       saveUiState({ panel: 'board' });
       hideAllViewers();
       terminalArea.style.display = 'none';
       if (window.vueStore) window.vueStore.showBoard = true;
-    } else if (tabName === 'memory') {
-      saveUiState({ panel: 'memory' });
-      hideAllViewers();
-      loadMemories();
     } else if (tabName === 'accounts') {
       saveUiState({ panel: 'accounts' });
       renderAccountsPanel();
@@ -1295,9 +1279,6 @@ window.__sb = {
         const results = await window.api.search('plan', query, titlesOnly);
         const matchIds = new Set(results.map(r => r.id));
         renderPlans(window.cachedPlans.filter(p => matchIds.has(p.filename)));
-      } else if (tab === 'memory') {
-        const results = await window.api.search('memory', query, titlesOnly);
-        renderMemories(new Set(results.map(r => r.id)));
       } else if (tab === 'projects') {
         projectsSearchQuery = query;
         window.vueProjects?.setSearch(query);
@@ -1352,6 +1333,32 @@ window.__sb = {
     }
     await window.api.archiveSession(id, newVal);
     session.archived = newVal;
+    loadProjects();
+  },
+
+  // The menu confirms before calling. Main kills the PTY and removes the
+  // transcript; here we only have to stop showing it.
+  deleteSession: async (id) => {
+    const result = await window.api.deleteSession(id);
+    if (!result?.ok) {
+      window.vueStatusBar?.setActivity('Delete failed: ' + (result?.error || 'unknown error'), 'error');
+      return;
+    }
+    destroySession(id);
+    pendingSessions.delete(id);
+    activePtyIds.delete(id);
+    sessionMap.delete(id);
+    for (const projList of [cachedProjects, cachedAllProjects]) {
+      for (const proj of projList) {
+        proj.sessions = proj.sessions.filter(s => s.sessionId !== id);
+      }
+    }
+    if (activeSessionId === id) {
+      setActiveSession(null);
+      placeholder.style.display = '';
+    }
+    if (window.vueStore?.boardPreviewId === id) window.vueStore.boardPreviewId = null;
+    pollActiveSessions();
     loadProjects();
   },
 
@@ -1427,7 +1434,6 @@ window.__sb = {
 
   openPlan: (plan) => openPlan(plan),
 
-  openMemory: (file) => openMemory(file),
 
   openAccountViewer: (id) => showAccountViewer(id),
 

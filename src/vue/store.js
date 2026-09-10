@@ -1,8 +1,12 @@
 import { reactive } from 'vue';
 
 export const store = reactive({
-  // Project/session data
+  // Project/session data. `projects` is what the sidebar's filter tab selected
+  // — archived sessions are simply absent while the Archived tab is not the
+  // one showing. `allProjects` is the unfiltered set, for views that are not
+  // downstream of that filter (a project's own page).
   projects: [],
+  allProjects: [],
 
   // Session runtime state
   activePtyIds: new Set(),
@@ -56,7 +60,6 @@ export const store = reactive({
   settingsProjectPath: null,
 
   // Main area panel visibility (Vue-owned — do not touch via innerHTML/style directly)
-  showStats: false,
   showBoard: false,
   // Session previewed in the board's bottom split — the real terminal, not a
   // copy. null = board full height.
@@ -69,7 +72,6 @@ export const store = reactive({
   boardProjectFilter: null,
   showJsonl: false,
   planViewerOpen: false,
-  memoryViewerOpen: false,
   gridViewActive: false,
   gridViewerCount: '',
   accountViewerOpen: false,      // Accounts tab detail panel in the main area

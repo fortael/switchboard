@@ -6,13 +6,8 @@ contextBridge.exposeInMainWorld('api', {
   getPlansDir: () => ipcRenderer.invoke('get-plans-dir'),
   readPlan: (filename) => ipcRenderer.invoke('read-plan', filename),
   savePlan: (filePath, content) => ipcRenderer.invoke('save-plan', filePath, content),
-  getStats: () => ipcRenderer.invoke('get-stats'),
   refreshStats: () => ipcRenderer.invoke('refresh-stats'),
-  getUsage: () => ipcRenderer.invoke('get-usage'),
-  getCachedUsage: () => ipcRenderer.invoke('get-cached-usage'),
   getMemories: () => ipcRenderer.invoke('get-memories'),
-  readMemory: (filePath) => ipcRenderer.invoke('read-memory', filePath),
-  saveMemory: (filePath, content) => ipcRenderer.invoke('save-memory', filePath, content),
   getProjects: (showArchived) => ipcRenderer.invoke('get-projects', showArchived),
   getActiveSessions: () => ipcRenderer.invoke('get-active-sessions'),
   getActiveTerminals: () => ipcRenderer.invoke('get-active-terminals'),
@@ -20,6 +15,11 @@ contextBridge.exposeInMainWorld('api', {
   toggleStar: (id) => ipcRenderer.invoke('toggle-star', id),
   renameSession: (id, name) => ipcRenderer.invoke('rename-session', id, name),
   archiveSession: (id, archived) => ipcRenderer.invoke('archive-session', id, archived),
+  // Deletes the .jsonl as well as the cache rows. Unrecoverable — the caller
+  // confirms first.
+  deleteSession: (id) => ipcRenderer.invoke('delete-session', id),
+  // Aggregated facts about one session, read from its transcript on demand.
+  getSessionMeta: (id) => ipcRenderer.invoke('get-session-meta', id),
   openTerminal: (id, projectPath, isNew, sessionOptions) => ipcRenderer.invoke('open-terminal', id, projectPath, isNew, sessionOptions),
   search: (type, query, titleOnly) => ipcRenderer.invoke('search', type, query, titleOnly),
   readSessionJsonl: (sessionId) => ipcRenderer.invoke('read-session-jsonl', sessionId),
@@ -73,11 +73,14 @@ contextBridge.exposeInMainWorld('api', {
   // sessions: [{ sessionId, projectPath, title }] — whatever the board is
   // currently showing. Resolves { ok: true, summaries: [{ sessionId, summary }] }
   // or { ok: false, error }.
-  boardSummarizeSessions: (sessions) => ipcRenderer.invoke('board-summarize-sessions', sessions),
+  // options: { detail } — one session asked for from its own menu gets the
+  // whole prompt budget and a longer answer.
+  boardSummarizeSessions: (sessions, options) => ipcRenderer.invoke('board-summarize-sessions', sessions, options),
+  // Kills the summarize run in flight; resolves the pending call as cancelled.
+  boardSummarizeAbort: () => ipcRenderer.invoke('board-summarize-abort'),
   getGitUserInfo: (projectPath) => ipcRenderer.invoke('get-git-user-info', projectPath),
   deleteWorktree: (projectPath, worktreePath) => ipcRenderer.invoke('delete-worktree', projectPath, worktreePath),
   getFileTree: (projectPath) => ipcRenderer.invoke('get-file-tree', projectPath),
-  getProjectSessions: (projectPath) => ipcRenderer.invoke('get-project-sessions', projectPath),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   // Send (fire-and-forget)

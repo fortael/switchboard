@@ -47,13 +47,6 @@
           :attention-sessions="attentionSessions"
           :response-ready-sessions="responseReadySessions"
           @open="(s) => $emit('open', s)"
-          @stop="(id) => $emit('stop', id)"
-          @star="(id) => $emit('star', id)"
-          @archive="(id) => $emit('archive', id)"
-          @fork="(id) => $emit('fork', id)"
-          @jsonl="(id) => $emit('jsonl', id)"
-          @launch-config="(id) => $emit('launch-config', id)"
-          @rename="(id, name) => $emit('rename', id, name)"
           @archive-all="(sessions) => $emit('archive-sessions', sessions)"
         />
         <SessionItem
@@ -65,13 +58,6 @@
           :is-attention="attentionSessions.has(item.session.sessionId)"
           :is-response-ready="responseReadySessions.has(item.session.sessionId)"
           @open="$emit('open', item.session)"
-          @stop="$emit('stop', item.session.sessionId)"
-          @star="$emit('star', item.session.sessionId)"
-          @archive="$emit('archive', item.session.sessionId)"
-          @fork="$emit('fork', item.session.sessionId)"
-          @jsonl="$emit('jsonl', item.session.sessionId)"
-          @launch-config="$emit('launch-config', item.session.sessionId)"
-          @rename="(id, name) => $emit('rename', id, name)"
         />
       </template>
 
@@ -96,13 +82,6 @@
             :attention-sessions="attentionSessions"
             :response-ready-sessions="responseReadySessions"
             @open="(s) => $emit('open', s)"
-            @stop="(id) => $emit('stop', id)"
-            @star="(id) => $emit('star', id)"
-            @archive="(id) => $emit('archive', id)"
-            @fork="(id) => $emit('fork', id)"
-            @jsonl="(id) => $emit('jsonl', id)"
-            @launch-config="(id) => $emit('launch-config', id)"
-            @rename="(id, name) => $emit('rename', id, name)"
             @archive-all="(sessions) => $emit('archive-sessions', sessions)"
           />
           <SessionItem
@@ -114,13 +93,6 @@
             :is-attention="attentionSessions.has(item.session.sessionId)"
             :is-response-ready="responseReadySessions.has(item.session.sessionId)"
             @open="$emit('open', item.session)"
-            @stop="$emit('stop', item.session.sessionId)"
-            @star="$emit('star', item.session.sessionId)"
-            @archive="$emit('archive', item.session.sessionId)"
-            @fork="$emit('fork', item.session.sessionId)"
-            @jsonl="$emit('jsonl', item.session.sessionId)"
-            @launch-config="$emit('launch-config', item.session.sessionId)"
-            @rename="(id, name) => $emit('rename', id, name)"
           />
         </template>
       </template>
@@ -144,13 +116,6 @@
         :visible-session-count="visibleSessionCount"
         :session-max-age-days="sessionMaxAgeDays"
         @open="(s) => $emit('open', s)"
-        @stop="(id) => $emit('stop', id)"
-        @star="(id) => $emit('star', id)"
-        @archive="(id) => $emit('archive', id)"
-        @fork="(id) => $emit('fork', id)"
-        @jsonl="(id) => $emit('jsonl', id)"
-        @launch-config="(id) => $emit('launch-config', id)"
-        @rename="(id, name) => $emit('rename', id, name)"
         @new-session="(p, btn) => $emit('new-session', p, btn)"
         @settings="(path) => $emit('settings', path)"
         @archive-sessions="(sessions) => $emit('archive-sessions', sessions)"
@@ -187,8 +152,7 @@ const props = defineProps({
 });
 
 const emit = defineEmits([
-  'open', 'stop', 'star', 'archive', 'fork', 'jsonl', 'launch-config', 'rename',
-  'new-session', 'settings', 'archive-sessions', 'remove-project',
+  'open', 'new-session', 'settings', 'archive-sessions', 'remove-project',
 ]);
 
 const folderId = computed(() => 'project-' + props.project.projectPath.replace(/[^a-zA-Z0-9_-]/g, '_'));

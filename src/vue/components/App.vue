@@ -71,8 +71,13 @@
       @select="onSelectAttentionName"
     />
 
+    <!-- Shared with the board: its cards are the same sessions under the same
+         filter flags, so the row that picks between Recent and Archived has to
+         be reachable from there too. The list/grid switch is not — the board is
+         already a view of its own. -->
     <FilterTabs
-      v-if="sessionListVisible"
+      v-if="sessionListVisible || store.activeTab === 'board'"
+      :class="{ 'sbx-filtertabs--no-views': store.activeTab === 'board' }"
       :tabs="FILTER_TABS"
       :active="store.sessionFilterTab"
       :view-mode="store.sidebarViewMode"
@@ -102,12 +107,6 @@
     </div>
     <div id="plans-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'plans'">
       <PlansApp ref="plansRef" :callbacks="planCallbacks" />
-    </div>
-    <div id="stats-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'stats'">
-      <div class="plans-empty">Click the Stats tab to view activity heatmap.</div>
-    </div>
-    <div id="memory-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'memory'">
-      <MemoryApp ref="memoryRef" :callbacks="memoryCallbacks" />
     </div>
     <div id="accounts-content" class="sbx-sidebar-panel" v-show="store.activeTab === 'accounts'">
       <AccountsApp ref="accountsRef" :callbacks="accountsCallbacks" />
@@ -157,30 +156,6 @@
     </div>
     <div id="board-viewer" v-show="store.showBoard">
       <SessionBoardApp ref="boardRef" />
-    </div>
-    <div id="stats-viewer" v-show="store.showStats">
-      <div id="stats-viewer-header">
-        <span id="stats-viewer-title">Activity</span>
-        <button
-          class="stats-refresh-btn"
-          :class="{ 'stats-refresh-spinning': statsRef?.isRefreshing }"
-          :disabled="statsRef?.isRefreshing"
-          title="Refresh stats (runs claude /stats)"
-          @click="statsRef?.refreshAll()"
-          v-html="STATS_REFRESH_SVG"
-        ></button>
-      </div>
-      <StatsApp ref="statsRef" />
-    </div>
-    <div id="memory-viewer" v-show="store.memoryViewerOpen">
-      <ViewerContentApp
-        ref="memoryViewerRef"
-        language="markdown"
-        storage-key="markdownPreviewMode"
-        :show-copy-path="true"
-        :show-copy-content="true"
-        :on-save="memoryOnSave"
-      />
     </div>
     <div id="plan-viewer" v-show="store.planViewerOpen">
       <ViewerContentApp
@@ -268,7 +243,6 @@ import SidebarApp from './SidebarApp.vue';
 import SessionHeaderApp from './SessionHeaderApp.vue';
 import SessionSidePanelApp from './SessionSidePanelApp.vue';
 import PlansApp from './PlansApp.vue';
-import MemoryApp from './MemoryApp.vue';
 import AccountsApp from './AccountsApp.vue';
 import AccountDropdownApp from './AccountDropdownApp.vue';
 import ProjectsApp from './ProjectsApp.vue';
@@ -276,7 +250,6 @@ import StatusBarApp from './StatusBarApp.vue';
 import GridCardsApp from './GridCardsApp.vue';
 import SettingsPanelApp from './SettingsPanelApp.vue';
 import ProjectViewerApp from './ProjectViewerApp.vue';
-import StatsApp from './StatsApp.vue';
 import JsonlViewerApp from './JsonlViewerApp.vue';
 import AccountViewerApp from './AccountViewerApp.vue';
 import SessionBoardApp from './SessionBoardApp.vue';
@@ -286,37 +259,28 @@ import DialogsApp from './DialogsApp.vue';
 
 // ── Template refs ────────────────────────────────────────────────
 const plansRef = ref(null);
-const memoryRef = ref(null);
 const accountsRef = ref(null);
 const accountDropdownRef = ref(null);
 const projectsRef = ref(null);
 const statusBarRef = ref(null);
 const gridCardsRef = ref(null);
 const projectViewerRef = ref(null);
-const statsRef = ref(null);
 const jsonlRef = ref(null);
 const accountViewerRef = ref(null);
 const planViewerRef = ref(null);
-const memoryViewerRef = ref(null);
 const dialogsRef = ref(null);
 const boardRef = ref(null);
 
 const planOnSave = (filePath, content) => window.api.savePlan(filePath, content);
-const memoryOnSave = (filePath, content) => window.api.saveMemory(filePath, content);
 
 // ── Tab config ───────────────────────────────────────────────────
 const TABS = [
   { id: 'sessions', icon: 'sparkles', label: 'Sessions' },
   { id: 'board', icon: 'square-kanban', label: 'Board' },
   { id: 'plans', icon: 'book-open', label: 'Plans' },
-  { id: 'memory', icon: 'brain', label: 'Agent Files' },
-  { id: 'stats', icon: 'chart-no-axes-column', label: 'Stats' },
   { id: 'projects', icon: 'folder', label: 'Projects' },
   { id: 'accounts', icon: 'users', label: 'Accounts' },
 ];
-
-// ── Icons ────────────────────────────────────────────────────────
-const STATS_REFRESH_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>';
 
 // ── Search ───────────────────────────────────────────────────────
 // The board renders the same sessions in another shape, so the sidebar keeps
@@ -369,7 +333,6 @@ const sessionListVisible = computed(() => store.activeTab === 'sessions');
 const searchPlaceholder = computed(() => {
   switch (store.activeTab) {
     case 'plans': return 'Search plans...';
-    case 'memory': return 'Search agent files...';
     case 'projects': return 'Search projects…';
     case 'board': return 'Search the board...';
     default: return 'Search sessions...';
@@ -507,6 +470,9 @@ function onSelectAttentionProject(projectPath) {
 
 // ── Tab switching ────────────────────────────────────────────────
 function setTab(tabId) {
+  // A tab that has since been removed can still be sitting in the restored
+  // ui_state — switching to it would leave an empty sidebar.
+  if (!TABS.some(t => t.id === tabId)) return;
   if (tabId === store.activeTab) return;
   store.activeTab = tabId;
   // Clear search on tab switch
@@ -569,15 +535,10 @@ function onResort() { window.__sb?.resort?.(); }
 function onAddProject() { window.__sb?.addProject?.(); }
 
 // ── Component callbacks ───────────────────────────────────────────
+// Per-session actions are not here: SessionMenu calls window.__sb directly, so
+// the list only forwards what the rows themselves still do.
 const sidebarCallbacks = {
   openSession: (s) => window.__sb?.openSession?.(s),
-  stopSession: (id) => window.__sb?.stopSession?.(id),
-  toggleStar: (id) => window.__sb?.toggleStar?.(id),
-  archiveSession: (id) => window.__sb?.archiveSession?.(id),
-  forkSession: (id) => window.__sb?.forkSession?.(id),
-  showJsonl: (id) => window.__sb?.showJsonl?.(id),
-  launchConfig: (id) => window.__sb?.launchConfig?.(id),
-  renameSession: (id, name) => window.__sb?.renameSession?.(id, name),
   newSession: (project, btn) => window.__sb?.newSession?.(project, btn),
   openSettings: (path) => window.__sb?.openSettings?.(path),
   archiveSessions: (sessions) => window.__sb?.archiveSessions?.(sessions),
@@ -592,10 +553,6 @@ const planCallbacks = {
 // through the board's own handler rather than repeating it here.
 const boardSidebarCallbacks = {
   selectSession: (s) => boardRef.value?.selectSession(s),
-};
-
-const memoryCallbacks = {
-  openMemory: (file) => window.__sb?.openMemory?.(file),
 };
 
 const accountsCallbacks = {
@@ -636,12 +593,6 @@ onMounted(async () => {
     setActive: (f) => plansRef.value?.setActive(f),
     clearActive: () => plansRef.value?.clearActive(),
   });
-  Object.assign(window.vueMemory, {
-    setMemories: (data, ids) => memoryRef.value?.setMemories(data, ids),
-    setFilter: (ids) => memoryRef.value?.setFilter(ids),
-    setActive: (f) => memoryRef.value?.setActive(f),
-    clearActive: () => memoryRef.value?.clearActive(),
-  });
   Object.assign(window.vueAccounts, {
     setAccounts: (list, id) => accountsRef.value?.setAccounts(list, id),
     setActiveAccount: (id) => accountsRef.value?.setActiveAccount(id),
@@ -679,10 +630,6 @@ onMounted(async () => {
     setTab: (tab) => projectViewerRef.value?.setTab(tab),
   };
   window.vueApp = { setTab };
-  window.vueStats = {
-    load: () => statsRef.value?.load(),
-    invalidate: () => statsRef.value?.invalidate(),
-  };
   window.vueJsonlViewer = { open: (s) => jsonlRef.value?.open(s) };
   window.vueAccountViewer = {
     load: (id) => accountViewerRef.value?.load(id),
@@ -698,22 +645,17 @@ onMounted(async () => {
   Object.assign(window.vuePlanViewer, {
     open: (...args) => planViewerRef.value?.open(...args),
   });
-  Object.assign(window.vueMemoryViewer, {
-    open: (...args) => memoryViewerRef.value?.open(...args),
-  });
 
   // Settings panel — exposed so app.js and vanilla JS callers can open it.
   // Hides all vanilla-managed main-area content so the xterm canvas can't
   // intercept pointer events while settings is showing.
   window.openSettingsViewer = (scope, projectPath) => {
     store.planViewerOpen = false;
-    store.memoryViewerOpen = false;
     const hide = ['terminal-area', 'placeholder', 'project-viewer'];
     for (const id of hide) {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     }
-    store.showStats = false;
     store.showBoard = false;
     store.showJsonl = false;
     store.accountViewerOpen = false;
@@ -761,8 +703,7 @@ onMounted(async () => {
   const savedPanelWidth = parseInt(localStorage.getItem('sessionSidePanelWidth'), 10);
   if (Number.isFinite(savedPanelWidth) && savedPanelWidth >= 280) store.sidePanelWidth = savedPanelWidth;
 
-  // Plans & memory viewer globals (migrated from plans-memory-view.js)
-  let cachedMemoryData = { global: { files: [] }, projects: [] };
+  // Plan viewer globals (migrated from plans-memory-view.js)
   window.cachedPlans = [];
 
   window.loadPlans = async () => {
@@ -780,43 +721,16 @@ onMounted(async () => {
     document.getElementById('project-viewer').style.display = 'none';
     window.vueProjectViewer?.close();
     if (window.vueStore) {
-      window.vueStore.memoryViewerOpen = false;
       window.vueStore.settingsOpen = false;
-      window.vueStore.showStats = false;
       window.vueStore.showJsonl = false;
       window.vueStore.planViewerOpen = true;
     }
     window.vuePlanViewer?.open(plan.title || plan.filename, result.filePath, result.content);
   };
-  window.loadMemories = async () => {
-    cachedMemoryData = await window.api.getMemories();
-    window.vueMemory?.setMemories(cachedMemoryData, null);
-  };
-  window.renderMemories = (filterIds) => {
-    window.vueMemory?.setMemories(cachedMemoryData, filterIds || null);
-  };
-  window.openMemory = async (file) => {
-    window.vueMemory?.setActive(file.filePath);
-    const content = await window.api.readMemory(file.filePath);
-    document.getElementById('placeholder').style.display = 'none';
-    document.getElementById('terminal-area').style.display = 'none';
-    document.getElementById('project-viewer').style.display = 'none';
-    window.vueProjectViewer?.close();
-    if (window.vueStore) {
-      window.vueStore.planViewerOpen = false;
-      window.vueStore.settingsOpen = false;
-      window.vueStore.showStats = false;
-      window.vueStore.showJsonl = false;
-      window.vueStore.memoryViewerOpen = true;
-    }
-    window.vueMemoryViewer?.open(file.filename, file.filePath, content);
-  };
   window.hideAllViewers = () => {
     if (window.vueStore) {
       window.vueStore.planViewerOpen = false;
-      window.vueStore.memoryViewerOpen = false;
       window.vueStore.settingsOpen = false;
-      window.vueStore.showStats = false;
       // Opening a session calls through here; that must not close the board
       // when the board is the thing showing that session.
       if (!(window.vueStore.activeTab === 'board' && window.vueStore.boardPreviewId)) {

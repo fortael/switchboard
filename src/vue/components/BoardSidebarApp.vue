@@ -3,10 +3,34 @@
     <!-- ── Summary ──────────────────────────────────────────────────
          What every session on the board just finished, in one place, so the
          board can be read without opening anything. -->
-    <section class="sbx-boardside__block sbx-boardside__block--summary">
-      <header class="sbx-boardside__head">
+    <section
+      class="sbx-boardside__block sbx-boardside__block--summary"
+      :class="{ 'is-collapsed': collapsed }"
+    >
+      <!-- The whole title bar is the toggle; the buttons on it stop the click
+           so pressing Summarize never also folds the answer away. -->
+      <header
+        class="sbx-boardside__head sbx-boardside__head--toggle"
+        role="button"
+        :aria-expanded="!collapsed"
+        @click="collapsed = !collapsed"
+      >
+        <SbIcon
+          name="chevron-down"
+          :size="12"
+          tone="muted"
+          class="sbx-boardside__chevron"
+          :class="{ 'is-collapsed': collapsed }"
+        />
         <SbIcon name="sparkles" :size="13" tone="muted" />
         <span class="sbx-boardside__title">Summary</span>
+        <button
+          v-if="pending"
+          type="button"
+          class="sbx-boardside__action sbx-boardside__action--stop"
+          data-tooltip="Stop the claude call"
+          @click.stop="stop"
+        >Stop</button>
         <button
           type="button"
           class="sbx-boardside__action"
@@ -15,11 +39,11 @@
           :data-tooltip="pending
             ? 'Asking claude…'
             : `Reads only the last message of each of the ${summarizable.length} most recent sessions on the board, not the whole session`"
-          @click="summarize"
+          @click.stop="summarize"
         >{{ pending ? 'Summarizing…' : 'Summarize' }}</button>
       </header>
 
-      <div class="sbx-boardside__body sbx-boardside__body--summary">
+      <div v-show="!collapsed" class="sbx-boardside__body sbx-boardside__body--summary">
         <p v-if="pending" class="sbx-boardside__note">
           Reading {{ summarizable.length }} session{{ summarizable.length === 1 ? '' : 's' }} — this runs one headless claude call and can take a while.
         </p>
@@ -74,19 +98,35 @@
           <span class="sbx-boardside__projcount">{{ total }}</span>
         </button>
 
-        <button
+        <!-- A div, not a button: the New session control is a real button and
+             cannot be nested inside one. -->
+        <div
           v-for="row in rows"
           :key="row.projectPath"
-          type="button"
           class="sbx-boardside__proj"
           :class="{ 'is-active': row.projectPath === store.boardProjectFilter }"
+          role="button"
+          tabindex="0"
           :title="row.projectPath"
           @click="pick(row.projectPath)"
+          @keydown.enter.prevent="pick(row.projectPath)"
+          @keydown.space.prevent="pick(row.projectPath)"
         >
           <ProjectAvatar class="sbx-boardside__avatar" :project-path="row.projectPath" />
           <span class="sbx-boardside__projname">{{ row.name }}</span>
+          <!-- Before the count, not after: the counts have to stay in one
+               right-aligned column, and All projects carries no + to pad it. -->
+          <button
+            type="button"
+            class="sbx-boardside__new"
+            data-tooltip="New session in this project"
+            aria-label="New session in this project"
+            @click.stop="newSession(row, $event)"
+          >
+            <SbIcon name="plus" :size="11" tone="muted" />
+          </button>
           <span class="sbx-boardside__projcount">{{ row.count }}</span>
-        </button>
+        </div>
 
         <p v-if="!rows.length" class="sbx-boardside__note">No sessions match the current filters.</p>
       </div>
@@ -95,7 +135,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { store } from '../store.js';
 import SbIcon from './SbIcon.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
@@ -131,6 +171,8 @@ const rows = computed(() => {
       projectPath: project.projectPath,
       name: project.projectPath.split('/').filter(Boolean).pop() || project.projectPath,
       count,
+      // The new-session popover needs the project itself, not just its path.
+      project,
     });
   }
   return out.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
@@ -160,6 +202,11 @@ function pick(projectPath) {
   store.boardProjectFilter = store.boardProjectFilter === projectPath ? null : projectPath;
 }
 
+// Anchored to the + itself so the popover opens beside the row it belongs to.
+function newSession(row, event) {
+  window.__sb?.newSession?.(row.project, event.currentTarget);
+}
+
 function select(entry) {
   if (entry.session) props.callbacks.selectSession?.(entry.session);
 }
@@ -171,10 +218,21 @@ const entries = ref([]);
 // What the last Summarize actually cost, straight from the CLI's json envelope.
 const usage = ref(null);
 
+// Folded away by default once the user folds it: the projects below are the
+// control they reach for most, and a run of summaries pushes them down.
+const collapsed = ref(localStorage.getItem('boardSummaryCollapsed') === '1');
+watch(collapsed, (value) => localStorage.setItem('boardSummaryCollapsed', value ? '1' : '0'));
+
+function stop() {
+  window.api?.boardSummarizeAbort?.();
+}
+
 async function summarize() {
   if (pending.value) return;
   const sessions = summarizable.value;
   if (!sessions.length) return;
+  // Asking for a summary means wanting to read one.
+  collapsed.value = false;
 
   // preload.js declares the channel, so an older running renderer against a
   // newer bundle is the only way this is missing — say so rather than showing
@@ -199,7 +257,7 @@ async function summarize() {
     if (!result?.ok) {
       entries.value = [];
       usage.value = null;
-      error.value = result?.error || 'Could not generate summaries.';
+      error.value = result?.cancelled ? 'Stopped.' : (result?.error || 'Could not generate summaries.');
       return;
     }
     entries.value = (result.summaries || [])

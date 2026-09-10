@@ -135,32 +135,58 @@
           </div>
         </section>
 
-        <!-- ── Activity ──────────────────────────────────────────── -->
+        <!-- ── Activity ──────────────────────────────────────────────
+             Everything the Stats tab used to show, scoped to this account
+             instead of to whichever one happens to be active. -->
         <section class="acct-section">
           <h3 class="acct-section__title">
             <SbIcon name="chart-no-axes-column" :size="14" tone="muted" />
             Activity
+            <span class="acct-viewer__spacer"></span>
+            <!-- `claude /stats` runs as the active account, so this is only
+                 offered on the account it would actually refresh. -->
+            <button
+              v-if="detail.isActive"
+              class="acct-btn"
+              :disabled="refreshingStats"
+              data-tooltip="Runs claude /stats and /usage to rebuild the cache"
+              @click="refreshFromCli"
+            >{{ refreshingStats ? 'Refreshing…' : 'Refresh from CLI' }}</button>
           </h3>
+
           <div v-if="statCards.length" class="acct-stats">
             <div v-for="card in statCards" :key="card.label" class="acct-stats__card">
               <span class="acct-stats__value">{{ card.value }}</span>
               <span class="acct-stats__label">{{ card.label }}</span>
             </div>
           </div>
-          <div v-if="sparkCols.length" class="acct-spark">
-            <div class="acct-spark__row">
+
+          <ActivityHeatmap v-if="hasActivity" :daily-map="messageMap" />
+
+          <div v-if="dailyCols.length" class="daily-chart-container">
+            <div class="daily-chart-title">Last 30 days</div>
+            <div class="daily-chart">
               <div
-                v-for="col in sparkCols"
-                :key="col.date"
-                class="acct-spark__col"
+                v-for="col in dailyCols"
+                :key="col.dateStr"
+                class="daily-chart-col"
                 :title="col.tooltip"
               >
-                <div class="acct-spark__bar" :style="{ height: col.pct + '%' }"></div>
+                <div class="daily-chart-bar" :style="{ height: col.tokenPct + '%' }"></div>
+                <div class="daily-chart-bar-msgs" :style="{ height: col.msgPct + '%' }"></div>
+                <div class="daily-chart-label">{{ col.dayNum }}</div>
               </div>
             </div>
-            <div class="acct-spark__caption">Messages per day, last 30 days</div>
+            <div class="daily-chart-legend">
+              <span class="daily-chart-legend-dot tokens"></span> Tokens
+              <span class="daily-chart-legend-dot msgs"></span> Messages
+            </div>
           </div>
+
           <p v-if="!statCards.length" class="acct-section__hint">No recorded activity for this account yet.</p>
+          <p v-else-if="stats?.lastComputedDate" class="acct-section__hint">
+            Data sourced from Claude’s stats cache (last updated {{ stats.lastComputedDate }}).
+          </p>
         </section>
 
         <!-- ── Config files ──────────────────────────────────────── -->
@@ -238,6 +264,7 @@
 <script setup>
 import { ref, computed } from 'vue';
 import SbIcon from './SbIcon.vue';
+import ActivityHeatmap from './ActivityHeatmap.vue';
 
 // ── State ─────────────────────────────────────────────────────────
 const accountId = ref(null);
@@ -245,6 +272,7 @@ const detail = ref(null);
 const stats = ref(null);
 const loading = ref(false);
 const checking = ref(false);
+const refreshingStats = ref(false);
 const authResult = ref(null);
 const copied = ref(null);
 let copyTimer = null;
@@ -327,34 +355,64 @@ function dailyMessageMap(s) {
   return map;
 }
 
-function currentStreak(map) {
+// Both figures in one pass over the year: the run ending today, and the
+// longest run anywhere in it.
+function streaks(map) {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  let streak = 0;
+  let current = null;
+  let longest = 0;
+  let run = 0;
   for (let i = 0; i < 365; i++) {
-    const key = toDateStr(d);
-    if (map[key] > 0) streak++;
-    else if (i > 0 || streak > 0) break;
+    if (map[toDateStr(d)] > 0) {
+      run++;
+    } else {
+      if (current === null) current = run;
+      if (run > longest) longest = run;
+      run = 0;
+    }
     d.setDate(d.getDate() - 1);
   }
-  return streak;
+  if (run > longest) longest = run;
+  if (current === null) current = run;
+  return { current, longest };
 }
+
+function compactTokens(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return n.toLocaleString();
+}
+
+const messageMap = computed(() => (stats.value ? dailyMessageMap(stats.value) : {}));
+const hasActivity = computed(() => Object.values(messageMap.value).some(n => n > 0));
 
 const statCards = computed(() => {
   const s = stats.value;
   if (!s) return [];
-  const map = dailyMessageMap(s);
+  const map = messageMap.value;
   let messages = 0;
   for (const n of Object.values(map)) messages += n;
   if (s.totalMessages && s.totalMessages > messages) messages = s.totalMessages;
   const sessions = s.totalSessions || Object.keys(map).length;
   if (!sessions && !messages) return [];
-  return [
+  const { current, longest } = streaks(map);
+  const cards = [
     { value: sessions.toLocaleString(), label: 'Sessions' },
     { value: messages.toLocaleString(), label: 'Messages' },
-    { value: currentStreak(map) + 'd', label: 'Current streak' },
+    { value: current + 'd', label: 'Current streak' },
+    { value: longest + 'd', label: 'Longest streak' },
     { value: Object.keys(map).length.toLocaleString(), label: 'Active days' },
   ];
+  // Per-model token totals, only present when `claude /stats` has written its
+  // cache — the DB-computed fallback has no token breakdown.
+  for (const [model, mu] of Object.entries(s.modelUsage || {})) {
+    const shortName = model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+    const tokens = (mu?.inputTokens || 0) + (mu?.outputTokens || 0);
+    cards.push({ value: compactTokens(tokens), label: shortName + ' tokens' });
+  }
+  return cards;
 });
 
 function toDateStr(d) {
@@ -364,10 +422,25 @@ function toDateStr(d) {
   return `${y}-${m}-${day}`;
 }
 
-const sparkCols = computed(() => {
+// Tokens and messages on the same 30 days, each scaled to its own maximum —
+// they differ by three orders of magnitude, so one shared axis would flatten
+// the message bars to nothing.
+const dailyCols = computed(() => {
   const s = stats.value;
   if (!s) return [];
-  const map = dailyMessageMap(s);
+  const map = messageMap.value;
+
+  const tokenMap = {};
+  for (const entry of (Array.isArray(s.dailyModelTokens) ? s.dailyModelTokens : [])) {
+    let total = 0;
+    for (const count of Object.values(entry.tokensByModel || {})) total += count;
+    tokenMap[entry.date] = total;
+  }
+  const toolMap = {};
+  for (const entry of (Array.isArray(s.dailyActivity) ? s.dailyActivity : [])) {
+    toolMap[entry.date] = entry.toolCallCount || 0;
+  }
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const days = [];
@@ -376,14 +449,24 @@ const sparkCols = computed(() => {
     d.setDate(d.getDate() - i);
     days.push(toDateStr(d));
   }
-  const values = days.map(d => map[d] || 0);
-  if (!values.some(v => v > 0)) return [];
-  const max = Math.max(...values, 1);
-  return days.map((date, i) => ({
-    date,
-    pct: values[i] > 0 ? Math.max((values[i] / max) * 100, 6) : 2,
-    tooltip: `${date}: ${values[i]} messages`,
-  }));
+
+  const tokenValues = days.map(d => tokenMap[d] || 0);
+  const msgValues = days.map(d => map[d] || 0);
+  if (!msgValues.some(v => v > 0) && !tokenValues.some(v => v > 0)) return [];
+  const maxTokens = Math.max(...tokenValues, 1);
+  const maxMsgs = Math.max(...msgValues, 1);
+
+  return days.map((dateStr, i) => {
+    const d = new Date(dateStr + 'T00:00:00');
+    const dayLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return {
+      dateStr,
+      dayNum: String(d.getDate()),
+      tokenPct: Math.max((tokenValues[i] / maxTokens) * 100, tokenValues[i] > 0 ? 3 : 0),
+      msgPct: Math.max((msgValues[i] / maxMsgs) * 100, msgValues[i] > 0 ? 3 : 0),
+      tooltip: `${dayLabel}\n${compactTokens(tokenValues[i])} tokens\n${msgValues[i]} messages\n${toolMap[dateStr] || 0} tool calls`,
+    };
+  });
 });
 
 // ── JSON rendering ────────────────────────────────────────────────
@@ -502,6 +585,22 @@ function reload() {
   const id = accountId.value;
   accountId.value = null;
   load(id);
+}
+
+// Rebuilds this account's stats-cache.json by running the CLI, then re-reads
+// it. Only offered on the active account: `claude /stats` runs as whoever is
+// active, so on any other one it would refresh the wrong cache.
+async function refreshFromCli() {
+  if (refreshingStats.value || !detail.value?.isActive) return;
+  refreshingStats.value = true;
+  try {
+    const result = await window.api.refreshStats();
+    if (result?.stats) stats.value = result.stats;
+    if (result?.usage && Object.keys(result.usage).length && detail.value) {
+      detail.value = { ...detail.value, usage: result.usage };
+    }
+  } catch {}
+  refreshingStats.value = false;
 }
 
 async function check() {
