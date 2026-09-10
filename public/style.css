@@ -2169,11 +2169,16 @@ body { display: flex; flex-direction: column; }
    pane's bottom edge. */
 .terminal-container {
   position: absolute;
-  inset: -5px 20px 0 0;
+  /* Top stays 0. It used to be -5px, which pulled the terminal up over the
+     session header's last five pixels — invisible while the terminal spanned
+     the full width, but once the side panel became a floating island the
+     header stayed its full height beside it and the overlap showed up as a
+     5px step of header running along the top of the gutter.
+     The right inset is the xterm-scrollbar hide, not spacing. */
+  inset: 0 20px 0 0;
   display: none;
   /* Left gutter matches the session header's --space-5, so the first
-     terminal column sits on the same vertical as the header's avatar.
-     The right inset is the xterm-scrollbar hide, not spacing. */
+     terminal column sits on the same vertical as the header's avatar. */
   padding: 0 0 0 var(--space-5);
   overflow: hidden;
 }

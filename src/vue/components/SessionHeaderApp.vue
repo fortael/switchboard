@@ -44,27 +44,10 @@
         :title="store.headerPtyTitle"
       >{{ store.headerPtyTitle }}</span>
 
-      <!-- Opens the panel on the right: this session's uncommitted changes,
-           its compose services and a scratch shell in its own directory. -->
-      <button
-        type="button"
-        class="sbx-sesshead__iconbtn"
-        :class="{ 'is-active': store.sidePanelOpen }"
-        :data-tooltip="store.sidePanelOpen ? 'Hide project panel' : 'Project panel — changes, containers, shell'"
-        :aria-pressed="store.sidePanelOpen"
-        @click="toggleSidePanel"
-      >
-        <SbIcon :name="store.sidePanelOpen ? 'panel-right-close' : 'panel-right-open'" :size="14" />
-      </button>
-
-      <button
-        type="button"
-        class="sbx-sesshead__iconbtn sbx-sesshead__iconbtn--danger"
-        data-tooltip="Stop session"
-        @click="stop"
-      >
-        <SbIcon name="square" :size="14" />
-      </button>
+      <!-- The panel toggles and Stop used to live here. They are all on
+           SessionPanelRail now, overlaid on the terminal: this header is
+           hidden in the board's bottom split, and those controls have to
+           reach that view too. -->
     </div>
   </div>
 </template>
@@ -73,7 +56,6 @@
 import { computed } from 'vue';
 import { store } from '../store.js';
 import ProjectAvatar from './ProjectAvatar.vue';
-import SbIcon from './SbIcon.vue';
 
 const session = computed(() => store.headerSession);
 const sessionId = computed(() => session.value?.sessionId);
@@ -128,16 +110,4 @@ const shortId = computed(() => {
   return id.slice(0, 8);
 });
 
-function stop() {
-  if (sessionId.value && window.confirmAndStopSession) {
-    window.confirmAndStopSession(sessionId.value);
-  }
-}
-
-// App.vue watches store.sidePanelOpen and refits the terminals — the panel
-// takes width away from them, and xterm has to be told.
-function toggleSidePanel() {
-  store.sidePanelOpen = !store.sidePanelOpen;
-  localStorage.setItem('sessionSidePanelOpen', store.sidePanelOpen ? '1' : '0');
-}
 </script>

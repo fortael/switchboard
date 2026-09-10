@@ -22,6 +22,9 @@ if (!app.isPackaged) {
 const log = require('electron-log');
 // getFolderIndexMtimeMs moved to session-cache.js
 const { startMcpServer, shutdownMcpServer, shutdownAll: shutdownAllMcp, resolvePendingDiff, rekeyMcpServer, cleanStaleLockFiles } = require('./mcp-bridge');
+const { startHookServer, stopHookServer } = require('./hook-server');
+const { buildHookSettings } = require('./hook-settings');
+const { SessionStatusTracker } = require('./session-status');
 const { fetchAndTransformUsage, getOAuthToken, probeUsage } = require('./claude-auth');
 log.transports.file.level = app.isPackaged ? 'info' : 'debug';
 log.transports.console.level = app.isPackaged ? 'info' : 'debug';
@@ -243,6 +246,25 @@ function computeStatsFromDb(accountId) {
 const activeSessions = new Map();
 let mainWindow = null;
 
+// --- Session status ---
+// Fed by Claude Code hooks (hook-server.js) and, only for sessions where no
+// hook ever arrives, by the legacy OSC inference below. This replaces the
+// `cli-busy-state` boolean: 'requires_action' is a third state that a boolean
+// could not express, and the old channel's busy=false was ambiguous between
+// "finished a turn" and "waiting for you".
+const sessionStatus = new SessionStatusTracker({
+  onChange: (sessionId, snapshot) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('session-status', sessionId, snapshot);
+  },
+});
+
+// Started on the first session that needs it rather than at app ready: a user
+// who never opens a session never opens a socket.
+function hookServer() {
+  return startHookServer({ log, onEvent: payload => sessionStatus.apply(payload) });
+}
+
 // --- Single-instance: parse --project <path> from argv ---
 function parseProjectArg(argv) {
   const idx = argv.indexOf('--project');
@@ -332,6 +354,12 @@ function createWindow() {
     minHeight: 500,
     title: 'Wooton Pad',
     icon: path.join(__dirname, 'build', 'icon.png'),
+    // macOS: drop the title bar and let the top nav run to the window's edge,
+    // keeping the traffic lights inset over it. css/shell.css reserves room
+    // for them and marks the bar draggable, which the OS chrome used to do.
+    // Left alone elsewhere: Windows and Linux have no equivalent inset, and a
+    // frameless window there means reimplementing minimise/maximise/close.
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -343,6 +371,16 @@ function createWindow() {
   if (restorePosition) {
     mainWindow.setBounds({ ...restorePosition, width: bounds.width, height: bounds.height });
   }
+
+  // macOS hides the traffic lights in full screen, so the gap css/shell.css
+  // reserves for them has to go with them.
+  const sendFullscreen = (on) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-fullscreen', on);
+    }
+  };
+  mainWindow.on('enter-full-screen', () => sendFullscreen(true));
+  mainWindow.on('leave-full-screen', () => sendFullscreen(false));
 
   mainWindow.loadFile(path.join(__dirname, 'public', 'index.html'));
 
@@ -2090,6 +2128,12 @@ ipcMain.handle('get-active-sessions', () => {
   return active;
 });
 
+// --- IPC: get-session-statuses ---
+// Status lives in the main process, so a renderer reload can recover it instead
+// of starting blank and waiting for the next lifecycle event — which, for a
+// session sitting idle, may never come.
+ipcMain.handle('get-session-statuses', () => sessionStatus.all());
+
 // --- IPC: get-active-terminals --- (plain terminal sessions for renderer restore)
 ipcMain.handle('get-active-terminals', () => {
   const terminals = [];
@@ -2489,6 +2533,30 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
         claudeCmd += ` --append-system-prompt "$(cat '${promptPathForShell}')"`;
       }
 
+      // Subscribe this session to lifecycle hooks. `--settings` loads in
+      // addition to the user's own settings files rather than replacing them,
+      // so nothing the user owns is touched and there is no cleanup that has to
+      // survive a crash. The temp file mirrors the --append-system-prompt
+      // pattern above, including the /mnt/<drive>/… view a WSL session needs.
+      try {
+        const hooks = await hookServer();
+        const hookUrl = hooks.urlFor(isWsl);
+        if (hookUrl) {
+          const tmpSettings = path.join(os.tmpdir(), `switchboard-hooks-${sessionId}.json`);
+          fs.writeFileSync(tmpSettings, JSON.stringify(buildHookSettings({ url: hookUrl, token: hooks.token })));
+          const settingsPathForShell = isWsl ? windowsToWslPath(tmpSettings) : tmpSettings;
+          claudeCmd += ` --settings '${settingsPathForShell}'`;
+        } else {
+          // WSL with no reachable vEthernet address. Rather than hand the CLI a
+          // URL that will time out on every event, leave the session on the OSC
+          // fallback — SessionStatusTracker keeps honouring it while no hook
+          // has ever arrived.
+          log.warn(`[hooks] session=${sessionId} no reachable host address for WSL — falling back to OSC detection`);
+        }
+      } catch (err) {
+        log.error(`[hooks] session=${sessionId} could not start hook server: ${err.message}`);
+      }
+
       if (sessionOptions?.preLaunchCmd) {
         claudeCmd = sessionOptions.preLaunchCmd + ' ' + claudeCmd;
       }
@@ -2569,13 +2637,33 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     mcpServer, _openedAt: Date.now(),
   };
   activeSessions.set(sessionId, session);
+  // The CLI is at its prompt, not mid-turn. Say so before any terminal output
+  // can suggest otherwise — see SessionStatusTracker#seed.
+  if (!isPlainTerminal) sessionStatus.seed(sessionId);
 
   ptyProcess.onData(data => {
     const currentId = session.realSessionId || sessionId;
 
     // Parse OSC sequences (title changes, progress, notifications, etc.)
-    if (data.includes('\x1b]')) {
-      const oscMatches = data.matchAll(/\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
+    //
+    // The PTY hands over arbitrary chunks, so a sequence can be split across
+    // two of them. Matching per chunk dropped those silently — and since the
+    // ✳ title was the only signal that could return a session to idle, one
+    // unlucky split left a spinner running forever. Carry the trailing
+    // fragment over to the next chunk instead.
+    if (data.includes('\x1b]') || session._oscCarry) {
+      const stream = (session._oscCarry || '') + data;
+      session._oscCarry = '';
+      const lastStart = stream.lastIndexOf('\x1b]');
+      if (lastStart !== -1) {
+        const tail = stream.slice(lastStart);
+        // No terminator yet: hold it back, capped so a stream that never
+        // terminates one cannot grow without bound.
+        if (!tail.includes('\x07') && !tail.includes('\x1b\\')) {
+          session._oscCarry = tail.length > 4096 ? '' : tail;
+        }
+      }
+      const oscMatches = stream.matchAll(/\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
       for (const m of oscMatches) {
         const code = m[1];
         const payload = m[2].slice(0, 120);
@@ -2584,41 +2672,32 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
           const firstChar = payload.charAt(0);
           const isBusy = firstChar.charCodeAt(0) >= 0x2800 && firstChar.charCodeAt(0) <= 0x28FF;
           const isIdle = firstChar === '\u2733'; // ✳
-          log.debug(`[OSC 0] session=${currentId} char=U+${firstChar.charCodeAt(0).toString(16).toUpperCase()} busy=${isBusy} idle=${isIdle} wasBusy=${!!session._cliBusy}`);
-          if (isBusy && !session._cliBusy) {
-            session._cliBusy = true;
-            session._oscIdle = false;
-            log.debug(`[OSC 0] session=${currentId} → BUSY`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, true);
-            }
-          } else if (isIdle && session._cliBusy) {
-            session._cliBusy = false;
-            session._oscIdle = true;
-            log.debug(`[OSC 0] session=${currentId} → IDLE`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, false);
-            }
-          }
+          log.debug(`[OSC 0] session=${currentId} char=U+${firstChar.charCodeAt(0).toString(16).toUpperCase()} busy=${isBusy} idle=${isIdle}`);
+          // Fallback only, and the only fallback: unlike OSC 9;4 below, this
+          // signal is symmetric — it can return a session to idle as well as
+          // mark it busy. The tracker ignores it the moment a real hook
+          // arrives for the session.
+          if (isBusy) sessionStatus.applyOsc(currentId, true);
+          else if (isIdle) sessionStatus.applyOsc(currentId, false);
         }
       }
-      // Parse iTerm2 OSC 9 sequences (terminated by BEL \x07 or ST \x1b\\)
-      const osc9Matches = data.matchAll(/\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
+      // Parse iTerm2 OSC 9 sequences (terminated by BEL \x07 or ST \x1b\\).
+      // Same carried stream: an attention notification split across chunks was
+      // being dropped for the same reason.
+      const osc9Matches = stream.matchAll(/\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
       for (const osc9 of osc9Matches) {
         const payload = osc9[1];
         // OSC 9;4 progress: 4;0; = clear/done, 4;1;N = running at N%, 4;2;N = error, 4;3; = indeterminate
         if (payload.startsWith('4;')) {
           const level = payload.split(';')[1];
           if (level === '0') continue; // 4;0 is also used for clearing, making it unreliable as an idle signal
-          log.debug(`[OSC 9;4] session=${currentId} level=${level} payload="${payload}" wasBusy=${!!session._cliBusy}`);
-          if ((level === '1' || level === '2' || level === '3') && !session._cliBusy) {
-            session._cliBusy = true;
-            session._oscIdle = false;
-            log.debug(`[OSC 9;4] session=${currentId} → BUSY`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, true);
-            }
-          }
+          // Logged, not acted on. This branch can only ever *set* busy — 4;0
+          // is documented as unreliable for the clear, so it is skipped above,
+          // leaving no path back to idle. A session that emitted one of these
+          // and then never took a turn stayed "In progress" forever, because
+          // hooks are turn-scoped and had nothing to correct it with.
+          // OSC 0 is the only symmetric fallback signal, so it is the only one.
+          log.debug(`[OSC 9;4] session=${currentId} level=${level} payload="${payload}" (not used for status)`);
         } else {
           // Regular notification (attention, permission, etc.)
           log.info(`[OSC 9] session=${currentId} message="${payload}"`);
@@ -2668,6 +2747,13 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     session.mcpServer = null;
 
     const realId = session.realSessionId || sessionId;
+    // The old pipeline never cleared busy on exit — it left that to the
+    // renderer's 3s poll, which only reaches sessions the sidebar has currently
+    // rendered. A session that exited while its row was scrolled out kept its
+    // spinner indefinitely.
+    sessionStatus.remove(realId);
+    if (realId !== sessionId) sessionStatus.remove(sessionId);
+    try { fs.unlinkSync(path.join(os.tmpdir(), `switchboard-hooks-${sessionId}.json`)); } catch {}
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('process-exited', realId, exitCode);
       // If a fork/plan-accept transition re-keyed this session under realId
@@ -2739,7 +2825,16 @@ ipcMain.on('close-terminal', (_event, sessionId) => {
 
 // Session transitions → session-transitions.js
 const sessionTransitions = require('./session-transitions');
-sessionTransitions.init({ PROJECTS_DIR: activeProjectsDir(), activeSessions, getMainWindow: () => mainWindow, log, rekeyMcpServer });
+sessionTransitions.init({
+  PROJECTS_DIR: activeProjectsDir(), activeSessions, getMainWindow: () => mainWindow, log,
+  // A fork or a plan-accept gives the session a new UUID. The tracker has to
+  // follow it, or it keeps reporting under an id the renderer has retired —
+  // and the hooks arriving from the forked CLI would open a second entry.
+  rekeyMcpServer: (oldId, newId) => {
+    rekeyMcpServer(oldId, newId);
+    sessionStatus.rekey(oldId, newId);
+  },
+});
 const { detectSessionTransitions } = sessionTransitions;
 
 // --- fs.watch on projects directory ---
@@ -2977,6 +3072,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   // Shut down all MCP servers
   shutdownAllMcp();
+  stopHookServer();
 
   // Close filesystem watcher
   if (projectsWatcher) {

@@ -14,11 +14,11 @@ export const store = reactive({
   sessionBusyState: new Map(),
   attentionSessions: new Set(),
   responseReadySessions: new Set(),
-  // Sessions whose finished turn the user has already opened but not yet left.
+  // Sessions whose finished turn the user has already seen but not put away.
   // The sidebar's blue dot clears the instant you click a session, so
   // responseReadySessions alone would yank a board card out of DONE under the
-  // cursor. app.js parks the id here instead and drops it when the active
-  // session changes, which is the moment the board calls "read and left".
+  // cursor. app.js parks the id here instead and drops it when the session
+  // view is closed, which is the moment the board calls "done with it".
   readPendingSessions: new Set(),
   lastActivityTime: new Map(),
   pendingSessions: new Set(),
@@ -80,8 +80,17 @@ export const store = reactive({
   // Session side panel — uncommitted changes / containers / scratch shell for
   // the session that is open in the main area. Scoped to that session's own
   // projectPath, which may be a worktree the Projects tab is not showing.
-  sidePanelOpen: false,
+  //
+  // One pane at a time, named rather than a boolean: the tab is what persists
+  // across a session switch. Keeping the shell open and stepping through
+  // sessions is the point — the pane stays, its contents re-scope to whatever
+  // session is now in front. null means closed.
+  sidePanelTab: null,            // null | 'changes' | 'containers' | 'shell'
   sidePanelWidth: 380,
+  // Last get-project-detail the panel loaded, published so the rail can badge
+  // its buttons without issuing a second call — get-project-detail broadcasts
+  // `projects-changed`, which re-renders the whole sidebar, so it is not free.
+  sidePanelDetail: null,
 
   // Project avatars: projectPath → data: URL string
   avatarDataUrls: {},

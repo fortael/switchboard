@@ -297,10 +297,13 @@ body.hide-avatars .sbx-board__avatar { display: none; }
   bottom: var(--sbx-board-split, 46%);
 }
 
+/* No border on the seam. The side panel is a floating island now, so a
+   full-width hairline above it reads as a stray rule rather than as a join —
+   and .sbx-board-splitter already draws the line on hover, which is the only
+   moment the boundary is worth pointing at. */
 #main.has-board-split #terminal-area {
   top: auto;
   height: var(--sbx-board-split, 46%);
-  border-top: 1px solid var(--border-subtle);
 }
 
 
@@ -777,31 +780,9 @@ body.hide-avatars .sbx-boardside__avatar { display: none; }
               opacity var(--duration-slow) var(--ease-standard);
 }
 
-/* Close control for the session pane. Floats over the pane's top-right corner
-   rather than living in the board's title bar, where it looked like it closed
-   the board. */
-.sbx-board-splitclose {
-  position: absolute;
-  right: var(--space-3);
-  bottom: calc(var(--sbx-board-split, 46%) - var(--hit-xs) - var(--space-2));
-  z-index: 6;
-  width: var(--hit-xs);
-  height: var(--hit-xs);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: var(--border-width-hairline) solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface-panel-raised);
-  cursor: pointer;
-  transition: background var(--duration-fast) var(--ease-standard),
-              border-color var(--duration-fast) var(--ease-standard);
-}
-.sbx-board-splitclose:hover {
-  background: var(--surface-card-hover);
-  border-color: var(--border-default);
-}
+/* The session pane's close control moved to SessionPanelRail (css/side-panel.css)
+   so the same button sits in the same corner in the board split and in the full
+   session view. */
 
 /* #board-viewer and #terminal-area are siblings with `inset: 0`, and the
    terminal comes later in the DOM — so with no session pinned below the board

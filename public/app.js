@@ -18,11 +18,9 @@ const openSessions = new Map();
 window._openSessions = openSessions;
 let activeSessionId = sessionStorage.getItem('activeSessionId') || null;
 function setActiveSession(id) {
-  // Switching away from a session the user had already read is the second half
-  // of the board's DONE → IDLE move; see readPendingSessions below.
-  for (const sid of readPendingSessions) {
-    if (sid !== id) setReadPending(sid, false);
-  }
+  // Focus moving elsewhere no longer retires a DONE card. A finished turn is
+  // finished whether or not you are still looking at it, so the card stays
+  // until the session view is closed — see __sb.closeSessionView.
   activeSessionId = id;
   if (id) sessionStorage.setItem('activeSessionId', id);
   else sessionStorage.removeItem('activeSessionId');
@@ -70,13 +68,12 @@ let searchMatchProjectPaths = null; // Set<string> of project paths matched by n
 //
 const attentionSessions = new Set(); // sessions needing user action (OSC 9)
 const responseReadySessions = new Set(); // Claude finished, user hasn't looked (terminal state)
-// Claude finished, the user has looked, and the session is still the open one.
-// The sidebar clears its blue dot the moment a session is opened — that is the
-// behaviour people expect from an unread marker — but the board's DONE column
-// means "finished and not yet dismissed", so a card must not leave DONE under
-// the click that opened it. clearUnread() parks the id here instead of simply
-// dropping it, and setActiveSession() releases it as soon as focus moves to a
-// different session. Board state = responseReady || readPending.
+// Claude finished and the user has already seen it — either because the
+// session was open when the turn landed, or because they opened it afterwards.
+// The sidebar clears its blue dot on open, which is what people expect from an
+// unread marker, but the board's DONE column means "finished and not yet put
+// away". So the id is parked here rather than dropped, and only closing the
+// session view retires it. Board state = responseReady || readPending.
 const readPendingSessions = new Set();
 const sessionBusyState = new Map(); // sessionId → boolean (currently active)
 const lastActivityTime = new Map(); // sessionId → Date of last terminal output
@@ -107,9 +104,17 @@ function setActivity(sessionId, active) {
   sessionBusyState.set(sessionId, active);
   if (wasActive && !active) scheduleCounterRefresh();
 
-  if (wasActive && !active && sessionId !== activeSessionId) {
-    responseReadySessions.add(sessionId);
-    window.vueSidebar?.setResponseReady(sessionId);
+  if (wasActive && !active) {
+    // A finished turn always owes the board a DONE card, whether or not you
+    // happened to be looking when it landed. Which set it goes in decides only
+    // the sidebar's unread dot: a session you are watching is read on arrival,
+    // one you are not is not.
+    if (sessionId === activeSessionId) {
+      setReadPending(sessionId, true);
+    } else {
+      responseReadySessions.add(sessionId);
+      window.vueSidebar?.setResponseReady(sessionId);
+    }
   }
 
   window.vueSidebar?.setBusy(sessionId, active);
@@ -320,10 +325,64 @@ window.api.onTerminalNotification((sessionId, message) => {
   }
 });
 
-// --- CLI busy state (OSC 0 title spinner detection) ---
-window.api.onCliBusyState((sessionId, busy) => {
-  setActivity(sessionId, busy);
+// --- Session status (Claude Code lifecycle hooks; OSC fallback) ---
+// The main process owns the state machine — see session-status.js. Three states
+// arrive here; this maps them onto the sets the sidebar and board already read.
+function applySessionStatus(sessionId, status) {
+  if (!status) return;
+  const state = status.state;
+
+  if (state === 'exited') {
+    // Belt and braces with onProcessExited: whichever lands first wins, and the
+    // sets must not keep a spinner for a session that is gone.
+    sessionBusyState.delete(sessionId);
+    window.vueStore?.sessionBusyState?.delete(sessionId);
+    clearNotifications(sessionId);
+    setReadPending(sessionId, false);
+    return;
+  }
+
+  if (state === 'requires_action') {
+    // The session is blocked on the user — a permission prompt, a plan to
+    // approve, an MCP elicitation. Distinct from "finished a turn", which is
+    // what setActivity(false) records, and it must not be dropped just because
+    // the session is currently open: attention is why you would look at it.
+    sessionBusyState.delete(sessionId);
+    window.vueSidebar?.setBusy(sessionId, false);
+    if (sessionId !== activeSessionId) {
+      attentionSessions.add(sessionId);
+      window.vueSidebar?.addAttention(sessionId);
+    }
+    return;
+  }
+
+  // 'running' | 'idle' — a real turn boundary, so whatever the session was
+  // blocked on is resolved.
+  if (attentionSessions.has(sessionId)) {
+    attentionSessions.delete(sessionId);
+    window.vueSidebar?.clearNotifications(sessionId);
+  }
+  // setActivity ignores everything while a session sits in responseReady, which
+  // is normally fine because opening a session clears it. A session that starts
+  // a new turn without ever being opened — an external launcher driving it —
+  // would otherwise never show as running again.
+  if (state === 'running') clearUnread(sessionId);
+  setActivity(sessionId, state === 'running');
+}
+
+window.api.onSessionStatus(applySessionStatus);
+
+// The traffic lights vanish in full screen; css/shell.css drops the gap it
+// keeps for them when this flips.
+window.api.onWindowFullscreen((isFullscreen) => {
+  document.documentElement.dataset.fullscreen = isFullscreen ? '1' : '0';
 });
+
+// A renderer reload loses every set above while the sessions keep running, so
+// ask the main process for the states it is still holding.
+window.api.getSessionStatuses().then(list => {
+  for (const status of list || []) applySessionStatus(status.sessionId, status);
+}).catch(() => {});
 
 // --- Single entry point for all sidebar renders ---
 // resort=true: re-sort items by priority+time (use for user-initiated actions)
@@ -433,6 +492,11 @@ function updateRunningIndicators() {
       responseReadySessions.delete(id);
       setReadPending(id, false);
       sessionBusyState.delete(id);
+      // The board and the header read the store, not these local sets. Clearing
+      // only the local copies left the Vue side showing "Working…" for a
+      // session that had already exited.
+      window.vueStore?.sessionBusyState?.delete(id);
+      window.vueSidebar?.clearNotifications(id);
     }
     const dot = item.querySelector('.session-status-dot');
     if (dot) dot.classList.toggle('running', running);
@@ -1304,6 +1368,34 @@ window.__sb = {
   toggleGridView: () => toggleGridView(),
 
   openSession: (session) => openSession(session),
+
+  // Puts the session view away without touching the session. The PTY keeps
+  // running and the row stays in the sidebar — this is "stop looking at it",
+  // which is a different thing from Stop and from Delete.
+  closeSessionView: () => {
+    // Closing the view is what retires the DONE card: the turn has been read
+    // and put away. Everything else — reading it, switching to another
+    // session — leaves it standing.
+    const closing = (window.vueStore?.activeTab === 'board' && window.vueStore.boardPreviewId)
+      || activeSessionId;
+    if (closing) {
+      setReadPending(closing, false);
+      responseReadySessions.delete(closing);
+      window.vueSidebar?.clearNotifications(closing);
+    }
+    // In the board's bottom split the pane belongs to the board, so closing it
+    // is the board's own state change; the board stays up.
+    if (window.vueStore?.activeTab === 'board' && window.vueStore.boardPreviewId) {
+      window.vueStore.boardPreviewId = null;
+      return;
+    }
+    setActiveSession(null);
+    window.vueSidebar?.clearHeader();
+    terminalHeader.style.display = 'none';
+    terminalArea.style.display = 'none';
+    placeholder.style.display = '';
+    saveUiState({ panel: null });
+  },
 
   stopSession: (id) => confirmAndStopSession(id),
 

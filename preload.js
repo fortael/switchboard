@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
   getMemories: () => ipcRenderer.invoke('get-memories'),
   getProjects: (showArchived) => ipcRenderer.invoke('get-projects', showArchived),
   getActiveSessions: () => ipcRenderer.invoke('get-active-sessions'),
+  getSessionStatuses: () => ipcRenderer.invoke('get-session-statuses'),
   getActiveTerminals: () => ipcRenderer.invoke('get-active-terminals'),
   stopSession: (id) => ipcRenderer.invoke('stop-session', id),
   toggleStar: (id) => ipcRenderer.invoke('toggle-star', id),
@@ -101,8 +102,11 @@ contextBridge.exposeInMainWorld('api', {
   onTerminalNotification: (callback) => {
     ipcRenderer.on('terminal-notification', (_event, sessionId, message) => callback(sessionId, message));
   },
-  onCliBusyState: (callback) => {
-    ipcRenderer.on('cli-busy-state', (_event, sessionId, busy) => callback(sessionId, busy));
+  onSessionStatus: (callback) => {
+    ipcRenderer.on('session-status', (_event, sessionId, status) => callback(sessionId, status));
+  },
+  onWindowFullscreen: (callback) => {
+    ipcRenderer.on('window-fullscreen', (_event, isFullscreen) => callback(isFullscreen));
   },
   onSessionForked: (callback) => {
     ipcRenderer.on('session-forked', (_event, oldId, newId) => callback(oldId, newId));

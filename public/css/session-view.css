@@ -23,7 +23,9 @@
   height: 46px;
   padding: 0 var(--space-5);
   background: var(--surface-panel-raised);
-  border-bottom: 1px solid var(--border-subtle);
+  /* No bottom hairline: the raised surface already separates the header from
+     the terminal, and the rule ran the full width — across the gutter above
+     the floating side panel, where there is nothing for it to divide. */
   font-family: var(--font-ui);
 }
 

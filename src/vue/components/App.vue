@@ -139,18 +139,8 @@
       aria-label="Resize the session pane"
       @mousedown.prevent="startBoardResize"
     ></div>
-    <!-- Closes the session pane, not the board. Pinned to the pane's own top
-         corner so it cannot be read as closing the thing above it. -->
-    <button
-      v-if="boardSplitActive"
-      type="button"
-      class="sbx-board-splitclose"
-      data-tooltip="Close the session below"
-      aria-label="Close the session below"
-      @click="store.boardPreviewId = null"
-    >
-      <SbIcon name="x" :size="13" tone="muted" />
-    </button>
+    <!-- The pane's own close button is on SessionPanelRail now, so it is the
+         same control in the same place in both views. -->
     <div id="placeholder">
       <p>Select a session from the sidebar to begin.</p>
     </div>
@@ -189,6 +179,7 @@
       <div id="vue-session-header">
         <SessionHeaderApp />
       </div>
+      <SessionPanelRail v-if="store.headerSession" />
       <SessionSidePanelApp v-if="sidePanelVisible" />
       <!-- Legacy terminal header kept for JS references (hidden) -->
       <div id="terminal-header" style="display:none;">
@@ -242,6 +233,8 @@ import AttentionRail from './AttentionRail.vue';
 import SidebarApp from './SidebarApp.vue';
 import SessionHeaderApp from './SessionHeaderApp.vue';
 import SessionSidePanelApp from './SessionSidePanelApp.vue';
+import SessionPanelRail from './SessionPanelRail.vue';
+import { loadSidePanelTab } from '../side-panel-tabs.js';
 import PlansApp from './PlansApp.vue';
 import AccountsApp from './AccountsApp.vue';
 import AccountDropdownApp from './AccountDropdownApp.vue';
@@ -519,10 +512,10 @@ function onViewMode(mode) {
 // Only meaningful over an open session — it is scoped to that session's own
 // project path. Opening, closing or resizing it changes the terminal's width,
 // and xterm keeps its own cols/rows, so every transition ends in a refit.
-// Not in the board's bottom split: that pane is a small terminal preview,
-// and the changes/containers panel needs room the split does not have.
+// The board's bottom split gets it too: one pane at a time is narrow enough to
+// share that space, and the shell in particular is worth having there.
 const sidePanelVisible = computed(() =>
-  store.sidePanelOpen && !!store.headerSession && !boardSplitActive.value
+  !!store.sidePanelTab && !!store.headerSession
 );
 
 watch(sidePanelVisible, () => {
@@ -698,8 +691,8 @@ onMounted(async () => {
   const savedSplit = Number(localStorage.getItem('boardSplitHeight'));
   if (Number.isFinite(savedSplit) && savedSplit > 0) store.boardSplitHeight = savedSplit;
 
-  // Session side panel — open state and width survive a restart.
-  store.sidePanelOpen = localStorage.getItem('sessionSidePanelOpen') === '1';
+  // Session side panel — the open pane and the width survive a restart.
+  store.sidePanelTab = loadSidePanelTab();
   const savedPanelWidth = parseInt(localStorage.getItem('sessionSidePanelWidth'), 10);
   if (Number.isFinite(savedPanelWidth) && savedPanelWidth >= 280) store.sidePanelWidth = savedPanelWidth;
 

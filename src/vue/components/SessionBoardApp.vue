@@ -152,12 +152,17 @@ function preview(session) {
   refitSoon();
 }
 
+// Routed through app.js rather than clearing the id here: closing the pane is
+// what retires the card from DONE, and doing it locally skipped that — the
+// session came back to DONE-forever, since nothing else ever released it.
 function closePreview() {
-  store.boardPreviewId = null;
+  window.__sb?.closeSessionView?.();
   refitSoon();
 }
 
-// Leaving the board must not strand the terminal in a half-height pane.
+// Leaving the board must not strand the terminal in a half-height pane. This
+// one stays a plain clear: switching tabs is not closing the session, which
+// remains open in the session view and keeps whatever card it had earned.
 onUnmounted(() => { store.boardPreviewId = null; });
 
 // The board is a survey, not a workspace: opening a card hands you over to the

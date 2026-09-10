@@ -21,59 +21,90 @@
 /* Fallback: the inline style on #terminal-area normally supplies this. */
 #terminal-area { --sbx-sidepanel-w: 380px; }
 
-/* The terminal gives up exactly the panel's width. #terminals carries a
-   -20px margin of its own to hide xterm's scrollbar gutter, so when
-   file-panel.js has not built the split yet the shift is offset by it. */
+/* The panel floats as an island rather than splitting the pane, so the space
+   it costs the terminal is its width plus the gutter on either side of it. */
+#terminal-area { --sbx-sidepanel-gap: var(--space-3); }
+
 #terminal-area.has-side-panel > #terminal-split {
-  margin-right: var(--sbx-sidepanel-w);
+  margin-right: calc(var(--sbx-sidepanel-w) + var(--sbx-sidepanel-gap) * 2);
 }
 
+/* #terminals carries a -20px margin of its own to hide xterm's scrollbar
+   gutter, so when file-panel.js has not built the split yet the shift is
+   offset by it. */
 #terminal-area.has-side-panel > #terminals {
-  margin-right: calc(var(--sbx-sidepanel-w) - 20px);
+  margin-right: calc(var(--sbx-sidepanel-w) + var(--sbx-sidepanel-gap) * 2 - 20px);
 }
 
 /* Same treatment for the grid-mode header strip, so it lines up with the
    grid it labels. */
 #terminal-area.has-side-panel > #grid-viewer {
-  margin-right: var(--sbx-sidepanel-w);
+  margin-right: calc(var(--sbx-sidepanel-w) + var(--sbx-sidepanel-gap) * 2);
 }
 
 /* ─── Panel frame ───────────────────────────────────────────────── */
 
+/* An island: inset from every edge, rounded, with its own shadow. It reads as
+   something laid over the session rather than as the screen being cut in two. */
 .sbx-sidepanel {
   position: absolute;
-  top: 46px;                 /* clears .sbx-sesshead — never covers it */
-  right: 0;
-  bottom: 0;
+  top: calc(46px + var(--sbx-sidepanel-gap));   /* .sbx-sesshead + gutter */
+  right: var(--sbx-sidepanel-gap);
+  bottom: var(--sbx-sidepanel-gap);
   z-index: 5;
   width: var(--sbx-sidepanel-w);
   display: flex;
   background: var(--surface-panel);
-  border-left: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
   font-family: var(--font-ui);
 }
 
-/* Drag handle. Sits in the panel's own left edge rather than in the gap, so
-   it cannot land on top of the terminal's text. */
+/* Drag handle. Lives in the gutter beside the island, not inside it: as a
+   flex child it held a column of empty panel open on the left, which read as
+   a mis-set padding. The gutter is empty space, so nothing here can land on
+   the terminal's text either. */
 .sbx-sidepanel__grip {
-  width: var(--space-1);
-  flex-shrink: 0;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * var(--sbx-sidepanel-gap));
+  width: var(--sbx-sidepanel-gap);
   cursor: col-resize;
+  background: transparent;
+}
+
+/* A hairline down the middle of the gutter — the grab area is the full 12px,
+   but showing 12px of highlight would look like a second border. */
+.sbx-sidepanel__grip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 1px;
   background: transparent;
   transition: background var(--duration-base) var(--ease-standard);
 }
 
-.sbx-sidepanel__grip:hover,
-.sbx-sidepanel__grip.is-dragging {
+.sbx-sidepanel__grip:hover::after,
+.sbx-sidepanel__grip.is-dragging::after {
   background: var(--border-strong);
 }
 
+/* The clipping that keeps the header and the shell pane from squaring off the
+   frame's rounded corners lives here, not on .sbx-sidepanel — the resize grip
+   is a sibling that sits outside the frame, and clipping there would eat it. */
 .sbx-sidepanel__body {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-radius: inherit;
 }
 
 /* ─── Header: branch + path + actions ───────────────────────────── */
@@ -150,113 +181,52 @@
   to { transform: rotate(360deg); }
 }
 
-/* ─── Sections ──────────────────────────────────────────────────── */
-
-/* All three are open at once by default: the whole point of the panel is to
-   stop the user switching between views to see these three things. */
-.sbx-sidepanel__section {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.sbx-sidepanel__sechead {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  flex-shrink: 0;
-  padding: var(--space-2) var(--space-3);
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  text-align: left;
-  transition: background var(--duration-fast) var(--ease-standard);
-}
-
-.sbx-sidepanel__sechead:hover {
-  background: var(--surface-card-hover);
-}
-
-.sbx-sidepanel__sechead:focus-visible {
-  outline: none;
-  box-shadow: var(--shadow-focus-ring);
-}
-
-.sbx-sidepanel__chev {
-  flex-shrink: 0;
-  color: var(--text-disabled);
-  transition: transform var(--duration-base) var(--ease-standard);
-}
-
-.sbx-sidepanel__section.is-collapsed .sbx-sidepanel__chev {
-  transform: rotate(-90deg);
-}
-
-.sbx-sidepanel__sectitle {
+.sbx-sidepanel__title {
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.sbx-sidepanel__secstat {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-left: auto;
+/* Pushes the branch/path context to the right of the pane's own title, so the
+   left edge always reads as "which pane am I looking at". */
+.sbx-sidepanel__spacer {
+  flex: 1 1 auto;
+  min-width: var(--space-2);
+}
+
+.sbx-sidepanel__head .pv-added,
+.sbx-sidepanel__head .pv-deleted {
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
-  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.sbx-sidepanel__secnote {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  color: var(--text-disabled);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
+/* ─── Panes ─────────────────────────────────────────────────────── */
 
-.sbx-sidepanel__secbody {
+/* One at a time. The panel is a column with a fixed header, so whichever pane
+   is showing takes all the height that is left and scrolls on its own — no
+   per-section vh ceilings to keep three of them from crowding each other. */
+.sbx-sidepanel__pane {
+  flex: 1 1 auto;
   min-height: 0;
-  padding: 0 var(--space-3) var(--space-2);
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
 }
 
-/* Changes and containers keep a ceiling so a busy repo cannot push the shell
-   off the bottom; each scrolls on its own. */
-.sbx-sidepanel__secbody--files {
-  max-height: 32vh;
-  overflow-y: auto;
-}
-
-.sbx-sidepanel__secbody--containers {
-  max-height: 22vh;
-  overflow-y: auto;
+.sbx-sidepanel__pane--containers {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
 }
 
-/* The shell takes whatever height the other two leave. */
-.sbx-sidepanel__section--shell {
-  flex: 1 1 auto;
-  border-bottom: none;
-}
-
-.sbx-sidepanel__secbody--shell {
-  flex: 1 1 auto;
-  min-height: 120px;
+.sbx-sidepanel__pane--shell {
+  overflow: hidden;
   padding: var(--space-1) 0 var(--space-1) var(--space-2);
   background: var(--surface-app);
-  overflow: hidden;
 }
 
 .sbx-sidepanel__shellhost {
@@ -307,15 +277,123 @@
   padding: var(--space-1) 0;
 }
 
-/* ─── Header toggle button (extends .sbx-sesshead__iconbtn) ─────── */
+/* ─── Rail — SessionPanelRail.vue ───────────────────────────────── */
 
-.sbx-sesshead__iconbtn.is-active {
+/* Floats over the terminal's top-right corner instead of sitting in the
+   session header, because that header is display:none in the board's bottom
+   split and these controls have to reach both views. Being a child of
+   #terminal-area rather than of the terminal itself also means the SDK-backed
+   session view will inherit it without moving anything. */
+.sbx-panelrail {
+  position: absolute;
+  /* +1px: the panel's own top border pushes its header down by one, and with
+     the two boxes side by side and only a gutter apart, a one-pixel step
+     between them reads as a broken line rather than as two things. Same top,
+     same height as .sbx-sidepanel__head — they share a baseline. */
+  top: calc(46px + var(--sbx-sidepanel-gap) + 1px);
+  right: var(--sbx-sidepanel-gap);
+  height: var(--hit-md);
+  z-index: 6;                                   /* above .sbx-sidepanel */
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-panel-raised) 88%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: var(--shadow-sm);
+  transition: right var(--duration-base) var(--ease-standard);
+}
+
+/* Step aside for the panel rather than sit on top of its header. */
+/* Clear of the panel by more than the gutter: at one gutter the two rounded,
+   shadowed boxes read as one strip that got cut, not as two controls. */
+.sbx-panelrail.is-open {
+  right: calc(var(--sbx-sidepanel-w) + var(--sbx-sidepanel-gap) + var(--space-5));
+}
+
+/* The board split hides the session header, so there is nothing to clear —
+   the same +1px keeps the rail level with the panel's header there too. */
+#main.has-board-split .sbx-panelrail {
+  top: calc(var(--sbx-sidepanel-gap) + 1px);
+}
+
+.sbx-panelrail__btn {
+  position: relative;
+  width: var(--hit-sm);
+  height: var(--hit-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-panelrail__btn:hover {
+  background: var(--surface-card-hover);
+  color: var(--text-primary);
+}
+
+.sbx-panelrail__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+.sbx-panelrail__btn.is-active {
   background: var(--surface-card);
   color: var(--orange-500);
 }
 
-.sbx-sesshead__iconbtn.is-active:hover {
+.sbx-panelrail__btn.is-active:hover {
   background: var(--surface-card-hover);
+}
+
+.sbx-panelrail .sb-icon { display: block; }
+
+/* Stop is destructive and is not a panel toggle — the rule keeps it from
+   reading as a fourth pane. */
+.sbx-panelrail__sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  flex-shrink: 0;
+  background: var(--border-subtle);
+}
+
+/* Same treatment the session header gave it, so Stop reads identically
+   wherever it appears. */
+.sbx-panelrail__btn--danger:hover {
+  color: var(--status-danger);
+  background: color-mix(in srgb, var(--status-danger) 10%, transparent);
+}
+
+/* Count of changed files / running containers. Reads as a status dot at a
+   glance and as a number when you look at it. */
+.sbx-panelrail__badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--blue-500);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  font-weight: var(--weight-semibold);
 }
 
 /* ─── Light theme ───────────────────────────────────────────────── */
@@ -323,8 +401,8 @@
    flips. Only --orange-500 needs stepping down: it is tuned for near-black
    surfaces and washes out on paper. */
 
-[data-theme='light'] .sbx-sesshead__iconbtn.is-active,
-.theme-light .sbx-sesshead__iconbtn.is-active {
+[data-theme='light'] .sbx-panelrail__btn.is-active,
+.theme-light .sbx-panelrail__btn.is-active {
   color: var(--orange-600);
 }
 
@@ -340,9 +418,244 @@
   background: var(--surface-panel);
 }
 
-/* ─── Narrow windows ────────────────────────────────────────────── */
+/* ─── Changes sub-tabs ──────────────────────────────────────────── */
 
-@media (max-width: 1100px) {
-  .sbx-sidepanel__secbody--files { max-height: 26vh; }
-  .sbx-sidepanel__secbody--containers { max-height: 18vh; }
+.sbx-sidepanel__subtabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3) 0;
+}
+
+.sbx-sidepanel__subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--hit-xs);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-sidepanel__subtab:hover { background: var(--surface-card-hover); }
+
+.sbx-sidepanel__subtab.is-active {
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+
+.sbx-sidepanel__subcount {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-disabled);
+}
+
+/* Unpushed is the count worth noticing — it is work that exists only here. */
+.sbx-sidepanel__subcount.is-unpushed { color: var(--orange-500); }
+
+/* ─── Commits ───────────────────────────────────────────────────── */
+
+.sbx-sidepanel__seclabel {
+  margin: var(--space-2) 0 var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-disabled);
+}
+
+.sbx-sidepanel__seclabel:first-child { margin-top: 0; }
+.sbx-sidepanel__seclabel.is-unpushed { color: var(--orange-500); }
+
+/* One line per commit: hash, subject, age. At this width the subject is the
+   only part worth giving room to, so it takes the slack and the rest is
+   fixed. Author is dropped — in a session panel it is nearly always you. */
+.sbx-sidepanel__commititem {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 3px 0;
+  min-width: 0;
+}
+
+.sbx-sidepanel__commititem .pv-commit-hash {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+.sbx-sidepanel__commititem .pv-commit-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+}
+
+.sbx-sidepanel__commititem .pv-commit-date {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--text-disabled);
+  white-space: nowrap;
+}
+
+.sbx-sidepanel__commititem.is-unpushed .pv-commit-msg { color: var(--text-primary); }
+
+/* ─── Diff overlay + commit box ─────────────────────────────────── */
+
+.sbx-sidepanel__backbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  height: var(--hit-xs);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+.sbx-sidepanel__backbtn:hover {
+  background: var(--surface-card-hover);
+  color: var(--text-primary);
+}
+
+/* One chevron glyph, rotated — the icon set has no left/right pair. */
+.sbx-sidepanel__backchev,
+.sbx-sidepanel__prevchev { transform: rotate(90deg); }
+.sbx-sidepanel__nextchev { transform: rotate(-90deg); }
+
+.sbx-sidepanel__difffile {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.sbx-sidepanel__diffcount {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.sbx-sidepanel__iconbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.sbx-sidepanel__iconbtn:disabled:hover {
+  background: transparent;
+  color: var(--text-tertiary);
+}
+
+.sbx-sidepanel__pane--diff {
+  padding: 0;
+  overflow: hidden;
+}
+
+.sbx-sidepanel__diffhost {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+}
+
+.sbx-sidepanel .pv-file-row--clickable { cursor: pointer; }
+
+.sbx-sidepanel .pv-file-row--clickable:hover {
+  background: var(--surface-card-hover);
+}
+
+.sbx-sidepanel .pv-file-row--clickable.loading { opacity: 0.5; }
+
+/* Pinned under the file list rather than scrolling with it: the message box is
+   the thing you come back to after reading the diffs. */
+.sbx-sidepanel__commit {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-panel-raised);
+}
+
+.sbx-sidepanel__commitinput {
+  width: 100%;
+  resize: vertical;
+  min-height: 56px;
+}
+
+.sbx-sidepanel__generating {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.sbx-sidepanel__commitrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sbx-sidepanel__genlabel {
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+  white-space: nowrap;
+}
+
+.sbx-sidepanel__gitmsg {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.sbx-sidepanel__gitmsg.is-error { color: var(--status-danger); }
+
+/* Authorship line, borrowed wholesale from the Projects tab so the two places
+   that can produce a commit describe it identically. Only the top margin
+   changes: here it closes a stack that is already tight. */
+.sbx-sidepanel .pv-git-user {
+  margin-top: 0;
+  min-width: 0;
+}
+
+.sbx-sidepanel .pv-git-user-name,
+.sbx-sidepanel .pv-git-user-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── Board bottom split ────────────────────────────────────────── */
+
+/* The session header is hidden there, so the panel starts at the pane's own
+   top edge — still inset, still an island. */
+#main.has-board-split .sbx-sidepanel {
+  top: var(--sbx-sidepanel-gap);
 }
