@@ -103,10 +103,11 @@ When WootonPad is already running, `open wootonpad://...` delivers the URL direc
 
 Toggle the grid overview from the sidebar for a bird's-eye view of all your open sessions at once, grouped by project.
 
-- **Live terminals** — Every open session renders its full terminal in a card, so you can monitor multiple Claude agents simultaneously.
 - **Status at a glance** — Each card shows a running/stopped/busy indicator dot and last-activity timestamp.
 - **Click to focus, double-click to expand** — Click a card header to focus it; double-click to switch back to single-terminal view for that session.
 - **Persistent** — Grid preference is saved across restarts.
+
+![Wooton Pad](build/board.png)
 
 ---
 
