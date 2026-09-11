@@ -443,6 +443,24 @@ const attentionProjects = computed(() => {
     OPEN_ORDER[a.status] - OPEN_ORDER[b.status] || b.recency - a.recency);
 });
 
+// ── Dock badge ───────────────────────────────────────────────────
+// The two board columns that mean "this wants you": WAITING INPUT and DONE.
+// Sent as ids rather than a count for the waiting half, because main.js has to
+// tell a session that has *just* become blocked from one that has been blocked
+// for a while — only the first should bounce the icon.
+const attentionSummary = computed(() => ({
+  waiting: [...store.attentionSessions],
+  done: new Set([...store.responseReadySessions, ...store.readPendingSessions]).size,
+}));
+
+watch(attentionSummary, (summary) => window.api?.reportAttention?.(summary),
+  { immediate: true });
+
+// Two buttons write this flag — the board's and a project's Sessions tab —
+// so it is persisted here, once, rather than in each of them. app.js owns
+// `ui_state` and the round trip to SQLite; this only reports the change.
+watch(() => store.highlightFresh, (on) => window.__sb?.setHighlightFresh?.(on));
+
 // AttentionRail addresses entries by display name; the rail and the store
 // speak projectPath.
 const attentionActiveName = computed(() =>

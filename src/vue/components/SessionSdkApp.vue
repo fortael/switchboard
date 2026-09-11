@@ -105,6 +105,7 @@ import SbIcon from './SbIcon.vue';
 import UsageRing from './UsageRing.vue';
 import RequestDialog from './RequestDialog.vue';
 import { normalize } from '../message-normalizer.ts';
+import { modelLabels, defaultModelValue } from '../model-name.js';
 import {
   renderViewItems, renderJsonlEntry, renderJsonlText, mergeLocalCommandEntries,
 } from '../message-render.js';
@@ -130,6 +131,9 @@ const PERMISSION_MODES = [
 ];
 const permissionMode = ref('default');
 const model = ref('');
+// Set once the user picks a row by hand. Until then the picker is only ever
+// showing a guess, and every later report of what is running may correct it.
+let modelPinned = false;
 const effort = ref('high');
 const models = ref([]);
 const context = ref(null);
@@ -147,12 +151,10 @@ const init = ref(null);
 /** `claude-opus-5[1m]` → `claude-opus-5`; the suffix is already in the name. */
 const wireId = (m) => String(m?.resolvedModel || m?.value || '').replace(/\[1m\]$/, '');
 
-// A row saying only "Default (recommended)" tells you nothing about which
-// model you are talking to — Opus 5 and Opus 4.8 look identical from there.
-function modelLabel(m) {
-  const id = wireId(m);
-  return id && id !== m.value ? `${m.displayName} · ${id}` : m.displayName;
-}
+// "Opus 5", "Haiku 4.5" — the names the CLI's own picker uses. See
+// model-name.js for why the wire id is what they are derived from.
+const labels = computed(() => modelLabels(models.value));
+const modelLabel = (m) => labels.value.get(m.value) || m.displayName;
 
 const selectedModel = computed(() =>
   models.value.find(m => m.value === model.value) || models.value[0] || null);
@@ -394,6 +396,7 @@ async function onModel(event) {
   const res = await window.api.sdkSetModel(sessionId.value, value);
   if (!res?.ok) return;
   model.value = value;
+  modelPinned = true;
   // The new model may not offer the level the old one was on.
   const levels = effortLevels.value;
   if (levels.length && !levels.includes(effort.value)) {
@@ -424,6 +427,12 @@ async function loadModels() {
   syncSelectedModel();
 }
 
+// The list can only be fetched once the session is up, and on a chat opened
+// before that it comes back empty — leaving the picker blank for the rest of
+// the session. `system/init` is the first thing that proves the CLI is
+// answering, so it is also the moment to ask again.
+watch(init, () => { if (!models.value.length) loadModels(); });
+
 /**
  * Point the picker at the row the session is actually running, matched by the
  * wire id rather than the alias — several rows resolve to the same model, and
@@ -434,10 +443,19 @@ async function loadModels() {
  * land first.
  */
 function syncSelectedModel() {
-  if (model.value || !liveModel.value || !models.value.length) return;
-  const running = liveModel.value.replace(/\[1m\]$/, '');
-  const match = models.value.find(m => wireId(m) === running);
-  if (match) model.value = match.value;
+  // A choice the user made outranks anything reported afterwards.
+  if (modelPinned || !models.value.length) return;
+
+  if (liveModel.value) {
+    const running = liveModel.value.replace(/\[1m\]$/, '');
+    const match = models.value.find(m => wireId(m) === running);
+    if (match) { model.value = match.value; return; }
+  }
+  // Nothing has run yet, so there is nothing to report — but the session still
+  // has a model, and a picker showing an empty box reads as broken rather than
+  // as "not chosen". Show the row it will actually use until init says
+  // otherwise.
+  if (!model.value) model.value = defaultModelValue(models.value);
 }
 
 watch(liveModel, syncSelectedModel);

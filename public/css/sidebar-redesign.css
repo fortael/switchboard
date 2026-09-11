@@ -1,5 +1,5 @@
 /* Sidebar redesign chrome — CommandBar, FilterTabs, AttentionRail.
-   Ported from design/ui_kits/switchboard/SwitchboardScreen.jsx.
+   Ported from design/ui_kits/wootonpad/WootonPadScreen.jsx.
 
    Every class is prefixed `sbx-` so nothing here collides with style.css.
    Colours, radii and durations are always design tokens (already inlined at

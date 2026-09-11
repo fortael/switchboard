@@ -72,7 +72,12 @@ export const store = reactive({
   // Session previewed in the board's bottom split — the real terminal, not a
   // copy. null = board full height.
   boardPreviewId: null,
-  boardHighlightFresh: false,     // fade board cards by age
+  // Fade session cards by how long ago they last did anything. One flag, not
+  // one per view: the board and a project's Sessions tab show the same button
+  // with the same label over the same ladder (freshness.js), so remembering two
+  // different answers for it would only ever read as a bug. Persisted into
+  // `ui_state` — see the watcher in App.vue.
+  highlightFresh: true,
   boardSplitHeight: 380,          // px, height of the session pane under the board
   // projectPath the board is scoped to, or null for every project. It lives
   // here rather than in SessionBoardApp because the control is in the board's

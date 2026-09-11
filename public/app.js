@@ -1010,6 +1010,12 @@ loadProjects().then(async () => {
   // Restore last open panel + sidebar tab
   try {
     _uiState = (await window.api.getSetting('ui_state')) || {};
+    // Before the panel restore below, so the board or a project page that is
+    // about to be reopened draws with the right setting rather than flipping
+    // under the cursor. Absent means never touched, which keeps the default on.
+    if (typeof _uiState.highlightFresh === 'boolean' && window.vueStore) {
+      window.vueStore.highlightFresh = _uiState.highlightFresh;
+    }
     // Restore sidebar tab first
     if (_uiState.sidebarTab && _uiState.sidebarTab !== 'sessions') {
       window.vueApp?.setTab(_uiState.sidebarTab);
@@ -1629,6 +1635,15 @@ window.__sb = {
 
   openProject: (project) => openProjectViewer(project),
   onPvTabChange: (tab) => saveUiState({ pvTab: tab }),
+
+  // "Highlight fresh", from either of the two buttons that flip it. Guarded
+  // because the watcher driving this also fires when the stored value is
+  // restored into the store at startup, which would write back what was just
+  // read.
+  setHighlightFresh: (on) => {
+    if (_uiState.highlightFresh === !!on) return;
+    saveUiState({ highlightFresh: !!on });
+  },
 
   openSessionById: (sessionId) => {
     const session = sessionMap.get(sessionId);

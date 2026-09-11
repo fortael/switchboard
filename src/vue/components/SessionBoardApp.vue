@@ -7,10 +7,10 @@
       <button
         type="button"
         class="sbx-board__toggle"
-        :class="{ 'is-active': store.boardHighlightFresh }"
-        :aria-pressed="store.boardHighlightFresh"
+        :class="{ 'is-active': store.highlightFresh }"
+        :aria-pressed="store.highlightFresh"
         data-tooltip="Fade cards by how long ago the session last did anything"
-        @click="store.boardHighlightFresh = !store.boardHighlightFresh"
+        @click="store.highlightFresh = !store.highlightFresh"
       >Highlight fresh</button>
     </div>
 
@@ -40,7 +40,7 @@
               v-for="session in group.items"
               :key="session.sessionId"
               :session="session"
-              :highlight-fresh="store.boardHighlightFresh"
+              :highlight-fresh="store.highlightFresh"
               :selected="session.sessionId === store.boardPreviewId"
               @preview="preview"
               @open="open"

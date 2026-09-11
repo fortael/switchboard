@@ -25,6 +25,7 @@ const { startMcpServer, shutdownMcpServer, shutdownAll: shutdownAllMcp, resolveP
 const { startHookServer, stopHookServer } = require('./hook-server');
 const { buildHookSettings } = require('./hook-settings');
 const { SessionStatusTracker } = require('./session-status');
+const { createDockAttention } = require('./dock-attention');
 const sdkSession = require('./sdk-session');
 const { fetchAndTransformUsage, getOAuthToken, probeUsage } = require('./claude-auth');
 log.transports.file.level = app.isPackaged ? 'info' : 'debug';
@@ -265,6 +266,24 @@ const sessionStatus = new SessionStatusTracker({
 function hookServer() {
   return startHookServer({ log, onEvent: payload => sessionStatus.apply(payload) });
 }
+
+// --- Dock badge and attention ---
+// The rules live in dock-attention.js so they can be tested without Electron;
+// this is only the wiring. `app.dock` is undefined off macOS, hence the `?.`.
+const dock = createDockAttention({
+  setBadgeCount: (n) => app.setBadgeCount(n),
+  bounce: () => app.dock?.bounce('critical') ?? null,
+  cancelBounce: (id) => app.dock?.cancelBounce(id),
+  isFocused: () => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused(),
+  log: (message) => log.debug(message),
+});
+
+// Belt and braces with mainWindow.on('focus'): the window event is the one
+// that fires when you click the bouncing icon, and this one covers coming back
+// to an app whose window was never the thing that took focus.
+app.on('browser-window-focus', () => dock.stopBounce());
+
+ipcMain.on('attention-summary', (_event, summary) => dock.update(summary));
 
 // --- SDK-backed sessions ---
 // The same conversation as a PTY session, carried as structured messages
@@ -628,6 +647,10 @@ function createWindow() {
   };
   mainWindow.on('enter-full-screen', () => sendFullscreen(true));
   mainWindow.on('leave-full-screen', () => sendFullscreen(false));
+
+  // Coming to the front is the answer to a bouncing dock icon, whether or not
+  // the session that caused it has been dealt with yet. The badge stays.
+  mainWindow.on('focus', () => dock.stopBounce());
 
   mainWindow.loadFile(path.join(__dirname, 'public', 'index.html'));
 

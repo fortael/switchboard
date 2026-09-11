@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════
    Session view — design-system styles (sbx- prefix)
 
-   Rebuilt from design/ui_kits/switchboard/SwitchboardScreen.jsx (session
+   Rebuilt from design/ui_kits/wootonpad/WootonPadScreen.jsx (session
    header, ~L460-479) plus design/components/core/{Badge,IconButton}.jsx.
    Every colour, radius, spacing and duration is a design token; the token
    :root block lives at the top of public/style.css.
@@ -471,6 +471,16 @@
   bottom: 0;
   padding: 0 var(--space-5) var(--space-4);
   background: var(--surface-panel);
+  /* A dialog grows this box upward, and out of flow it would keep growing past
+     the top of the pane — over the board, under the splitter and the floating
+     rail, which both paint above it. So it is capped at the pane's height less
+     the band the rail occupies (see .sbx-panelrail: one gap, the rail, and its
+     own one-pixel nudge). The pane in the board's bottom split is short enough
+     for this to matter with four options on screen. */
+  max-height: calc(100% - var(--hit-md) - var(--sbx-sidepanel-gap, 12px) * 2 - 1px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
 }
 
 /* The dissolve. Text scrolling up through this band goes from readable to the
@@ -612,6 +622,9 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /* Shrinkable inside the capped composer — without this the flex child keeps
+     its content height and the cap has nothing to act on. */
+  min-height: 0;
   padding: var(--space-3);
   border: 1px solid color-mix(in srgb, var(--orange-500) 45%, transparent);
   border-radius: var(--radius-md);
@@ -670,6 +683,16 @@
   margin: 0;
   font-size: var(--text-2xs);
   color: var(--text-secondary);
+}
+
+/* The scrolling middle. The question stays pinned above it and the buttons
+   below, so neither can be scrolled out of reach in a short pane. */
+.sbx-req__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ─── Steps ─────────────────────────────────────────────────────── */

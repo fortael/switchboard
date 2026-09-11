@@ -140,6 +140,9 @@ contextBridge.exposeInMainWorld('api', {
   },
   // What this session is still stopped on, for a renderer that just reloaded.
   sdkPendingRequests: (sessionId) => ipcRenderer.invoke('sdk-pending-requests', sessionId),
+  // How many sessions want something, for the dock badge — and which ones are
+  // blocked, so a newly blocked one can bounce the icon. See main.js.
+  reportAttention: (summary) => ipcRenderer.send('attention-summary', summary),
   sdkInterrupt: (sessionId) => ipcRenderer.invoke('sdk-interrupt', sessionId),
   sdkSetPermissionMode: (sessionId, mode) => ipcRenderer.invoke('sdk-set-permission-mode', sessionId, mode),
   sdkCommands: (sessionId) => ipcRenderer.invoke('sdk-commands', sessionId),

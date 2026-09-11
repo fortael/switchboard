@@ -7,28 +7,32 @@
 // palette by hand — keep them in sync with the token block at the top of
 // public/style.css and public/css/theme-light.css.
 const TERMINAL_THEMES = {
-  // Design-system themes. `background` deliberately equals --surface-app so
-  // the terminal has no visible seam against the main area.
+  // Design-system themes. `background` is --surface-panel in both — the surface
+  // the terminal actually sits on (#terminal-area), so there is no visible seam
+  // where xterm's canvas ends. Not --surface-app: that is the floor under the
+  // sidebar, one step darker. `cursorAccent` is the glyph drawn under a block
+  // cursor and follows the background.
   wootonpadDark: {
     label: 'WootonPad Dark', mode: 'dark',
-    background: '#0a0a0c', foreground: '#d6d6de', cursor: '#f2884b', cursorAccent: '#0a0a0c',
+    background: '#0d0d10', foreground: '#d6d6de', cursor: '#f2884b', cursorAccent: '#0d0d10',
     selectionBackground: '#26262e', selectionForeground: '#eeeef2',
     black: '#17171b', red: '#f0605a', green: '#34d399', yellow: '#f0b429', blue: '#5b9dff', magenta: '#b48cf2', cyan: '#5fd4e5', white: '#b4b4c0',
     brightBlack: '#4a4a56', brightRed: '#f68b86', brightGreen: '#5fe5b3', brightYellow: '#f5c451', brightBlue: '#8fb6ff', brightMagenta: '#cbb0f7', brightCyan: '#8ee5f2', brightWhite: '#eeeef2',
   },
   wootonpadLight: {
     label: 'WootonPad Light', mode: 'light',
-    background: '#ecedf0', foreground: '#3d3f48', cursor: '#d96b25', cursorAccent: '#ecedf0',
+    background: '#fafafb', foreground: '#3d3f48', cursor: '#d96b25', cursorAccent: '#fafafb',
     selectionBackground: '#d4d5dc', selectionForeground: '#15161a',
     // On paper "bright" reads as *stronger*, so the bright half goes darker.
     black: '#15161a', red: '#d3423c', green: '#1fae7c', yellow: '#b57d0a', blue: '#2e6fd6', magenta: '#7146c4', cyan: '#0f8a9b', white: '#63656f',
     brightBlack: '#8d8f99', brightRed: '#b8332e', brightGreen: '#17916a', brightYellow: '#946608', brightBlue: '#255bb0', brightMagenta: '#5c37a1', brightCyan: '#0c7180', brightWhite: '#15161a',
   },
 
-  // Key kept from the old name: it is what `terminalTheme` holds in the
-  // settings of anyone already using it. The label is the one people read.
+  // A colour scheme named after where it came from, like Dracula or Nord — not
+  // a stale product name. The key is also what `terminalTheme` already holds in
+  // the settings of anyone using it, so it stays either way.
   switchboard: {
-    label: 'WootonPad Classic', mode: 'dark',
+    label: 'Switchboard', mode: 'dark',
     background: '#1a1a2e', foreground: '#e0e0e0', cursor: '#e94560', selectionBackground: '#3a3a5e',
     black: '#1a1a2e', red: '#e94560', green: '#0dff00', yellow: '#f5a623', blue: '#7b68ee', magenta: '#c678dd', cyan: '#56b6c2', white: '#c5c8c6',
     brightBlack: '#555568', brightRed: '#ff6b81', brightGreen: '#69ff69', brightYellow: '#ffd93d', brightBlue: '#8fa8ff', brightMagenta: '#d19afc', brightCyan: '#7ee8e8', brightWhite: '#eaeaea',

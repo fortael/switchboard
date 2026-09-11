@@ -16,6 +16,11 @@
       <span v-if="steps.length > 1" class="sbx-req__count">{{ step + 1 }} / {{ steps.length }}</span>
     </div>
 
+    <!-- Everything between the question and the buttons scrolls, so a long
+         list in a short pane — the board's bottom split is the tight one —
+         never pushes the answer out of reach or past the top of the pane. -->
+    <div class="sbx-req__body">
+
     <!-- Where you are in a multi-question run, and a way back to any of it.
          Answered steps stay clickable: changing your mind about the first
          answer is the whole reason a wizard has a back button. -->
@@ -122,6 +127,8 @@
 
     <!-- ── Plain tool permission ───────────────────────────────── -->
     <pre v-else-if="detail" class="sbx-req__detail">{{ detail }}</pre>
+
+    </div><!-- /sbx-req__body -->
 
     <!-- ── Actions ─────────────────────────────────────────────── -->
     <div class="sbx-req__actions">

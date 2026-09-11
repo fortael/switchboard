@@ -85,10 +85,10 @@
             v-if="activeTab === 'sessions'"
             type="button"
             class="sbx-board__toggle"
-            :class="{ 'is-active': highlightFresh }"
-            :aria-pressed="highlightFresh"
+            :class="{ 'is-active': store.highlightFresh }"
+            :aria-pressed="store.highlightFresh"
             data-tooltip="Fade cards by how long ago the session last did anything"
-            @click="highlightFresh = !highlightFresh"
+            @click="store.highlightFresh = !store.highlightFresh"
           >Highlight fresh</button>
         </template>
       </FilterTabs>
@@ -362,7 +362,7 @@
                   v-for="s in group.sessions"
                   :key="s.sessionId"
                   :session="s"
-                  :highlight-fresh="highlightFresh"
+                  :highlight-fresh="store.highlightFresh"
                   :selected="s.sessionId === selectedSessionId"
                   @preview="selectedSessionId = $event.sessionId"
                   @open="openSessionFull"
@@ -573,7 +573,6 @@ const treeSearch = ref('');
 // ones the sidebar and the board draw — rather than the flattened
 // { id, name, updatedAt } shape get-project-sessions returns, which carries
 // none of the context, churn or file counts a card shows.
-const highlightFresh = ref(true);
 const selectedSessionId = ref(null);
 
 // Everything this project (or the worktree being viewed) has, newest first.
