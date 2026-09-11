@@ -24,13 +24,6 @@
         :session="s"
         v-bind="sessionProps(s)"
         @open="$emit('open', s)"
-        @stop="$emit('stop', s.sessionId)"
-        @star="$emit('star', s.sessionId)"
-        @archive="$emit('archive', s.sessionId)"
-        @fork="$emit('fork', s.sessionId)"
-        @jsonl="$emit('jsonl', s.sessionId)"
-        @launch-config="$emit('launch-config', s.sessionId)"
-        @rename="(id, name) => $emit('rename', id, name)"
       />
 
       <template v-if="promoted.length > 0 && rest.length > 0">
@@ -44,13 +37,6 @@
             :session="s"
             v-bind="sessionProps(s)"
             @open="$emit('open', s)"
-            @stop="$emit('stop', s.sessionId)"
-            @star="$emit('star', s.sessionId)"
-            @archive="$emit('archive', s.sessionId)"
-            @fork="$emit('fork', s.sessionId)"
-            @jsonl="$emit('jsonl', s.sessionId)"
-            @launch-config="$emit('launch-config', s.sessionId)"
-            @rename="(id, name) => $emit('rename', id, name)"
           />
         </template>
       </template>
@@ -62,13 +48,6 @@
           :session="s"
           v-bind="sessionProps(s)"
           @open="$emit('open', s)"
-          @stop="$emit('stop', s.sessionId)"
-          @star="$emit('star', s.sessionId)"
-          @archive="$emit('archive', s.sessionId)"
-          @fork="$emit('fork', s.sessionId)"
-          @jsonl="$emit('jsonl', s.sessionId)"
-          @launch-config="$emit('launch-config', s.sessionId)"
-          @rename="(id, name) => $emit('rename', id, name)"
         />
       </template>
     </div>
@@ -89,7 +68,7 @@ const props = defineProps({
   responseReadySessions: { type: Set, required: true },
 });
 
-const emit = defineEmits(['open', 'stop', 'star', 'archive', 'fork', 'jsonl', 'launch-config', 'rename', 'archive-all']);
+const emit = defineEmits(['open', 'archive-all']);
 
 const groupId = computed(() => 'slug-' + props.slug.replace(/[^a-zA-Z0-9_-]/g, '_'));
 

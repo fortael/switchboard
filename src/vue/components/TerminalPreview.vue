@@ -36,7 +36,7 @@ const fontLabel = computed(() => font.value?.label || '—');
 // actually uses, so a theme's weak spots show up here rather than in a session.
 const E = '\x1b[';
 const SAMPLE = [
-  `${E}1;34m~/Projects/switchboard${E}0m ${E}35m main${E}0m ${E}90m(+2 −1)${E}0m`,
+  `${E}1;34m~/Projects/wootonpad${E}0m ${E}35m main${E}0m ${E}90m(+2 −1)${E}0m`,
   `${E}33m❯${E}0m npm test`,
   `${E}90m  › node --test --test-timeout=60000${E}0m`,
   `  ${E}32m✔${E}0m tests 65   ${E}32mpass 65${E}0m   ${E}31mfail 0${E}0m   ${E}90m1.3s${E}0m`,

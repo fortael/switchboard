@@ -1,5 +1,5 @@
 /**
- * file-panel.js — Renderer-side file/diff side panel for Switchboard.
+ * file-panel.js — Renderer-side file/diff side panel for WootonPad.
  *
  * Manages a collapsible panel to the right of the terminal that shows
  * files and diffs received from the MCP bridge.

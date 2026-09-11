@@ -23,6 +23,9 @@ function configure(next) {
   ctx = { ...ctx, ...next };
 }
 
+// The command's file name is `create-switchboard-schedule.md` and stays that
+// way: it already sits in users' ~/.claude/commands, and a rename would leave
+// the old one behind for `/` to offer alongside the new one.
 const SCHEDULE_CREATOR_TEMPLATE = `---
 name: create-switchboard-schedule
 description: Create a new WootonPad scheduled task for this project

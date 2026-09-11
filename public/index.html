@@ -18,9 +18,17 @@
   <link rel="stylesheet" href="css/accounts-view.css">
   <link rel="stylesheet" href="css/projects-view.css">
   <link rel="stylesheet" href="css/usage-ring.css">
+  <link rel="stylesheet" href="css/board-view.css">
+  <link rel="stylesheet" href="css/session-menu.css">
   <link rel="stylesheet" href="css/side-panel.css">
   <link rel="stylesheet" href="css/terminal-preview.css">
   <link rel="stylesheet" href="css/theme-light.css">
+  <script>
+    // Before first paint, so the top nav never renders with the wrong gap. The
+    // preload bridge has already run, and css/shell.css keys the traffic-light
+    // inset off this attribute.
+    document.documentElement.dataset.platform = window.api?.platform || '';
+  </script>
 </head>
 <body>
   <!-- Single Vue app mount point — App.vue renders the full layout -->

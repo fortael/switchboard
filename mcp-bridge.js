@@ -1,9 +1,9 @@
 /**
- * mcp-bridge.js — Per-session WebSocket MCP server for Switchboard.
+ * mcp-bridge.js — Per-session WebSocket MCP server for WootonPad.
  *
  * Each Claude CLI PTY gets its own MCP server so the CLI can send
  * openDiff / openFile / closeAllDiffTabs / getDiagnostics calls
- * to Switchboard's file panel instead of a VS Code extension.
+ * to WootonPad's file panel instead of a VS Code extension.
  */
 
 const { WebSocketServer } = require('ws');
@@ -483,7 +483,7 @@ function rekeyMcpServer(oldId, newId) {
 }
 
 /**
- * Clean up stale lock files from previous Switchboard runs.
+ * Clean up stale lock files from previous WootonPad runs.
  */
 function cleanStaleLockFiles(log) {
   try {

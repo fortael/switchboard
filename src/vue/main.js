@@ -11,6 +11,7 @@ window.vueStore = store;
 window.vueSidebar = {
   store,
   setProjects(projects) { store.projects = projects.map(p => ({ ...p })); },
+  setAllProjects(projects) { store.allProjects = projects.map(p => ({ ...p })); },
   setActivePtyIds(ids) { store.activePtyIds = new Set(ids); },
   setActiveSession(id) { store.activeSessionId = id; },
   setBusy(sessionId, busy) {
@@ -26,6 +27,10 @@ window.vueSidebar = {
     store.attentionSessions.delete(sessionId);
     store.responseReadySessions.delete(sessionId);
   },
+  // Reading a finished turn is not the same as answering a question. Opening a
+  // session clears the unread mark; if the session is also sitting on a dialog
+  // it is still sitting on it, and the board must keep saying so.
+  clearResponseReady(sessionId) { store.responseReadySessions.delete(sessionId); },
   setFilters({ showStarredOnly, showRunningOnly, showTodayOnly, showArchived }) {
     if (showStarredOnly !== undefined) store.showStarredOnly = showStarredOnly;
     if (showRunningOnly !== undefined) store.showRunningOnly = showRunningOnly;
@@ -72,11 +77,9 @@ window.createViewerPanel = function(container, opts = {}) {
 
 // Stubs for component bridge APIs — App.vue onMounted fills these in
 window.vuePlans = {};
-window.vueMemory = {};
 window.vueAccounts = {};
 window.vueProjects = {};
 window.vuePlanViewer = {};
-window.vueMemoryViewer = {};
 window.vueStatusBar = {};
 window.vueAccountDropdown = {};
 window.vueGrid = {};

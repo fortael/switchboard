@@ -31,6 +31,9 @@
 }
 
 /* ── TopNav ──────────────────────────────────────────────────────────── */
+/* With titleBarStyle 'hiddenInset' (main.js) there is no OS title bar, so this
+   row is the top of the window and has to do two things the chrome used to:
+   leave the traffic lights somewhere to sit, and be draggable. */
 .sbx-topnav {
   display: flex;
   align-items: stretch;
@@ -40,6 +43,28 @@
   border-bottom: 1px solid var(--border-subtle);
   padding: 0 8px 0 10px;
   gap: 10px;
+  -webkit-app-region: drag;
+}
+
+/* Room for the traffic lights. Only on macOS, and only when the window is not
+   full screen — the OS hides them there and the gap would be dead space. */
+@supports (-webkit-app-region: drag) {
+  html[data-platform='darwin'] .sbx-topnav {
+    padding-left: 78px;
+  }
+  html[data-platform='darwin'][data-fullscreen='1'] .sbx-topnav {
+    padding-left: 10px;
+  }
+}
+
+/* Everything clickable has to opt back out: a drag region swallows clicks. */
+.sbx-topnav button,
+.sbx-topnav a,
+.sbx-topnav input,
+.sbx-topnav select,
+.sbx-topnav [role='button'],
+.sbx-topnav__account {
+  -webkit-app-region: no-drag;
 }
 
 .sbx-topnav__account {

@@ -6,20 +6,21 @@ contextBridge.exposeInMainWorld('api', {
   getPlansDir: () => ipcRenderer.invoke('get-plans-dir'),
   readPlan: (filename) => ipcRenderer.invoke('read-plan', filename),
   savePlan: (filePath, content) => ipcRenderer.invoke('save-plan', filePath, content),
-  getStats: () => ipcRenderer.invoke('get-stats'),
   refreshStats: () => ipcRenderer.invoke('refresh-stats'),
-  getUsage: () => ipcRenderer.invoke('get-usage'),
-  getCachedUsage: () => ipcRenderer.invoke('get-cached-usage'),
   getMemories: () => ipcRenderer.invoke('get-memories'),
-  readMemory: (filePath) => ipcRenderer.invoke('read-memory', filePath),
-  saveMemory: (filePath, content) => ipcRenderer.invoke('save-memory', filePath, content),
   getProjects: (showArchived) => ipcRenderer.invoke('get-projects', showArchived),
   getActiveSessions: () => ipcRenderer.invoke('get-active-sessions'),
+  getSessionStatuses: () => ipcRenderer.invoke('get-session-statuses'),
   getActiveTerminals: () => ipcRenderer.invoke('get-active-terminals'),
   stopSession: (id) => ipcRenderer.invoke('stop-session', id),
   toggleStar: (id) => ipcRenderer.invoke('toggle-star', id),
   renameSession: (id, name) => ipcRenderer.invoke('rename-session', id, name),
   archiveSession: (id, archived) => ipcRenderer.invoke('archive-session', id, archived),
+  // Deletes the .jsonl as well as the cache rows. Unrecoverable — the caller
+  // confirms first.
+  deleteSession: (id) => ipcRenderer.invoke('delete-session', id),
+  // Aggregated facts about one session, read from its transcript on demand.
+  getSessionMeta: (id) => ipcRenderer.invoke('get-session-meta', id),
   openTerminal: (id, projectPath, isNew, sessionOptions) => ipcRenderer.invoke('open-terminal', id, projectPath, isNew, sessionOptions),
   search: (type, query, titleOnly) => ipcRenderer.invoke('search', type, query, titleOnly),
   readSessionJsonl: (sessionId) => ipcRenderer.invoke('read-session-jsonl', sessionId),
@@ -70,10 +71,17 @@ contextBridge.exposeInMainWorld('api', {
   getProjectAvatar: (projectPath) => ipcRenderer.invoke('get-project-avatar', projectPath),
   fetchGitlabAvatar: (projectPath, remoteUrl) => ipcRenderer.invoke('fetch-gitlab-avatar', projectPath, remoteUrl),
   gitGenerateCommitMsg: (projectPath, style) => ipcRenderer.invoke('git-generate-commit-msg', projectPath, style),
+  // sessions: [{ sessionId, projectPath, title }] — whatever the board is
+  // currently showing. Resolves { ok: true, summaries: [{ sessionId, summary }] }
+  // or { ok: false, error }.
+  // options: { detail } — one session asked for from its own menu gets the
+  // whole prompt budget and a longer answer.
+  boardSummarizeSessions: (sessions, options) => ipcRenderer.invoke('board-summarize-sessions', sessions, options),
+  // Kills the summarize run in flight; resolves the pending call as cancelled.
+  boardSummarizeAbort: () => ipcRenderer.invoke('board-summarize-abort'),
   getGitUserInfo: (projectPath) => ipcRenderer.invoke('get-git-user-info', projectPath),
   deleteWorktree: (projectPath, worktreePath) => ipcRenderer.invoke('delete-worktree', projectPath, worktreePath),
   getFileTree: (projectPath) => ipcRenderer.invoke('get-file-tree', projectPath),
-  getProjectSessions: (projectPath) => ipcRenderer.invoke('get-project-sessions', projectPath),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   // Send (fire-and-forget)
@@ -94,9 +102,54 @@ contextBridge.exposeInMainWorld('api', {
   onTerminalNotification: (callback) => {
     ipcRenderer.on('terminal-notification', (_event, sessionId, message) => callback(sessionId, message));
   },
-  onCliBusyState: (callback) => {
-    ipcRenderer.on('cli-busy-state', (_event, sessionId, busy) => callback(sessionId, busy));
+  onSessionStatus: (callback) => {
+    ipcRenderer.on('session-status', (_event, sessionId, status) => callback(sessionId, status));
   },
+  onWindowFullscreen: (callback) => {
+    ipcRenderer.on('window-fullscreen', (_event, isFullscreen) => callback(isFullscreen));
+  },
+  // SDK-backed sessions: the conversation as structured messages, where a PTY
+  // session sends terminal bytes over `terminal-data`.
+  onSdkMessage: (callback) => {
+    ipcRenderer.on('sdk-message', (_event, sessionId, message) => callback(sessionId, message));
+  },
+  onSdkPermissionRequest: (callback) => {
+    ipcRenderer.on('sdk-permission-request', (_event, sessionId, request) => callback(sessionId, request));
+  },
+  onSdkPermissionCancelled: (callback) => {
+    ipcRenderer.on('sdk-permission-cancelled', (_event, sessionId, requestId) => callback(sessionId, requestId));
+  },
+  sdkPermissionResponse: (requestId, decision) => {
+    ipcRenderer.send('sdk-permission-response', requestId, decision);
+  },
+  // An MCP server asking the user directly — a form or a sign-in link. Same
+  // pause as a permission prompt, a different reply shape.
+  onSdkElicitationRequest: (callback) => {
+    ipcRenderer.on('sdk-elicitation-request', (_event, sessionId, request) => callback(sessionId, request));
+  },
+  sdkElicitationResponse: (requestId, decision) => {
+    ipcRenderer.send('sdk-elicitation-response', requestId, decision);
+  },
+  // A blocking dialog the CLI asked this app to draw — today the offer to
+  // retry a refused turn on the fallback model.
+  onSdkDialogRequest: (callback) => {
+    ipcRenderer.on('sdk-dialog-request', (_event, sessionId, request) => callback(sessionId, request));
+  },
+  sdkDialogResponse: (requestId, decision) => {
+    ipcRenderer.send('sdk-dialog-response', requestId, decision);
+  },
+  // What this session is still stopped on, for a renderer that just reloaded.
+  sdkPendingRequests: (sessionId) => ipcRenderer.invoke('sdk-pending-requests', sessionId),
+  // How many sessions want something, for the dock badge — and which ones are
+  // blocked, so a newly blocked one can bounce the icon. See main.js.
+  reportAttention: (summary) => ipcRenderer.send('attention-summary', summary),
+  sdkInterrupt: (sessionId) => ipcRenderer.invoke('sdk-interrupt', sessionId),
+  sdkSetPermissionMode: (sessionId, mode) => ipcRenderer.invoke('sdk-set-permission-mode', sessionId, mode),
+  sdkCommands: (sessionId) => ipcRenderer.invoke('sdk-commands', sessionId),
+  sdkModels: (sessionId) => ipcRenderer.invoke('sdk-models', sessionId),
+  sdkSetModel: (sessionId, model) => ipcRenderer.invoke('sdk-set-model', sessionId, model),
+  sdkSetEffort: (sessionId, effort) => ipcRenderer.invoke('sdk-set-effort', sessionId, effort),
+  sdkContextUsage: (sessionId) => ipcRenderer.invoke('sdk-context-usage', sessionId),
   onSessionForked: (callback) => {
     ipcRenderer.on('session-forked', (_event, oldId, newId) => callback(oldId, newId));
   },

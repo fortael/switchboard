@@ -528,6 +528,45 @@ function createUnifiedMergeViewer(parent, originalContent, modifiedContent, file
   return new EditorView({ state, parent });
 }
 
+// Unified diff for narrow columns. createUnifiedMergeViewer above is the diff
+// *review* editor — it ships per-chunk Accept/Reject controls and an editable
+// document, which is right for an incoming MCP diff and wrong for looking at
+// your own working tree. `mergeControls: false` drops those buttons; readOnly
+// keeps the document from being edited underneath them.
+function createReadOnlyUnifiedMergeViewer(parent, originalContent, modifiedContent, filename) {
+  const langExt = getLanguageExt(filename);
+  const state = EditorState.create({
+    doc: modifiedContent,
+    extensions: [
+      lineNumbers(),
+      highlightSpecialChars(),
+      foldGutter(),
+      highlightSelectionMatches(),
+      keymap.of([...foldKeymap]),
+      cmFindKeymap,
+      cmFindDomHandler,
+      cmFloatingSearch(),
+      langExt,
+      dracula,
+      syntaxHighlighting(markdownExtras),
+      appThemePatch,
+      // A 380px column cannot scroll horizontally and stay readable.
+      EditorView.lineWrapping,
+      EditorView.editable.of(false),
+      EditorState.readOnly.of(true),
+      unifiedMergeView({
+        original: originalContent,
+        gutter: true,
+        highlightChanges: true,
+        syntaxHighlightDeletions: true,
+        mergeControls: false,
+        collapseUnchanged: { margin: 3, minSize: 4 },
+      }),
+    ],
+  });
+  return new EditorView({ state, parent });
+}
+
 function createReadOnlyMergeViewer(parent, originalContent, modifiedContent, filename) {
   const langExt = getLanguageExt(filename);
   const sharedExts = [
@@ -565,6 +604,7 @@ window.createReadOnlyViewer = createReadOnlyViewer;
 window.createEditableViewer = createEditableViewer;
 window.createMergeViewer = createMergeViewer;
 window.createUnifiedMergeViewer = createUnifiedMergeViewer;
+window.createReadOnlyUnifiedMergeViewer = createReadOnlyUnifiedMergeViewer;
 window.createReadOnlyMergeViewer = createReadOnlyMergeViewer;
 window.CMEditorView = EditorView;
 window.CMEditorState = EditorState;

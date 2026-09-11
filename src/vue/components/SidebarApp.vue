@@ -18,13 +18,6 @@
       :visible-session-count="store.visibleSessionCount"
       :session-max-age-days="store.sessionMaxAgeDays"
       @open="onOpen"
-      @stop="onStop"
-      @star="onStar"
-      @archive="onArchive"
-      @fork="onFork"
-      @jsonl="onJsonl"
-      @launch-config="onLaunchConfig"
-      @rename="onRename"
       @new-session="onNewSession"
       @settings="onSettings"
       @archive-sessions="onArchiveSessions"
@@ -105,13 +98,6 @@ const visibleProjects = computed(() => {
 });
 
 function onOpen(session) { props.callbacks.openSession?.(session); }
-function onStop(id) { props.callbacks.stopSession?.(id); }
-function onStar(id) { props.callbacks.toggleStar?.(id); }
-function onArchive(id) { props.callbacks.archiveSession?.(id); }
-function onFork(id) { props.callbacks.forkSession?.(id); }
-function onJsonl(id) { props.callbacks.showJsonl?.(id); }
-function onLaunchConfig(id) { props.callbacks.launchConfig?.(id); }
-function onRename(id, name) { props.callbacks.renameSession?.(id, name); }
 function onNewSession(project, btn) { props.callbacks.newSession?.(project, btn); }
 function onSettings(path) { props.callbacks.openSettings?.(path); }
 function onArchiveSessions(sessions) { props.callbacks.archiveSessions?.(sessions); }

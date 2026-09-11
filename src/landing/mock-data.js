@@ -10,12 +10,18 @@ export const MOCK_ACTIVE_PTY_IDS = new Set(['sess-001', 'sess-004', 'sess-006', 
 // blog-redesign has a reply ready.
 export const MOCK_WAITING_PTY_IDS = new Set(['sess-003']);
 export const MOCK_RESPONSE_READY_PTY_IDS = new Set(['sess-006']);
+// Deliberately NOT every live PTY. SessionBoardApp's columnFor() ranks busy
+// above response-ready, so marking sess-006 busy would empty the DONE column
+// and the board would demo three states instead of four.
+export const MOCK_BUSY_PTY_IDS = new Set(['sess-001', 'sess-004']);
 
 // Session the demo opens with — drives SessionHeaderApp and the fake terminal.
 export const MOCK_SELECTED_SESSION_ID = 'sess-001';
 // Project the second demo window (ProjectViewerApp) opens.
 export const MOCK_VIEWER_PROJECT_PATH = '/Users/demo/Projects/my-api';
 
+// `contextTokens` drives SessionCard's UsageRing and `linesAdded`/`linesRemoved`
+// its churn row — both are board-card features, so every session carries them.
 export const MOCK_PROJECTS = [
   {
     projectPath: '/Users/demo/Projects/wooton-pad',
@@ -26,6 +32,7 @@ export const MOCK_PROJECTS = [
         aiTitle: 'GitHub Pages marketing site with Vue components',
         modified: mins(28),
         messageCount: 62,
+        contextTokens: 84_000, linesAdded: 412, linesRemoved: 96, changedFiles: 7,
         starred: false, archived: false, type: 'claude', slug: null,
       },
       {
@@ -42,6 +49,7 @@ export const MOCK_PROJECTS = [
         aiTitle: 'Session transition JSONL matching logic',
         modified: days(2),
         messageCount: 38,
+        contextTokens: 51_000, linesAdded: 88, linesRemoved: 41, changedFiles: 3,
         starred: true, archived: false, type: 'claude', slug: null,
       },
       {
@@ -50,6 +58,7 @@ export const MOCK_PROJECTS = [
         aiTitle: 'Multi-account credential separation',
         modified: days(4),
         messageCount: 94,
+        contextTokens: 148_000, linesAdded: 233, linesRemoved: 187, changedFiles: 11,
         starred: false, archived: false, type: 'claude', slug: null,
       },
     ],
@@ -63,6 +72,7 @@ export const MOCK_PROJECTS = [
         aiTitle: 'Token bucket algorithm for Express.js routes',
         modified: mins(51),
         messageCount: 29,
+        contextTokens: 37_000, linesAdded: 168, linesRemoved: 12, changedFiles: 4,
         starred: false, archived: false, type: 'claude', slug: null,
       },
       {
@@ -71,6 +81,7 @@ export const MOCK_PROJECTS = [
         aiTitle: 'PostgreSQL schema migration with zero downtime',
         modified: hours(26),
         messageCount: 115,
+        contextTokens: 172_000, linesAdded: 604, linesRemoved: 58, changedFiles: 9,
         starred: false, archived: false, type: 'claude', slug: null,
       },
     ],
@@ -84,6 +95,7 @@ export const MOCK_PROJECTS = [
         aiTitle: 'Responsive hero with animated gradient background',
         modified: hours(2),
         messageCount: 47,
+        contextTokens: 66_000, linesAdded: 197, linesRemoved: 74, changedFiles: 5,
         starred: true, archived: false, type: 'claude', slug: null,
       },
       {
@@ -92,6 +104,7 @@ export const MOCK_PROJECTS = [
         aiTitle: 'Accessible hamburger menu with CSS animations',
         modified: days(2),
         messageCount: 33,
+        contextTokens: 44_000, linesAdded: 121, linesRemoved: 19, changedFiles: 3,
         starred: false, archived: false, type: 'claude', slug: null,
       },
       // Archived, so the Archived filter tab has something the other tabs hide.
@@ -101,6 +114,7 @@ export const MOCK_PROJECTS = [
         aiTitle: 'Double opt-in flow with Mailchimp webhook',
         modified: days(9),
         messageCount: 21,
+        contextTokens: 29_000, linesAdded: 64, linesRemoved: 8, changedFiles: 2,
         starred: false, archived: true, type: 'claude', slug: null,
       },
     ],
@@ -133,56 +147,46 @@ export const MOCK_PLANS = [
   },
 ];
 
-export const MOCK_MEMORIES = {
-  global: {
-    files: [
-      {
-        filename: 'CLAUDE.md',
-        filePath: '/Users/demo/.claude/CLAUDE.md',
-        displayPath: '~/.claude/CLAUDE.md',
-        modified: days(3),
-      },
-    ],
-  },
-  projects: [
-    {
-      folder: '/Users/demo/Projects/my-api',
-      shortName: 'my-api',
-      projectPath: '/Users/demo/Projects/my-api',
-      files: [
-        {
-          filename: 'CLAUDE.md',
-          filePath: '/Users/demo/Projects/my-api/CLAUDE.md',
-          displayPath: '~/Projects/my-api/CLAUDE.md',
-          modified: hours(5),
-        },
-        {
-          filename: 'memory.md',
-          filePath: '/Users/demo/Projects/my-api/.claude/memory.md',
-          displayPath: '~/Projects/my-api/.claude/memory.md',
-          modified: days(1),
-        },
-      ],
-    },
-    {
-      folder: '/Users/demo/Projects/wooton-pad',
-      shortName: 'wooton-pad',
-      projectPath: '/Users/demo/Projects/wooton-pad',
-      files: [
-        {
-          filename: 'CLAUDE.md',
-          filePath: '/Users/demo/Projects/wooton-pad/CLAUDE.md',
-          displayPath: '~/Projects/wooton-pad/CLAUDE.md',
-          modified: hours(2),
-        },
-      ],
-    },
-  ],
-};
-
+// One entry per project, not just the one the Projects window opens: the
+// session side panel is scoped to the OPEN SESSION's project, so a demo that
+// only knew my-api would show an empty Changes pane for the selected session.
+// `unpushedCommits` + `upstream` are what the Commits sub-tab and its Push
+// button read.
 export const MOCK_PROJECT_DETAIL = {
+  '/Users/demo/Projects/wooton-pad': {
+    branch: 'feat/landing-refresh',
+    upstream: 'origin/feat/landing-refresh',
+    totalAdded: 412,
+    totalDeleted: 96,
+    changedFiles: [
+      { file: 'src/landing/LandingApp.vue', added: 186, deleted: 61 },
+      { file: 'src/landing/landing.css', added: 104, deleted: 22 },
+      { file: 'src/landing/mock-data.js', added: 88, deleted: 9 },
+      { file: 'src/landing/main.js', added: 31, deleted: 4 },
+      { file: 'docs/index.html', added: 3, deleted: 0 },
+    ],
+    commits: [
+      { hash: '9164def', message: 'feat(session): add session card component', author: 'demo', date: '4h ago' },
+      { hash: '56b1034', message: 'feat(board): implement session board view', author: 'demo', date: '1d ago' },
+      { hash: '5b368ad', message: 'fix: resolve absolute path for claude binary', author: 'demo', date: '2d ago' },
+      { hash: '8f038a5', message: 'chore(release): bump version to 0.6.0', author: 'demo', date: '3d ago' },
+    ],
+    unpushedCommits: [
+      { hash: '9164def', message: 'feat(session): add session card component', author: 'demo', date: '4h ago' },
+      { hash: '56b1034', message: 'feat(board): implement session board view', author: 'demo', date: '1d ago' },
+    ],
+    // The demo opens on a session in this project, so its Containers pane is
+    // the one a visitor is most likely to click — it should not be empty.
+    containers: [
+      { name: 'wooton-pad-docs-1', state: 'running', status: 'Up 12 minutes', ports: '3000→3000' },
+      { name: 'wooton-pad-e2e-1', state: 'exited', status: 'Exited (0) 1h ago' },
+    ],
+    worktreePaths: [],
+    readmePath: null,
+  },
   '/Users/demo/Projects/my-api': {
     branch: 'feat/rate-limiting',
+    upstream: 'origin/feat/rate-limiting',
     totalAdded: 168,
     totalDeleted: 12,
     changedFiles: [
@@ -197,13 +201,71 @@ export const MOCK_PROJECT_DETAIL = {
       { hash: 'c45d2a9', message: 'chore: initial Express setup', author: 'demo', date: '5d ago' },
       { hash: 'd73e1b4', message: 'docs: add README and contributing guide', author: 'demo', date: '6d ago' },
     ],
+    unpushedCommits: [
+      { hash: 'a3f8c21', message: 'feat: add token bucket rate limiter', author: 'demo', date: '2d ago' },
+    ],
     containers: [
-      { name: 'my-api-postgres-1', state: 'running', status: 'Up 2 hours' },
-      { name: 'my-api-redis-1', state: 'running', status: 'Up 2 hours' },
+      { name: 'my-api-postgres-1', state: 'running', status: 'Up 2 hours', ports: '5432→5432' },
+      { name: 'my-api-redis-1', state: 'running', status: 'Up 2 hours', ports: '6379→6379' },
+      { name: 'my-api-worker-1', state: 'exited', status: 'Exited (0) 20m ago' },
     ],
     worktreePaths: [],
     readmePath: null,
   },
+  '/Users/demo/Projects/blog-redesign': {
+    branch: 'feat/homepage-hero',
+    upstream: null,
+    totalAdded: 197,
+    totalDeleted: 74,
+    changedFiles: [
+      { file: 'src/pages/index.astro', added: 121, deleted: 58 },
+      { file: 'src/styles/global.css', added: 76, deleted: 16 },
+    ],
+    commits: [
+      { hash: 'e11a730', message: 'style: tune hero gradient stops', author: 'demo', date: '5h ago' },
+      { hash: 'f2c9b88', message: 'feat: scaffold homepage hero', author: 'demo', date: '1d ago' },
+    ],
+    unpushedCommits: [],
+    containers: [],
+    worktreePaths: [],
+    readmePath: null,
+  },
+};
+
+// Scratch-shell pane of the session side panel. No PTY on a landing page, so
+// window.createPanelTerminal renders this transcript instead of an xterm.
+export const MOCK_PANEL_SHELL_LINES = [
+  { t: 'sh-prompt', cwd: '~/Projects/wooton-pad', branch: 'feat/landing-refresh' },
+  { t: 'sh-cmd', v: 'git status -sb' },
+  { t: 'sh-out', v: '## feat/landing-refresh...origin/feat/landing-refresh [ahead 2]' },
+  { t: 'sh-out', v: ' M src/landing/LandingApp.vue' },
+  { t: 'sh-out', v: ' M src/landing/landing.css' },
+  { t: 'sh-prompt', cwd: '~/Projects/wooton-pad', branch: 'feat/landing-refresh' },
+  { t: 'sh-cursor' },
+];
+
+// Canned answers for the board sidebar's Summarize button — in the app this is
+// one headless `claude` call over the last message of each board session.
+export const MOCK_BOARD_SUMMARIES = {
+  'sess-001': 'Rebuilt the landing demo around the new session panel rail and wired the board tab into the shell.',
+  'sess-003': 'Waiting on a decision about where refresh tokens live before the multi-account refactor can continue.',
+  'sess-004': 'Added a token-bucket rate limiter and its tests; the suite is running now.',
+  'sess-006': 'Finished the animated gradient hero and is ready for review.',
+  'sess-002': 'Fixed fork detection by matching parentSessionId in the JSONL; all 14 tests pass.',
+  'sess-005': 'Wrote the zero-downtime migration plus a 50M-row backfill script and rehearsed the rollback.',
+  'sess-007': 'Shipped an accessible hamburger menu with a focus trap and a pure-CSS slide animation.',
+  'sess-term': 'Plain shell — ran the test suite, nothing outstanding.',
+};
+
+// Commit messages the "Generate with Claude" buttons produce in the demo.
+export const MOCK_COMMIT_MESSAGES = {
+  short: 'feat(landing): catch the demo up to the session panel rail and board',
+  descriptive: `feat(landing): catch the demo up to the session panel rail and board
+
+- Render SessionPanelRail over the terminal instead of header buttons
+- Add the Board tab and its sidebar to the live demo shell
+- Drop the removed Agent Files and Stats tabs
+- Load board-view, side-panel and controls CSS alongside the rest`,
 };
 
 export const MOCK_PROJECT_INFO = {
@@ -332,7 +394,7 @@ export const MOCK_TERMINAL_LINES = {
     { t: 'sh-prompt', cwd: '~/Projects/wooton-pad', branch: 'main' },
     { t: 'sh-cmd', v: 'npm test' },
     { t: 'blank' },
-    { t: 'sh-out', v: '> switchboard@0.2.0 test' },
+    { t: 'sh-out', v: '> wootonpad@0.2.0 test' },
     { t: 'sh-out', v: '> node --test' },
     { t: 'blank' },
     { t: 'sh-out-ok', v: '✔ folder-index-state (1.8s)' },

@@ -20,6 +20,9 @@ async function resolveDefaultSessionOptions(project) {
   if (effective.preLaunchCmd) options.preLaunchCmd = effective.preLaunchCmd;
   if (effective.addDirs) options.addDirs = effective.addDirs;
   if (effective.mcpEmulation === false) options.mcpEmulation = false;
+  // Which transport starts the session. main.js reads this and reports back
+  // which one it actually used; the renderer picks the view from that.
+  if (effective.sessionMode === 'sdk') options.mode = 'sdk';
   return options;
 }
 

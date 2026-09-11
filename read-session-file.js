@@ -24,6 +24,21 @@ function readSessionFile(filePath, folder, projectPath) {
     // context is in play — e.g. "claude-opus-5[1m]". That beats guessing from
     // how many tokens a session happened to reach.
     let contextLimit = 0;
+    // Files this session actually edited, counted from its own transcript
+    // rather than from git: a session may be working in a worktree, and each
+    // one carries its own set of changes that `git status` on the parent
+    // project would not separate.
+    const touchedFiles = new Set();
+    // Line churn for the whole session, rebuilt from each edit's own result.
+    //
+    // The `cost-state` entry carries totalLinesAdded/Removed, but it is a
+    // checkpoint the CLI writes at the end of a stretch and it resets: two
+    // sessions here report 0/0 despite hundreds of edits, and others report
+    // only their last stretch. Counting the results reproduces the CLI's own
+    // figure exactly where that figure is whole (verified +2860/-313 on one
+    // session) and is complete where it is not.
+    let linesAdded = 0;
+    let linesRemoved = 0;
     for (const line of lines) {
       const entry = JSON.parse(line);
       const usage = entry.message?.usage;
@@ -31,6 +46,31 @@ function readSessionFile(filePath, folder, projectPath) {
         contextTokens = (usage.input_tokens || 0)
           + (usage.cache_creation_input_tokens || 0)
           + (usage.cache_read_input_tokens || 0);
+      }
+      const result = entry.toolUseResult;
+      if (result && typeof result === 'object') {
+        if (Array.isArray(result.structuredPatch) && result.structuredPatch.length) {
+          for (const hunk of result.structuredPatch) {
+            for (const line of hunk.lines || []) {
+              if (line.startsWith('+')) linesAdded++;
+              else if (line.startsWith('-')) linesRemoved++;
+            }
+          }
+        } else if (typeof result.content === 'string' && result.filePath) {
+          // A Write that created the file: no patch to diff against, every
+          // line is new.
+          linesAdded += result.content.split('\n').length;
+        }
+      }
+
+      const blocks = entry.message?.content;
+      if (Array.isArray(blocks)) {
+        for (const block of blocks) {
+          if (block?.type !== 'tool_use') continue;
+          if (!/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(block.name)) continue;
+          const target = block.input?.file_path || block.input?.notebook_path;
+          if (target) touchedFiles.add(target);
+        }
       }
       if (entry.type === 'cost-state' && entry.modelUsage) {
         for (const model of Object.keys(entry.modelUsage)) {
@@ -71,6 +111,7 @@ function readSessionFile(filePath, folder, projectPath) {
       created: stat.birthtime.toISOString(),
       modified: stat.mtime.toISOString(),
       messageCount, textContent, slug, customTitle, aiTitle, contextTokens, contextLimit,
+      changedFiles: touchedFiles.size, linesAdded, linesRemoved,
     };
   } catch {
     return null;

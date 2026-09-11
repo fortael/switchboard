@@ -11,7 +11,7 @@ export default defineConfig({
   build: {
     lib: {
       entry: resolve('src/vue/main.js'),
-      name: 'SwitchboardVue',
+      name: 'WootonPadVue',
       fileName: () => 'vue-bundle.js',
       formats: ['iife'],
     },

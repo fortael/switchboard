@@ -40,7 +40,7 @@ Tests use Node's built-in `node:test` runner — no Jest or Mocha.
 
 ## Architecture
 
-Switchboard is an **Electron app** that acts as a session manager and IDE emulator for Claude Code CLI. The app has the standard Electron split:
+WootonPad is an **Electron app** that acts as a session manager and IDE emulator for Claude Code CLI. The app has the standard Electron split:
 
 - **Main process** (`main.js`) — all Node.js/filesystem/PTY logic. Communicates with the renderer via IPC.
 - **Renderer process** (`public/`) — plain HTML/CSS/JS, no framework. Receives `window.api` from the preload bridge.
@@ -49,7 +49,7 @@ Switchboard is an **Electron app** that acts as a session manager and IDE emulat
 ### Data flow
 
 1. Claude Code stores sessions as `.jsonl` files under `~/.claude/projects/<encoded-path>/`.
-2. `main.js` watches this directory for changes and keeps a **SQLite cache** (`~/.switchboard/switchboard.db` via `db.js`) of session metadata and a full-text search index.
+2. `main.js` watches this directory for changes and keeps a **SQLite cache** (`~/.wootonpad/switchboard.db` via `db.js` — the directory was renamed, the file was not) of session metadata and a full-text search index.
 3. The cache is populated either via a **Worker thread** (`workers/scan-projects.js`) on first load or incrementally via `session-cache.js` when the watcher detects `.jsonl` changes.
 4. The renderer calls `window.api.getProjects()` → IPC → `buildProjectsFromCache()` to get the project/session tree.
 
@@ -60,7 +60,7 @@ Switchboard is an **Electron app** that acts as a session manager and IDE emulat
 | `db.js`                                  | SQLite schema, migrations, all DB read/write helpers                                                                                                       |
 | `session-cache.js`                       | In-memory + DB cache management; incremental folder refresh                                                                                                |
 | `session-transitions.js`                 | Detects fork/plan-accept transitions in active PTY sessions by watching for new `.jsonl` files                                                             |
-| `mcp-bridge.js`                          | Per-session WebSocket MCP server — registers Switchboard as a VS Code–compatible IDE so Claude CLI sends diffs/file-opens here instead of to a real editor |
+| `mcp-bridge.js`                          | Per-session WebSocket MCP server — registers WootonPad as a VS Code–compatible IDE so Claude CLI sends diffs/file-opens here instead of to a real editor |
 | `derive-project-path.js`                 | Decodes encoded folder names back to filesystem paths                                                                                                      |
 | `encode-project-path.js`                 | Encodes a filesystem path to the `~/.claude/projects/<folder>` naming convention                                                                           |
 | `shell-profiles.js`                      | Shell discovery (zsh, bash, WSL) and argument construction for PTY spawning                                                                                |
@@ -74,7 +74,7 @@ Switchboard is an **Electron app** that acts as a session manager and IDE emulat
 
 ### IDE emulation (MCP bridge)
 
-When a Claude session starts, `main.js` calls `startMcpServer()` which binds a WebSocket server on a random port and writes a lock file to `~/.claude/ide/`. Claude CLI discovers this file and connects, treating Switchboard as an IDE. File diffs proposed by Claude arrive as `openDiff` MCP calls, which `main.js` forwards to the renderer via `mcp-open-diff` IPC. The renderer shows them in `viewer-panel.js`. The user's accept/reject/edit decision comes back as `mcpDiffResponse` IPC → `resolvePendingDiff()`.
+When a Claude session starts, `main.js` calls `startMcpServer()` which binds a WebSocket server on a random port and writes a lock file to `~/.claude/ide/`. Claude CLI discovers this file and connects, treating WootonPad as an IDE. File diffs proposed by Claude arrive as `openDiff` MCP calls, which `main.js` forwards to the renderer via `mcp-open-diff` IPC. The renderer shows them in `viewer-panel.js`. The user's accept/reject/edit decision comes back as `mcpDiffResponse` IPC → `resolvePendingDiff()`.
 
 ### Settings
 

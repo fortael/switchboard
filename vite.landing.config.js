@@ -11,7 +11,7 @@ export default defineConfig({
   build: {
     lib: {
       entry: resolve('src/landing/main.js'),
-      name: 'SwitchboardLanding',
+      name: 'WootonPadLanding',
       fileName: () => 'landing.js',
       formats: ['iife'],
     },

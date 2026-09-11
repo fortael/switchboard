@@ -18,10 +18,14 @@ const ICONS = [
   // Session view
   'git-branch', 'x', 'maximize-2', 'circle', 'square', 'folder-open', 'terminal',
   'square-arrow-out-up-right', 'ellipsis',
-  // Session side panel
-  'panel-right-open', 'panel-right-close',
+  // Session side panel — rail toggles (changes / containers / shell)
+  'panel-right-open', 'panel-right-close', 'file-diff',
   // Accounts view
   'copy', 'check', 'key-round', 'file-json', 'triangle-alert', 'circle-check',
+  // Session context menu
+  'pin', 'pin-off', 'git-fork', 'trash-2', 'message-square', 'square-stop', 'pencil',
+  // Agent files — scheduled tasks
+  'play',
 ];
 
 const SRC = path.join(__dirname, '..', 'node_modules', 'lucide-static', 'icons');

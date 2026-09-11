@@ -23,14 +23,29 @@ html, body {
 /* ── Landing root ────────────────────────────────────────── */
 .lp-root {
   font-family: var(--font-sans);
+
+  /* Marketing display type. The app's scale tops out at --text-2xl (24px)
+     because it is UI chrome; a landing headline is not, so the three sizes
+     above that line are declared here rather than faked out of a token. */
+  --lp-text-hero: 56px;
+  --lp-text-section: 34px;
+  --lp-text-lead: var(--text-xl);
+
+  /* Vertical rhythm between marketing sections. */
+  --lp-section-pad: 90px;
 }
 
 /* ── Hero ────────────────────────────────────────────────── */
 .lp-hero {
-  background: radial-gradient(ellipse at 50% 0%, rgba(242, 136, 75, 0.12) 0%, transparent 65%),
-              var(--surface-app);
+  background:
+    radial-gradient(
+      ellipse at 50% 0%,
+      color-mix(in srgb, var(--orange-500) 12%, transparent) 0%,
+      transparent 65%
+    ),
+    var(--surface-app);
   text-align: center;
-  padding: 56px 24px 48px;
+  padding: var(--space-7) var(--space-6) var(--space-9);
 }
 
 .lp-hero-inner {
@@ -40,89 +55,81 @@ html, body {
 
 .lp-logo {
   display: block;
-  margin: 0 auto 20px;
+  margin: 0 auto var(--space-5);
 }
 
 .lp-title {
-  font-size: 56px;
-  font-weight: 700;
+  font-size: var(--lp-text-hero);
+  font-weight: var(--weight-bold);
   letter-spacing: -1.5px;
   color: var(--white);
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
   line-height: 1.1;
 }
 
 .lp-tagline {
-  font-size: 20px;
+  font-size: var(--lp-text-lead);
   color: var(--orange-400);
-  font-weight: 500;
-  margin: 0 0 20px;
-}
-
-.lp-desc {
-  font-size: 16px;
-  color: var(--text-secondary);
-  line-height: 1.7;
-  margin: 0 0 36px;
+  font-weight: var(--weight-medium);
+  margin: 0 0 var(--space-5);
 }
 
 .lp-cta {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   justify-content: center;
   flex-wrap: wrap;
-  margin-bottom: 20px;
+  margin-bottom: var(--space-5);
+}
+
+.lp-btn-primary,
+.lp-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  padding: 10px var(--space-6);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  transition:
+    background var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard);
 }
 
 .lp-btn-primary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
   background: var(--orange-500);
   color: var(--text-on-accent);
-  font-weight: 600;
-  font-size: 15px;
-  padding: 10px 24px;
-  border-radius: 8px;
-  text-decoration: none;
-  transition: background 0.15s;
+  font-weight: var(--weight-semibold);
+  border: 1px solid transparent;
 }
 
 .lp-btn-primary:hover { background: var(--orange-400); }
 
 .lp-btn-secondary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(255,255,255,0.06);
+  background: var(--surface-card);
   border: 1px solid var(--border-default);
   color: var(--text-primary);
-  font-weight: 500;
-  font-size: 15px;
-  padding: 10px 24px;
-  border-radius: 8px;
-  text-decoration: none;
-  transition: background 0.15s, border-color 0.15s;
+  font-weight: var(--weight-medium);
 }
 
 .lp-btn-secondary:hover {
-  background: rgba(255,255,255,0.1);
+  background: var(--surface-card-hover);
   border-color: var(--border-strong);
 }
 
 .lp-stars {
-  margin-left: 4px;
-  padding-left: 12px;
+  margin-left: var(--space-1);
+  padding-left: var(--space-3);
   border-left: 1px solid var(--border-default);
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 .lp-platforms {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--text-xs);
   color: var(--text-tertiary);
 }
 
@@ -130,48 +137,38 @@ html, body {
 .lp-section-inner {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--space-6);
 }
 
 .lp-section-title {
-  font-size: 34px;
-  font-weight: 700;
+  font-size: var(--lp-text-section);
+  font-weight: var(--weight-bold);
   letter-spacing: -0.8px;
   color: var(--white);
   text-align: center;
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
 }
 
 .lp-section-subtitle {
   text-align: center;
-  font-size: 15px;
+  font-size: var(--text-md);
   color: var(--text-secondary);
   max-width: 600px;
-  margin: 0 auto 48px;
-  line-height: 1.6;
+  margin: 0 auto var(--space-9);
+  line-height: var(--leading-relaxed);
 }
 
-/* ── Fork features bento ─────────────────────────────────── */
-.lp-fork-section {
-  padding: 90px 24px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.lp-fork-label {
-  text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--orange-400);
-  margin-bottom: 14px;
+/* The demo window follows straight after its own subtitle, so it does not
+   need the full gap the bento grid opens below one. */
+.lp-demo-subtitle {
+  margin-bottom: var(--space-7);
 }
 
 .lp-bento {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-  margin-top: 52px;
+  gap: var(--space-3);
+  margin-top: var(--space-8);
 }
 
 @media (max-width: 900px) {
@@ -187,21 +184,25 @@ html, body {
 
 .lp-bento-card {
   position: relative;
+  display: flex;
+  flex-direction: column;
   background: var(--surface-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  padding: 28px 28px 24px;
+  border-radius: var(--radius-md);
+  padding: var(--space-7) var(--space-7) var(--space-6);
   overflow: hidden;
-  transition: border-color 0.2s, transform 0.2s;
+  transition:
+    border-color var(--duration-slow) var(--ease-standard),
+    transform var(--duration-slow) var(--ease-standard);
 }
 
 .lp-bento-card::before {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 14px;
+  border-radius: inherit;
   opacity: 0;
-  transition: opacity 0.2s;
+  transition: opacity var(--duration-slow) var(--ease-standard);
 }
 
 .lp-bento-card:hover { border-color: var(--border-default); transform: translateY(-2px); }
@@ -222,7 +223,7 @@ html, body {
   top: 0; left: 0; right: 0;
   height: 2px;
   background: rgb(var(--_ac));
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   opacity: 0.7;
 }
 
@@ -233,135 +234,103 @@ html, body {
 .lp-bento-icon {
   width: 44px;
   height: 44px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(var(--_ac), 0.12);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   color: rgb(var(--_ac));
-  margin-bottom: 18px;
+  margin-bottom: var(--space-4);
 }
 
 .lp-bento-card h3 {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
   color: var(--white);
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
 }
 
 .lp-bento-card p {
-  font-size: 13px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
-  line-height: 1.65;
+  line-height: var(--leading-relaxed);
   margin: 0;
 }
 
+/* Pinned to the bottom of the card so the pills line up across a row even
+   when the paragraphs above them run to different lengths. */
 .lp-bento-pill {
-  display: inline-block;
-  margin-top: 16px;
-  padding: 3px 10px;
+  align-self: flex-start;
+  margin-top: auto;
+  padding: var(--space-1) 10px;
   background: rgba(var(--_ac), 0.12);
   color: rgb(var(--_ac));
-  border-radius: 100px;
-  font-size: 11px;
-  font-weight: 500;
+  border-radius: var(--radius-full);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+}
+
+/* The paragraph, not the pill, takes the slack — `margin-top: auto` on the
+   pill only pushes it down once something above it can grow. */
+.lp-bento-card:has(.lp-bento-pill) p {
+  margin-bottom: var(--space-4);
 }
 
 /* ── Features ────────────────────────────────────────────── */
 .lp-features {
-  padding: 90px 24px;
+  padding: var(--lp-section-pad) var(--space-6);
   border-bottom: 1px solid var(--border-subtle);
-}
-
-.lp-feature-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  margin-top: 56px;
-}
-
-@media (max-width: 900px) {
-  .lp-feature-grid { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 560px) {
-  .lp-feature-grid { grid-template-columns: 1fr; }
-}
-
-.lp-feature-card {
-  background: var(--surface-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 28px;
-  transition: border-color 0.2s;
-}
-
-.lp-feature-card:hover { border-color: var(--border-default); }
-
-.lp-feature-icon {
-  width: 44px;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(242, 136, 75, 0.1);
-  border-radius: 10px;
-  color: var(--orange-400);
-  margin-bottom: 16px;
-}
-
-.lp-feature-card h3 {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--white);
-  margin: 0 0 10px;
-}
-
-.lp-feature-card p {
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  margin: 0;
 }
 
 /* ── Demo section ────────────────────────────────────────── */
 .lp-demo-section {
-  padding: 48px 24px 80px;
+  padding: var(--space-9) var(--space-6) 80px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
 /* App window frame */
 .lp-app-window {
+  position: relative;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   overflow: hidden;
   box-shadow: var(--shadow-lg);
   max-width: 1200px;
   margin: 0 auto;
-  height: 600px;
+  height: 620px;
   display: flex;
   flex-direction: column;
   background: var(--surface-app);
   user-select: none;
 }
 
-/* macOS title bar */
-.lp-titlebar {
-  background: var(--surface-panel);
-  border-bottom: 1px solid var(--border-subtle);
-  height: 38px;
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  flex-shrink: 0;
-  gap: 12px;
+/* ── macOS chrome ────────────────────────────────────────────────────────
+   The app runs with titleBarStyle 'hiddenInset' (main.js), so there is no OS
+   title bar: the top nav is the top of the window and simply reserves room
+   for the traffic lights. css/shell.css does that with a 78px left padding
+   under html[data-platform='darwin']; a browser is not darwin, so the demo
+   window asks for the same gap itself. */
+.lp-app-window .sbx-topnav {
+  padding-left: 78px;
 }
 
-.lp-traffic-lights { display: flex; gap: 7px; }
+.lp-traffic-lights {
+  position: absolute;
+  top: 0;
+  left: var(--space-4);
+  height: var(--topnav-height);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
 
 .lp-tl {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
   display: inline-block;
 }
 
@@ -370,15 +339,6 @@ html, body {
 .lp-tl-close  { background: var(--red-500); }
 .lp-tl-min    { background: var(--amber-500); }
 .lp-tl-max    { background: var(--green-500); }
-
-.lp-titlebar-name {
-  font-size: 13px;
-  color: var(--text-tertiary);
-  font-weight: 500;
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-}
 
 /* ── Demo shell ──────────────────────────────────────────────────────────
    The demo renders the app's own components inside App.vue's wrapper markup
@@ -438,15 +398,46 @@ html, body {
     flex: 1 1 auto;
     min-width: 120px;
   }
-}
-
-.lp-demo-empty-tab {
-  padding: var(--space-5) 0;
+  /* No OS chrome to make room for once the window is this narrow — the gap
+     would just cost the tabs a fifth of the row. */
+  .lp-app-window .sbx-topnav {
+    padding-left: 10px;
+  }
+  .lp-traffic-lights {
+    display: none;
+  }
 }
 
 /* App.vue wraps SessionHeaderApp in this div; keep it from being squeezed. */
 .lp-app-window #vue-session-header {
   flex-shrink: 0;
+}
+
+/* ── Session side panel ──────────────────────────────────────────────────
+   css/side-panel.css shifts #terminal-split / #terminals / #grid-viewer out
+   from under the floating panel. The landing's static transcript is none of
+   those, so it needs the same margin under its own selector. */
+.lp-app-window #terminal-area.has-side-panel > .lp-term,
+.lp-app-window #terminal-area.has-side-panel > .lp-demo-placeholder {
+  margin-right: calc(var(--sbx-sidepanel-w) + var(--sbx-sidepanel-gap) * 2);
+}
+
+/* No PTY, so the panel's scratch shell gets the same static-transcript
+   treatment the session terminal gets. The pane already paints the dark
+   surface and owns the padding. */
+.lp-term--panel {
+  height: 100%;
+  padding: 0;
+  background: transparent;
+}
+
+/* At 340px the prompt is wider than the pane. As a flex row each segment
+   wraps inside its own box, which stacks "on <branch>" into a second column
+   instead of running on. Block-level lets the whole prompt reflow as one run
+   of text, the way a real shell wraps it. */
+.lp-term--panel .lp-term-line {
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 /* ── Fake terminal ───────────────────────────────────────────────────────
@@ -534,16 +525,16 @@ html, body {
 
 /* ── Install ─────────────────────────────────────────────── */
 .lp-install {
-  padding: 90px 24px;
+  padding: var(--lp-section-pad) var(--space-6);
   border-bottom: 1px solid var(--border-subtle);
 }
 
 .lp-install-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  gap: var(--space-4);
   max-width: 700px;
-  margin: 56px auto 0;
+  margin: var(--space-7) auto 0;
 }
 
 @media (max-width: 600px) {
@@ -553,48 +544,53 @@ html, body {
 .lp-install-card {
   background: var(--surface-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 24px;
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   text-align: center;
 }
 
 .lp-install-platform {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
 
 .lp-dl-btn {
   display: inline-block;
-  background: rgba(255,255,255,0.06);
+  background: var(--surface-card);
   border: 1px solid var(--border-default);
-  border-radius: 6px;
-  padding: 7px 14px;
-  font-size: 13px;
+  border-radius: var(--radius-xs);
+  padding: 7px var(--space-4);
+  font-size: var(--text-sm);
   color: var(--text-primary);
   text-decoration: none;
-  transition: background 0.15s;
+  transition:
+    background var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard);
 }
 
-.lp-dl-btn:hover { background: rgba(255,255,255,0.1); }
+.lp-dl-btn:hover {
+  background: var(--surface-card-hover);
+  border-color: var(--border-strong);
+}
 
 .lp-install-note {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
   margin: 0;
 }
 
 .lp-install-prereq {
   text-align: center;
-  margin-top: 32px;
-  font-size: 13px;
+  margin-top: var(--space-7);
+  font-size: var(--text-sm);
   color: var(--text-tertiary);
 }
 
@@ -609,7 +605,7 @@ html, body {
 .lp-footer {
   background: var(--surface-panel);
   border-top: 1px solid var(--border-subtle);
-  padding: 24px;
+  padding: var(--space-6);
 }
 
 .lp-footer-inner {
@@ -618,9 +614,9 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--text-xs);
   color: var(--text-tertiary);
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 
@@ -683,20 +679,24 @@ html, body {
 
 /* ── Project viewer demo section ─────────────────────────── */
 .lp-project-demo-section {
-  padding: 90px 24px;
+  padding: var(--lp-section-pad) var(--space-6);
   border-bottom: 1px solid var(--border-subtle);
 }
 
 .lp-project-demo-text {
-  max-width: 600px;
+  max-width: 640px;
   margin: 0 auto 48px;
   text-align: center;
 }
 
+.lp-project-demo-title {
+  margin: 0 0 16px;
+}
+
 .lp-project-demo-desc {
-  font-size: 15px;
+  font-size: var(--text-md);
   color: var(--text-secondary);
-  line-height: 1.65;
+  line-height: var(--leading-relaxed);
   margin: 0;
 }
 

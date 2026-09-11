@@ -22,6 +22,11 @@ if (!app.isPackaged) {
 const log = require('electron-log');
 // getFolderIndexMtimeMs moved to session-cache.js
 const { startMcpServer, shutdownMcpServer, shutdownAll: shutdownAllMcp, resolvePendingDiff, rekeyMcpServer, cleanStaleLockFiles } = require('./mcp-bridge');
+const { startHookServer, stopHookServer } = require('./hook-server');
+const { buildHookSettings } = require('./hook-settings');
+const { SessionStatusTracker } = require('./session-status');
+const { createDockAttention } = require('./dock-attention');
+const sdkSession = require('./sdk-session');
 const { fetchAndTransformUsage, getOAuthToken, probeUsage } = require('./claude-auth');
 log.transports.file.level = app.isPackaged ? 'info' : 'debug';
 log.transports.console.level = app.isPackaged ? 'info' : 'debug';
@@ -92,7 +97,7 @@ if (app.isPackaged || process.env.FORCE_UPDATER) {
   });
 }
 const {
-  getMeta, getAllMeta, toggleStar, setName, setArchived,
+  getMeta, getAllMeta, toggleStar, setName, setArchived, deleteSessionMeta,
   isCachePopulated, getAllCached, getCachedByFolder, getCachedFolder, getCachedSession, upsertCachedSessions,
   deleteCachedSession, deleteCachedFolder,
   getFolderMeta, getAllFolderMeta, setFolderMeta,
@@ -214,7 +219,7 @@ function activeAccountClaudeEnv() {
   return { CLAUDE_CONFIG_DIR: account.configDir };
 }
 
-// Build stats in the same format as stats-cache.json using Switchboard's own DB.
+// Build stats in the same format as stats-cache.json using WootonPad's own DB.
 // This ensures all accounts see charts even before running `claude /stats`.
 function computeStatsFromDb(accountId) {
   const sessions = getAllCached(accountId);
@@ -242,6 +247,289 @@ function computeStatsFromDb(accountId) {
 // Active PTY sessions
 const activeSessions = new Map();
 let mainWindow = null;
+
+// --- Session status ---
+// Fed by Claude Code hooks (hook-server.js) and, only for sessions where no
+// hook ever arrives, by the legacy OSC inference below. This replaces the
+// `cli-busy-state` boolean: 'requires_action' is a third state that a boolean
+// could not express, and the old channel's busy=false was ambiguous between
+// "finished a turn" and "waiting for you".
+const sessionStatus = new SessionStatusTracker({
+  onChange: (sessionId, snapshot) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('session-status', sessionId, snapshot);
+  },
+});
+
+// Started on the first session that needs it rather than at app ready: a user
+// who never opens a session never opens a socket.
+function hookServer() {
+  return startHookServer({ log, onEvent: payload => sessionStatus.apply(payload) });
+}
+
+// --- Dock badge and attention ---
+// The rules live in dock-attention.js so they can be tested without Electron;
+// this is only the wiring. `app.dock` is undefined off macOS, hence the `?.`.
+const dock = createDockAttention({
+  setBadgeCount: (n) => app.setBadgeCount(n),
+  bounce: () => app.dock?.bounce('critical') ?? null,
+  cancelBounce: (id) => app.dock?.cancelBounce(id),
+  isFocused: () => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused(),
+  log: (message) => log.debug(message),
+});
+
+// Belt and braces with mainWindow.on('focus'): the window event is the one
+// that fires when you click the bouncing icon, and this one covers coming back
+// to an app whose window was never the thing that took focus.
+app.on('browser-window-focus', () => dock.stopBounce());
+
+ipcMain.on('attention-summary', (_event, summary) => dock.update(summary));
+
+// --- SDK-backed sessions ---
+// The same conversation as a PTY session, carried as structured messages
+// instead of a rendered byte stream. Everything below routes by which map the
+// id is in, so a session's transport stays an implementation detail of
+// open-terminal and nothing downstream has to care.
+// A tool call that needs a decision parks here until the renderer answers.
+// The SDK is waiting on the promise, so the session is genuinely stopped — the
+// same pause a terminal session shows as a prompt, only this one is a dialog.
+const pendingPermissions = new Map();   // requestId → { resolve, sessionId, kind, payload }
+let permissionSeq = 0;
+
+// Answering the question un-blocks the turn, so the status has to move off
+// requires_action there and then. Waiting for the next hook is not enough: an
+// allow that the CLI then withdraws, or a denial it does not retry, leaves no
+// hook at all and the session would sit marked as waiting on a dialog that is
+// no longer on screen.
+function settlePermission(requestId, decision) {
+  const entry = pendingPermissions.get(requestId);
+  if (!entry) return false;
+  pendingPermissions.delete(requestId);
+  entry.resolve(decision);
+  sessionStatus.apply({
+    session_id: entry.sessionId,
+    hook_event_name: 'PermissionDenied',   // "decision made, carry on" → running
+  });
+  return true;
+}
+
+function denyPending(sessionId, reason) {
+  for (const [id, entry] of [...pendingPermissions]) {
+    if (entry.sessionId !== sessionId) continue;
+    pendingPermissions.delete(id);
+    // Three channels, three refusal shapes. An elicitation answered with a
+    // permission result is not a refusal, it is a malformed reply.
+    entry.resolve(ABANDONED[entry.kind] || { behavior: 'deny', message: reason });
+  }
+}
+
+/** How each channel spells "nobody is going to answer this". */
+const ABANDONED = {
+  elicitation: { action: 'cancel' },
+  dialog: { behavior: 'cancelled' },
+};
+
+/**
+ * The dialogs a session is currently stopped on, for a renderer that has just
+ * loaded. A reload loses the window's messages but not the CLI's patience: the
+ * tool call is still parked on its promise, and without this the session would
+ * sit blocked with nothing on screen to answer.
+ */
+ipcMain.handle('sdk-pending-requests', (_event, sessionId) =>
+  [...pendingPermissions.values()]
+    .filter(entry => entry.sessionId === sessionId && entry.payload)
+    .map(entry => ({ ...entry.payload, kind: entry.kind })));
+
+function askPermission(sessionId, toolName, input, options) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      resolve({ behavior: 'deny', message: 'WootonPad is not showing this session' });
+      return;
+    }
+    const requestId = `perm-${++permissionSeq}`;
+    const payload = {
+      requestId,
+      toolName,
+      input,
+      // Everything the CLI would offer as "don't ask again" for this tool.
+      suggestions: options?.suggestions || [],
+      // What the CLI itself would have shown. The SDK's own guidance is to
+      // prefer these over a sentence rebuilt from the tool name — they cover
+      // tools this build has never heard of, and they match the official
+      // client word for word.
+      title: options?.title || '',
+      displayName: options?.displayName || '',
+      description: options?.description || '',
+      blockedPath: options?.blockedPath || '',
+      decisionReason: options?.decisionReason || '',
+      toolUseID: options?.toolUseID || '',
+    };
+    // Registered before the abort listener, which fires synchronously when the
+    // signal has already been aborted — settling an entry that is not in the
+    // map yet would leave the promise parked forever.
+    pendingPermissions.set(requestId, { resolve, sessionId, kind: 'permission', payload });
+
+    // The CLI can withdraw the request — a turn interrupted while the dialog
+    // is up. Settle it so the promise cannot outlive the question.
+    options?.signal?.addEventListener('abort', () => {
+      if (!settlePermission(requestId, { behavior: 'deny', message: 'Cancelled' })) return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk-permission-cancelled', sessionId, requestId);
+      }
+    }, { once: true });
+
+    log.info(`[sdk] session=${sessionId} asking to use ${toolName}`);
+    mainWindow.webContents.send('sdk-permission-request', sessionId, payload);
+  });
+}
+
+/**
+ * An MCP server asking the user for something — a form to fill in, or a link
+ * to sign in through. A separate channel from tool permissions in the CLI, and
+ * a separate one here, but it parks in the same map: what matters downstream is
+ * that the session is stopped waiting on a person.
+ */
+function askElicitation(sessionId, request) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      resolve({ action: 'decline' });
+      return;
+    }
+    const requestId = `elicit-${++permissionSeq}`;
+    const payload = {
+      requestId,
+      serverName: request?.serverName || '',
+      message: request?.message || '',
+      mode: request?.mode || 'form',
+      url: request?.url || '',
+      requestedSchema: request?.requestedSchema || null,
+      title: request?.title || '',
+      displayName: request?.displayName || '',
+      description: request?.description || '',
+    };
+    // Same shape of entry as a permission, so cancellation, session exit and
+    // the status move on answering all work without a second code path. The
+    // decision is passed through untouched — the SDK validates it, not us.
+    pendingPermissions.set(requestId, { resolve, sessionId, kind: 'elicitation', payload });
+
+    sessionStatus.apply({
+      session_id: sessionId,
+      hook_event_name: 'PermissionRequest',
+      tool_name: `mcp:${request?.serverName || 'server'}`,
+    });
+
+    log.info(`[sdk] session=${sessionId} elicitation from ${request?.serverName} mode=${request?.mode || 'form'}`);
+    mainWindow.webContents.send('sdk-elicitation-request', sessionId, payload);
+  });
+}
+
+/**
+ * A `request_user_dialog` the CLI asks the host to draw — today only the
+ * refusal fallback, which offers to retry a declined turn on another model.
+ * sdk-session.js has already filtered out kinds this build cannot render, so
+ * anything arriving here is one RequestDialog knows.
+ */
+function askUserDialog(sessionId, request) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      resolve({ behavior: 'cancelled' });
+      return;
+    }
+    const requestId = `dialog-${++permissionSeq}`;
+    const payload = {
+      requestId,
+      dialogKind: request?.dialogKind || '',
+      payload: request?.payload || {},
+      toolUseID: request?.toolUseID || '',
+    };
+    pendingPermissions.set(requestId, { resolve, sessionId, kind: 'dialog', payload });
+
+    sessionStatus.apply({
+      session_id: sessionId,
+      hook_event_name: 'PermissionRequest',
+      tool_name: request?.dialogKind || 'dialog',
+    });
+
+    log.info(`[sdk] session=${sessionId} dialog ${request?.dialogKind}`);
+    mainWindow.webContents.send('sdk-dialog-request', sessionId, payload);
+  });
+}
+
+// --- IPC: sdk-permission-response ---
+ipcMain.on('sdk-permission-response', (_event, requestId, decision) => {
+  settlePermission(requestId, decision);  // no-op if already cancelled
+});
+
+// --- IPC: sdk-elicitation-response / sdk-dialog-response ---
+ipcMain.on('sdk-elicitation-response', (_event, requestId, decision) => {
+  settlePermission(requestId, decision);
+});
+
+ipcMain.on('sdk-dialog-response', (_event, requestId, decision) => {
+  settlePermission(requestId, decision);
+});
+
+function startSdkSessionFor(sessionId, projectPath, isNew, sessionOptions) {
+  return sdkSession.startSdkSession(sessionId, {
+    projectPath,
+    isNew,
+    forkFrom: sessionOptions?.forkFrom || null,
+    permissionMode: sessionOptions?.dangerouslySkipPermissions
+      ? 'bypassPermissions'
+      : (sessionOptions?.permissionMode || undefined),
+    model: sessionOptions?.model || undefined,
+    // The same account resolution every other spawn path uses, so an SDK
+    // session writes its transcript into the folder this account's cache
+    // watches rather than the default home.
+    env: activeAccountClaudeEnv(),
+
+    // Lifecycle events arrive as callbacks here rather than over the HTTP
+    // endpoint a PTY session needs, but they are the same payloads feeding the
+    // same state machine — see session-status.js.
+    onHook: (id, input) => sessionStatus.apply({ ...input, session_id: id }),
+
+    // Called when the permission flow falls through to a prompt. The session
+    // is blocked on this promise, so the status has to say so — otherwise the
+    // sidebar shows a session that looks busy and never finishes.
+    canUseTool: (toolName, input, options) => {
+      sessionStatus.apply({
+        session_id: sessionId,
+        hook_event_name: 'PermissionRequest',
+        tool_name: toolName,
+      });
+      return askPermission(sessionId, toolName, input, options);
+    },
+
+    // Same stop, different channels — see askElicitation and askUserDialog.
+    onElicitation: (id, request) => askElicitation(id, request),
+    onUserDialog: (id, request) => askUserDialog(id, request),
+
+    // Only consulted when onHook is absent; kept wired so a future caller that
+    // opts out of hooks still reports something.
+    onState: (id, state) => {
+      if (state === 'exited') {
+        // A dialog whose session has gone would hang the renderer forever.
+        denyPending(id, 'The session ended');
+        sessionStatus.remove(id);
+      }
+    },
+
+    onSessionId: (oldId, newId) => {
+      sessionStatus.rekey(oldId, newId);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('session-forked', oldId, newId);
+      }
+    },
+
+    onMessage: (id, message) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk-message', id, message);
+      }
+    },
+
+    onStderr: (id, data) => log.debug(`[sdk] session=${id} stderr: ${String(data).trim().slice(0, 300)}`),
+  });
+}
 
 // --- Single-instance: parse --project <path> from argv ---
 function parseProjectArg(argv) {
@@ -332,6 +620,12 @@ function createWindow() {
     minHeight: 500,
     title: 'Wooton Pad',
     icon: path.join(__dirname, 'build', 'icon.png'),
+    // macOS: drop the title bar and let the top nav run to the window's edge,
+    // keeping the traffic lights inset over it. css/shell.css reserves room
+    // for them and marks the bar draggable, which the OS chrome used to do.
+    // Left alone elsewhere: Windows and Linux have no equivalent inset, and a
+    // frameless window there means reimplementing minimise/maximise/close.
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -343,6 +637,20 @@ function createWindow() {
   if (restorePosition) {
     mainWindow.setBounds({ ...restorePosition, width: bounds.width, height: bounds.height });
   }
+
+  // macOS hides the traffic lights in full screen, so the gap css/shell.css
+  // reserves for them has to go with them.
+  const sendFullscreen = (on) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-fullscreen', on);
+    }
+  };
+  mainWindow.on('enter-full-screen', () => sendFullscreen(true));
+  mainWindow.on('leave-full-screen', () => sendFullscreen(false));
+
+  // Coming to the front is the answer to a bouncing dock icon, whether or not
+  // the session that caused it has been dealt with yet. The badge stays.
+  mainWindow.on('focus', () => dock.stopBounce());
 
   mainWindow.loadFile(path.join(__dirname, 'public', 'index.html'));
 
@@ -935,9 +1243,14 @@ ipcMain.handle('git-generate-commit-msg', async (_event, projectPath, style = 's
     const msg = await new Promise((resolve, reject) => {
       // The claude binary lives wherever the project does — inside the
       // distribution for a WSL-backed one, so this call is routed there too.
+      // Absolute path, not a bare name: see resolveClaudeBinary — a packaged
+      // macOS app has no shell PATH, so `claude` alone is ENOENT there. A WSL
+      // account keeps the bare name: the binary that matters lives inside the
+      // distribution, and a host path would be meaningless there.
+      const claudeBin = activeWslDistro() ? 'claude' : resolveClaudeBinary();
       const [file, args, options] = projectExecFile(
-        ['claude', '-p', prompt, '--no-session-persistence'], projectPath,
-        { env: { ...process.env, ...activeAccountClaudeEnv() } }
+        [claudeBin, '-p', prompt, '--no-session-persistence'], projectPath,
+        { env: { ...process.env, PATH: claudeChildPath(), ...activeAccountClaudeEnv() } }
       );
       const child = spawn(file, args, options);
       let stdout = '', stderr = '';
@@ -955,6 +1268,174 @@ ipcMain.handle('git-generate-commit-msg', async (_event, projectPath, style = 's
     const clean = msg.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
     return { ok: true, message: clean };
   } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// ── Board summaries ───────────────────────────────────────────────────────
+// One headless `claude` call for the whole board rather than one per session:
+// N sessions would be N cold CLI starts, N authentications and N timeouts to
+// wait out, and the model reads the transcripts faster together than apart.
+// Same plumbing as git-generate-commit-msg above — resolved binary, child PATH,
+// active-account env, hard timeout, { ok } result.
+const BOARD_SUMMARY_MAX_SESSIONS = 12;
+const BOARD_SUMMARY_MAX_PROMPT = 8000;      // the budget the commit diff gets
+const BOARD_SUMMARY_MAX_PER_SESSION = 1200;
+
+// The last few assistant turns of a transcript. "What did this session just
+// finish" needs the end of the conversation and nothing else, and the whole
+// file would blow the prompt budget on the first session.
+function sessionTranscriptTail(sessionId, limit = BOARD_SUMMARY_MAX_PER_SESSION) {
+  const folder = getCachedFolder(sessionId);
+  if (!folder) return '';
+  let content;
+  try {
+    content = fs.readFileSync(path.join(activeProjectsDir(), folder, sessionId + '.jsonl'), 'utf-8');
+  } catch { return ''; }
+  const lines = content.split('\n');
+  const turns = [];
+  for (let i = lines.length - 1; i >= 0 && turns.length < 3; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.type !== 'assistant' && !(entry.type === 'message' && entry.role === 'assistant')) continue;
+    const blocks = entry.message?.content;
+    // Text blocks only: a tool_use block is an argument dump, and its result
+    // arrives as a separate user entry that says nothing about intent.
+    const text = typeof blocks === 'string' ? blocks
+      : (Array.isArray(blocks)
+        ? blocks.filter(b => b?.type === 'text').map(b => b.text || '').join('\n')
+        : (typeof entry.message === 'string' ? entry.message : ''));
+    const trimmed = text.trim();
+    if (trimmed) turns.unshift(trimmed);
+  }
+  // Tail, not head: the closing sentences are the ones that say what landed.
+  return turns.join('\n---\n').slice(-limit);
+}
+
+// The child of the summarize run currently in flight, so the sidebar's Stop
+// button has something to kill. One at a time: the renderer disables Summarize
+// while a run is pending, and a second run would only queue behind this one on
+// the same account anyway.
+let boardSummaryChild = null;
+let boardSummaryCancelled = false;
+
+ipcMain.handle('board-summarize-abort', () => {
+  if (!boardSummaryChild) return { ok: false, error: 'nothing running' };
+  boardSummaryCancelled = true;
+  try { boardSummaryChild.kill(); } catch {}
+  return { ok: true };
+});
+
+ipcMain.handle('board-summarize-sessions', async (_event, sessions, options) => {
+  const { spawn } = require('child_process');
+  // One session asked for from a session's own menu, rather than the board's
+  // whole set: the whole prompt budget goes to it and the answer gets room to
+  // name what the last few turns actually did.
+  const detail = !!options?.detail;
+  const list = (Array.isArray(sessions) ? sessions : []).slice(0, BOARD_SUMMARY_MAX_SESSIONS);
+  if (!list.length) return { ok: false, error: 'No sessions on the board to summarize' };
+  try {
+    let budget = BOARD_SUMMARY_MAX_PROMPT;
+    const blocks = [];
+    for (const session of list) {
+      if (budget <= 0) break;
+      // Passed as the limit rather than sliced afterwards: sessionTranscriptTail
+      // cuts from the front, and the last thing a session said is the point.
+      const perSession = detail ? budget : Math.min(BOARD_SUMMARY_MAX_PER_SESSION, budget);
+      const tail = sessionTranscriptTail(session.sessionId, perSession);
+      if (!tail) continue;
+      budget -= tail.length;
+      const title = String(session.title || '').replace(/"/g, "'").slice(0, 120);
+      blocks.push(`<session id="${session.sessionId}" title="${title}">\n${tail}\n</session>`);
+    }
+    if (!blocks.length) return { ok: false, error: 'No readable transcripts for these sessions' };
+
+    const prompt = 'Each <session> below is the tail of a Claude Code transcript.\n'
+      + (detail
+        ? 'Write 2-3 sentences in past tense describing what the last few turns of that session accomplished. '
+        : 'For each one, write 1-2 sentences in past tense saying what that session just finished doing. ')
+      + 'Name the concrete files or features the transcript names. Do not mention the transcript, the session id, or yourself.\n'
+      // It reads in a sidebar column: left to itself the model writes a
+      // paragraph of clause-joined detail that has to be scrolled to finish.
+      + (detail
+        ? 'Hard limit of 70 words — cut detail rather than run long.\n\n'
+        : 'Hard limit of 35 words per summary — cut detail rather than run long.\n\n')
+      + 'Reply with ONLY a JSON array, no prose and no code fence, one object per session in the order given:\n'
+      + '[{"id": "<the session id exactly as given>", "summary": "<1-2 sentences>"}]\n\n'
+      + blocks.join('\n\n');
+
+    // Nothing here is project work, but the CLI still runs somewhere: anchor it
+    // to a project on the board so a WSL-backed account resolves inside its own
+    // distribution rather than on the Windows side.
+    const anchor = list.find(s => s.projectPath)?.projectPath;
+
+    const raw = await new Promise((resolve, reject) => {
+      const claudeBin = activeWslDistro() ? 'claude' : resolveClaudeBinary();
+      const [file, args, options] = projectExecFile(
+        // json envelope, not bare text: it is the only way to report what the
+        // summary actually cost. The prose lands in `result`.
+        [claudeBin, '-p', prompt, '--no-session-persistence', '--output-format', 'json'], anchor,
+        { env: { ...process.env, PATH: claudeChildPath(), ...activeAccountClaudeEnv() } }
+      );
+      const child = spawn(file, args, options);
+      // Published so board-summarize-abort can reach it. Cleared on close, so
+      // Stop after the run has finished is a no-op rather than a kill of
+      // whatever spawned next.
+      boardSummaryChild = child;
+      boardSummaryCancelled = false;
+      let stdout = '', stderr = '';
+      child.stdout.on('data', d => { stdout += d; });
+      child.stderr.on('data', d => { stderr += d; });
+      // Longer than the commit message's 60s: this prompt carries a dozen
+      // transcripts and answers with a dozen summaries.
+      const timer = setTimeout(() => { child.kill(); reject(new Error('Timed out after 120s')); }, 120000);
+      child.on('close', code => {
+        clearTimeout(timer);
+        boardSummaryChild = null;
+        if (boardSummaryCancelled) reject(Object.assign(new Error('Stopped'), { cancelled: true }));
+        else if (code !== 0 && !stdout.trim()) reject(new Error(stderr.trim() || `claude exited with code ${code}`));
+        else resolve(stdout.trim());
+      });
+      child.on('error', err => { clearTimeout(timer); boardSummaryChild = null; reject(err); });
+    });
+
+    if (!raw) return { ok: false, error: 'No output from claude' };
+
+    // Unwrap the CLI envelope. If it is not there — an older CLI, or a wrapper
+    // that printed something else — fall back to treating stdout as the answer
+    // and report no usage rather than failing.
+    let body = raw;
+    let usage = null;
+    try {
+      const envelope = JSON.parse(raw);
+      if (envelope && typeof envelope.result === 'string') {
+        body = envelope.result;
+        const u = envelope.usage || {};
+        usage = {
+          inputTokens: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+          outputTokens: u.output_tokens || 0,
+          costUSD: envelope.total_cost_usd || 0,
+        };
+      }
+    } catch {}
+
+    // Models fence JSON even when told not to, and sometimes prefix a sentence.
+    const unfenced = body.replace(/^```[a-z]*\n?/i, '').replace(/\n?```\s*$/, '').trim();
+    const start = unfenced.indexOf('[');
+    const end = unfenced.lastIndexOf(']');
+    let parsed;
+    try {
+      parsed = JSON.parse(start !== -1 && end > start ? unfenced.slice(start, end + 1) : unfenced);
+    } catch {
+      return { ok: false, error: 'claude did not return JSON' };
+    }
+    if (!Array.isArray(parsed)) return { ok: false, error: 'claude did not return a JSON array' };
+    const summaries = parsed
+      .filter(item => item && item.id && typeof item.summary === 'string' && item.summary.trim())
+      .map(item => ({ sessionId: String(item.id), summary: item.summary.trim() }));
+    if (!summaries.length) return { ok: false, error: 'claude returned no summaries' };
+    return { ok: true, summaries, usage };
+  } catch (e) { return { ok: false, error: e.message, cancelled: !!e.cancelled }; }
 });
 
 ipcMain.handle('delete-worktree', (_event, projectPath, worktreePath) => {
@@ -1017,18 +1498,6 @@ ipcMain.handle('get-file-tree', (_event, projectPath) => {
   // canonical project path.
   try { return { ok: true, tree: walk(hostPath(projectPath), '', 0) }; }
   catch (e) { return { ok: false, error: e.message }; }
-});
-
-ipcMain.handle('get-project-sessions', (_event, projectPath) => {
-  try {
-    const { buildProjectsFromCache } = require('./session-cache');
-    const projects = buildProjectsFromCache(false);
-    const proj = projects.find(p => p.projectPath === projectPath);
-    const sessions = (proj?.sessions || []).slice(0, 10).map(s => ({
-      id: s.sessionId, name: s.name || s.aiTitle || s.summary?.slice(0, 40) || s.sessionId?.slice(0, 8), updatedAt: s.modified, running: false,
-    }));
-    return { ok: true, sessions };
-  } catch (e) { return { ok: false, sessions: [] }; }
 });
 
 ipcMain.handle('get-file-diff', (_event, projectPath, filePath) => {
@@ -1192,11 +1661,9 @@ ipcMain.handle('save-plan', (_event, filePath, content) => {
   }
 });
 
-// --- IPC: get-stats ---
 // Stats for one account: its own rows in the session cache, enriched with the
-// stats-cache.json `claude /stats` wrote into that account's config dir. Both
-// the active-account handler and the accounts panel go through here so there is
-// only ever one stats data path.
+// stats-cache.json `claude /stats` wrote into that account's config dir. The
+// accounts panel is the only reader — there is one stats data path.
 function buildStatsForAccount(account) {
   const dbStats = computeStatsFromDb(account.id);
   try {
@@ -1217,8 +1684,6 @@ function buildStatsForAccount(account) {
   // No file cache — return DB-computed stats so charts always render
   return dbStats;
 }
-
-ipcMain.handle('get-stats', () => buildStatsForAccount(getActiveAccount()));
 
 // --- IPC: refresh-stats (run /stats + /usage via PTY) ---
 ipcMain.handle('refresh-stats', async () => {
@@ -1357,31 +1822,6 @@ ipcMain.handle('refresh-stats', async () => {
     log.error('Error refreshing stats:', err);
     return { stats: null, usage: {} };
   }
-});
-
-// --- IPC: get-usage (lightweight, API-only, no PTY) ---
-ipcMain.handle('get-usage', async () => {
-  const cacheKey = 'usage:' + ((getSetting('global') || {}).activeAccountId || 'default');
-  try {
-    const usage = await fetchAndTransformUsage(activeConfigDir()) || {};
-    if (!usage._error && !usage._rateLimited && Object.keys(usage).length) {
-      setSetting(cacheKey, usage);
-      return usage;
-    }
-    const cached = getSetting(cacheKey);
-    return cached ? { ...cached, _cached: true } : usage;
-  } catch (err) {
-    log.error('Error fetching usage:', err);
-    const cached = getSetting(cacheKey);
-    return cached ? { ...cached, _cached: true } : {};
-  }
-});
-
-// --- IPC: get-cached-usage (DB-only, no Keychain/API access) ---
-ipcMain.handle('get-cached-usage', () => {
-  const cacheKey = 'usage:' + ((getSetting('global') || {}).activeAccountId || 'default');
-  const cached = getSetting(cacheKey);
-  return cached ? { ...cached, _cached: true } : {};
 });
 
 // --- IPC: get-memories ---
@@ -1534,34 +1974,6 @@ ipcMain.handle('get-memories', () => {
   } catch {}
 
   return result;
-});
-
-// --- IPC: read-memory ---
-ipcMain.handle('read-memory', (_event, filePath) => {
-  try {
-    const resolved = path.resolve(hostPath(filePath));
-    // Allow paths under the active account's Claude home, or any .md that exists
-    if (!resolved.endsWith('.md')) return '';
-    if (!resolved.startsWith(activeConfigDir()) && !fs.existsSync(resolved)) return '';
-    return fs.readFileSync(resolved, 'utf8');
-  } catch (err) {
-    console.error('Error reading memory file:', err);
-    return '';
-  }
-});
-
-// --- IPC: save-memory ---
-ipcMain.handle('save-memory', (_event, filePath, content) => {
-  try {
-    const resolved = path.resolve(hostPath(filePath));
-    if (!resolved.endsWith('.md')) return { ok: false, error: 'not a .md file' };
-    if (!fs.existsSync(resolved)) return { ok: false, error: 'file does not exist' };
-    fs.writeFileSync(resolved, content, 'utf8');
-    return { ok: true };
-  } catch (err) {
-    console.error('Error saving memory file:', err);
-    return { ok: false, error: err.message };
-  }
 });
 
 // --- IPC: search ---
@@ -1758,24 +2170,69 @@ function accountTokenInfo(account) {
 // One round trip for the panel's static half: paths, which config files exist,
 // whether a token is on file, and the last usage figures already in the DB.
 // Nothing here touches the network.
-// The panel offers a copy-paste command for running the CLI against one
-// account, so a bare `claude` is only the fallback — resolve the real binary
-// through a login shell, which is where nvm/mise/asdf put it.
+// Resolving `claude` to an absolute path is not optional. An app launched from
+// Finder or the Dock inherits launchd's minimal PATH — /usr/bin:/bin:/usr/sbin:
+// /sbin — not the shell's, so `spawn('claude')` fails with ENOENT in a packaged
+// build while working fine under `npm start`, which is launched from a terminal.
+// Same reason DOCKER_PATH exists above.
+//
+// Order: ask a login shell first, since that is where nvm/mise/asdf/bun put the
+// binary, then fall back to the locations the installers actually use.
+const CLAUDE_EXTRA_PATH = [
+  path.join(os.homedir(), '.local', 'bin'),
+  path.join(os.homedir(), '.claude', 'local'),
+  path.join(os.homedir(), '.bun', 'bin'),
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+];
+
 let _claudeBinary;
 function resolveClaudeBinary() {
   if (_claudeBinary !== undefined) return _claudeBinary;
   const { execFileSync } = require('child_process');
-  _claudeBinary = 'claude';
-  try {
-    const opts = { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] };
-    const out = process.platform === 'win32'
-      ? execFileSync('where', ['claude'], opts)
-      : execFileSync(process.env.SHELL || '/bin/sh', ['-lc', 'command -v claude'], opts);
-    const first = out.split(/\r?\n/).map(s => s.trim()).find(Boolean);
-    if (first) _claudeBinary = first;
-  } catch {}
+  const opts = { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] };
+  _claudeBinary = null;
+
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync('where', ['claude'], opts);
+      _claudeBinary = out.split(/\r?\n/).map(s => s.trim()).find(Boolean) || null;
+    } catch {}
+  } else {
+    // -l so the profile that sets up the version manager is sourced. SHELL can
+    // be absent under launchd, hence the explicit default.
+    for (const args of [['-lc', 'command -v claude'], ['-c', 'command -v claude']]) {
+      try {
+        const out = execFileSync(process.env.SHELL || '/bin/zsh', args, opts);
+        const hit = out.split('\n').map(s => s.trim()).find(Boolean);
+        if (hit && fs.existsSync(hit)) { _claudeBinary = hit; break; }
+      } catch {}
+    }
+    if (!_claudeBinary) {
+      for (const dir of CLAUDE_EXTRA_PATH) {
+        const candidate = path.join(dir, 'claude');
+        try { fs.accessSync(candidate, fs.constants.X_OK); _claudeBinary = candidate; break; } catch {}
+      }
+    }
+  }
+
+  // Nothing found: keep the bare name so the failure is an honest ENOENT rather
+  // than a path we invented.
+  if (!_claudeBinary) _claudeBinary = 'claude';
   return _claudeBinary;
 }
+
+// The CLI shells out to git, node and friends, which are equally missing from
+// launchd's PATH.
+function claudeChildPath() {
+  const extra = process.platform === 'win32' ? [] : CLAUDE_EXTRA_PATH;
+  return [process.env.PATH || '', ...extra].filter(Boolean).join(path.delimiter);
+}
+
+// The SDK would otherwise use the `claude` it bundles — a second copy of the
+// CLI, on its own release cadence, resolving its own account. Point it at the
+// same binary every PTY session already runs.
+sdkSession.configure({ log, resolveClaudeBinary, claudeChildPath });
 
 function posixQuote(value) {
   return /^[A-Za-z0-9_./:@%+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
@@ -1913,6 +2370,15 @@ const SETTING_DEFAULTS = {
   shellProfile: 'auto',
   showAvatars: true,
   commitMessagePrompt: '',
+  // 'pty'  — spawn the CLI in a terminal, the way this app always has.
+  // 'sdk'  — drive the same CLI through the Agent SDK and render the
+  //          conversation as structured messages. Same account, same
+  //          transcript on disk; different transport and different view.
+  sessionMode: 'pty',
+  // Stills the board's card flight. The OS-level prefers-reduced-motion is
+  // honoured on its own; this is for people whose system says nothing but who
+  // still want the movement gone.
+  reduceMotion: false,
 };
 
 ipcMain.handle('get-shell-profiles', () => {
@@ -1943,8 +2409,19 @@ ipcMain.handle('get-active-sessions', () => {
     // lifecycle. They are not sessions the sidebar or the grid may know about.
     if (!session.exited && !session.isEphemeral) active.push(sessionId);
   }
+  // SDK sessions are just as live; the sidebar's green dot must not depend on
+  // which transport a session happens to use.
+  for (const id of sdkSession.activeSdkSessions()) {
+    if (!active.includes(id)) active.push(id);
+  }
   return active;
 });
+
+// --- IPC: get-session-statuses ---
+// Status lives in the main process, so a renderer reload can recover it instead
+// of starting blank and waiting for the next lifecycle event — which, for a
+// session sitting idle, may never come.
+ipcMain.handle('get-session-statuses', () => sessionStatus.all());
 
 // --- IPC: get-active-terminals --- (plain terminal sessions for renderer restore)
 ipcMain.handle('get-active-terminals', () => {
@@ -1959,6 +2436,11 @@ ipcMain.handle('get-active-terminals', () => {
 
 // --- IPC: stop-session ---
 ipcMain.handle('stop-session', (_event, sessionId) => {
+  if (sdkSession.isSdkSession(sessionId)) {
+    denyPending(sessionId, 'The session was stopped');
+    sessionStatus.remove(sessionId);
+    return sdkSession.stopSdkSession(sessionId);
+  }
   const session = activeSessions.get(sessionId);
   if (!session || session.exited) return { ok: false, error: 'not running' };
   session.pty.kill();
@@ -2005,9 +2487,164 @@ ipcMain.handle('archive-session', (_event, sessionId, archived) => {
   return { archived: val };
 });
 
+// --- IPC: get-session-meta ---
+// Everything about a session that is worth knowing but not worth caching: the
+// session menu asks for it when it opens, once per session. Reading the whole
+// .jsonl here rather than widening session_cache keeps this out of the indexer
+// and off the startup path — nothing on screen depends on it.
+ipcMain.handle('get-session-meta', (_event, sessionId) => {
+  const folder = getCachedFolder(sessionId);
+  if (!folder) return { ok: false, error: 'Session not found in cache' };
+  // activeProjectsDir() is already the host's view of the account's home — for
+  // a WSL account, the UNC path. Same composition read-session-jsonl uses.
+  const jsonlPath = path.join(activeProjectsDir(), folder, sessionId + '.jsonl');
+  let content, stat;
+  try {
+    stat = fs.statSync(jsonlPath);
+    content = fs.readFileSync(jsonlPath, 'utf-8');
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+
+  let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreateTokens = 0;
+  let userTurns = 0, assistantTurns = 0, toolCalls = 0;
+  let firstTimestamp = null, lastTimestamp = null;
+  let firstPrompt = '', gitBranch = null, cwd = null, version = null, effort = null;
+  let costUSD = 0;
+  const models = new Set();
+  const tools = new Map();
+  const touchedFiles = new Set();
+  let linesAdded = 0, linesRemoved = 0;
+
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+
+    if (entry.timestamp) {
+      if (!firstTimestamp) firstTimestamp = entry.timestamp;
+      lastTimestamp = entry.timestamp;
+    }
+    if (entry.gitBranch) gitBranch = entry.gitBranch;
+    if (entry.cwd) cwd = entry.cwd;
+    if (entry.version) version = entry.version;
+    if (entry.effort) effort = entry.effort;
+    // Written at the end of a stretch and not always present — taken as the
+    // best available figure rather than the authority. See read-session-file.js.
+    if (entry.type === 'cost-state' && typeof entry.totalCostUSD === 'number') costUSD = entry.totalCostUSD;
+
+    const isUser = entry.type === 'user' || (entry.type === 'message' && entry.role === 'user');
+    const isAssistant = entry.type === 'assistant' || (entry.type === 'message' && entry.role === 'assistant');
+    if (isUser) userTurns++;
+    if (isAssistant) assistantTurns++;
+
+    const msg = entry.message;
+    if (msg && typeof msg === 'object') {
+      if (msg.model) models.add(msg.model);
+      const u = msg.usage;
+      if (u) {
+        inputTokens += u.input_tokens || 0;
+        outputTokens += u.output_tokens || 0;
+        cacheReadTokens += u.cache_read_input_tokens || 0;
+        cacheCreateTokens += u.cache_creation_input_tokens || 0;
+      }
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block?.type !== 'tool_use') continue;
+          toolCalls++;
+          tools.set(block.name, (tools.get(block.name) || 0) + 1);
+          if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(block.name)) {
+            const target = block.input?.file_path || block.input?.notebook_path;
+            if (target) touchedFiles.add(target);
+          }
+        }
+      }
+    }
+
+    const result = entry.toolUseResult;
+    if (result && typeof result === 'object') {
+      if (Array.isArray(result.structuredPatch) && result.structuredPatch.length) {
+        for (const hunk of result.structuredPatch) {
+          for (const patchLine of hunk.lines || []) {
+            if (patchLine.startsWith('+')) linesAdded++;
+            else if (patchLine.startsWith('-')) linesRemoved++;
+          }
+        }
+      } else if (typeof result.content === 'string' && result.filePath) {
+        linesAdded += result.content.split('\n').length;
+      }
+    }
+
+    if (!firstPrompt && isUser) {
+      const text = typeof msg === 'string' ? msg
+        : (typeof msg?.content === 'string' ? msg.content : (msg?.content?.[0]?.text || ''));
+      if (text && !/<bash-input>|<bash-stdout>|<local-command-caveat>/.test(text)) {
+        firstPrompt = text.slice(0, 600);
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    sessionId,
+    projectPath: getCachedSession(sessionId)?.projectPath || null,
+    created: firstTimestamp || stat.birthtime.toISOString(),
+    lastActivity: lastTimestamp || stat.mtime.toISOString(),
+    userTurns, assistantTurns, toolCalls,
+    topTools: [...tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, count]) => ({ name, count })),
+    inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens,
+    costUSD,
+    models: [...models],
+    effort, version, gitBranch, cwd,
+    changedFiles: touchedFiles.size, linesAdded, linesRemoved,
+    fileBytes: stat.size,
+  };
+});
+
+// --- IPC: delete-session ---
+// Removes the transcript itself, not just the row: a session deleted here is
+// gone from ~/.claude/projects too, so the next scan cannot bring it back.
+// Destructive and unrecoverable — the renderer confirms before calling.
+ipcMain.handle('delete-session', async (_event, sessionId) => {
+  const folder = getCachedFolder(sessionId);
+  if (!folder) return { ok: false, error: 'Session not found in cache' };
+
+  // A live PTY holds the file open and would keep writing to it.
+  const live = activeSessions.get(sessionId);
+  if (live && !live.exited) {
+    try { live.pty.kill(); } catch {}
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  const jsonlPath = path.join(activeProjectsDir(), folder, sessionId + '.jsonl');
+  try {
+    fs.unlinkSync(jsonlPath);
+  } catch (err) {
+    // Already gone on disk is not a failure — the cache rows still have to go.
+    if (err.code !== 'ENOENT') return { ok: false, error: err.message };
+  }
+  deleteCachedSession(sessionId);
+  deleteSearchSession(sessionId);
+  deleteSessionMeta(sessionId);
+  return { ok: true };
+});
+
 // --- IPC: open-terminal ---
 ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, sessionOptions) => {
   if (!mainWindow) return { ok: false, error: 'no window' };
+
+  // An SDK session has no PTY and no terminal to reattach to — the renderer
+  // rebuilds its view from the transcript, which is the same .jsonl the cache
+  // already indexes. Reattaching is therefore a no-op that must not fall
+  // through into the spawn path below and start a second one.
+  if (sdkSession.isSdkSession(sessionId)) {
+    return { ok: true, mode: 'sdk', reattached: true };
+  }
+
+  if (sessionOptions?.mode === 'sdk' && !sessionOptions?.isPlainTerminal) {
+    const result = await startSdkSessionFor(sessionId, projectPath, isNew, sessionOptions);
+    return result.ok ? { ok: true, mode: 'sdk' } : result;
+  }
 
   // Reattach to existing session
   if (activeSessions.has(sessionId)) {
@@ -2203,11 +2840,35 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
         claudeCmd += ` --append-system-prompt "$(cat '${promptPathForShell}')"`;
       }
 
+      // Subscribe this session to lifecycle hooks. `--settings` loads in
+      // addition to the user's own settings files rather than replacing them,
+      // so nothing the user owns is touched and there is no cleanup that has to
+      // survive a crash. The temp file mirrors the --append-system-prompt
+      // pattern above, including the /mnt/<drive>/… view a WSL session needs.
+      try {
+        const hooks = await hookServer();
+        const hookUrl = hooks.urlFor(isWsl);
+        if (hookUrl) {
+          const tmpSettings = path.join(os.tmpdir(), `switchboard-hooks-${sessionId}.json`);
+          fs.writeFileSync(tmpSettings, JSON.stringify(buildHookSettings({ url: hookUrl, token: hooks.token })));
+          const settingsPathForShell = isWsl ? windowsToWslPath(tmpSettings) : tmpSettings;
+          claudeCmd += ` --settings '${settingsPathForShell}'`;
+        } else {
+          // WSL with no reachable vEthernet address. Rather than hand the CLI a
+          // URL that will time out on every event, leave the session on the OSC
+          // fallback — SessionStatusTracker keeps honouring it while no hook
+          // has ever arrived.
+          log.warn(`[hooks] session=${sessionId} no reachable host address for WSL — falling back to OSC detection`);
+        }
+      } catch (err) {
+        log.error(`[hooks] session=${sessionId} could not start hook server: ${err.message}`);
+      }
+
       if (sessionOptions?.preLaunchCmd) {
         claudeCmd = sessionOptions.preLaunchCmd + ' ' + claudeCmd;
       }
 
-      // Start MCP server for this session so Claude CLI sends diffs/file opens to Switchboard
+      // Start MCP server for this session so Claude CLI sends diffs/file opens to WootonPad
       // (skip if user disabled IDE emulation in global settings)
       if (sessionOptions?.mcpEmulation !== false) {
         try {
@@ -2283,13 +2944,33 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     mcpServer, _openedAt: Date.now(),
   };
   activeSessions.set(sessionId, session);
+  // The CLI is at its prompt, not mid-turn. Say so before any terminal output
+  // can suggest otherwise — see SessionStatusTracker#seed.
+  if (!isPlainTerminal) sessionStatus.seed(sessionId);
 
   ptyProcess.onData(data => {
     const currentId = session.realSessionId || sessionId;
 
     // Parse OSC sequences (title changes, progress, notifications, etc.)
-    if (data.includes('\x1b]')) {
-      const oscMatches = data.matchAll(/\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
+    //
+    // The PTY hands over arbitrary chunks, so a sequence can be split across
+    // two of them. Matching per chunk dropped those silently — and since the
+    // ✳ title was the only signal that could return a session to idle, one
+    // unlucky split left a spinner running forever. Carry the trailing
+    // fragment over to the next chunk instead.
+    if (data.includes('\x1b]') || session._oscCarry) {
+      const stream = (session._oscCarry || '') + data;
+      session._oscCarry = '';
+      const lastStart = stream.lastIndexOf('\x1b]');
+      if (lastStart !== -1) {
+        const tail = stream.slice(lastStart);
+        // No terminator yet: hold it back, capped so a stream that never
+        // terminates one cannot grow without bound.
+        if (!tail.includes('\x07') && !tail.includes('\x1b\\')) {
+          session._oscCarry = tail.length > 4096 ? '' : tail;
+        }
+      }
+      const oscMatches = stream.matchAll(/\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
       for (const m of oscMatches) {
         const code = m[1];
         const payload = m[2].slice(0, 120);
@@ -2298,41 +2979,32 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
           const firstChar = payload.charAt(0);
           const isBusy = firstChar.charCodeAt(0) >= 0x2800 && firstChar.charCodeAt(0) <= 0x28FF;
           const isIdle = firstChar === '\u2733'; // ✳
-          log.debug(`[OSC 0] session=${currentId} char=U+${firstChar.charCodeAt(0).toString(16).toUpperCase()} busy=${isBusy} idle=${isIdle} wasBusy=${!!session._cliBusy}`);
-          if (isBusy && !session._cliBusy) {
-            session._cliBusy = true;
-            session._oscIdle = false;
-            log.debug(`[OSC 0] session=${currentId} → BUSY`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, true);
-            }
-          } else if (isIdle && session._cliBusy) {
-            session._cliBusy = false;
-            session._oscIdle = true;
-            log.debug(`[OSC 0] session=${currentId} → IDLE`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, false);
-            }
-          }
+          log.debug(`[OSC 0] session=${currentId} char=U+${firstChar.charCodeAt(0).toString(16).toUpperCase()} busy=${isBusy} idle=${isIdle}`);
+          // Fallback only, and the only fallback: unlike OSC 9;4 below, this
+          // signal is symmetric — it can return a session to idle as well as
+          // mark it busy. The tracker ignores it the moment a real hook
+          // arrives for the session.
+          if (isBusy) sessionStatus.applyOsc(currentId, true);
+          else if (isIdle) sessionStatus.applyOsc(currentId, false);
         }
       }
-      // Parse iTerm2 OSC 9 sequences (terminated by BEL \x07 or ST \x1b\\)
-      const osc9Matches = data.matchAll(/\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
+      // Parse iTerm2 OSC 9 sequences (terminated by BEL \x07 or ST \x1b\\).
+      // Same carried stream: an attention notification split across chunks was
+      // being dropped for the same reason.
+      const osc9Matches = stream.matchAll(/\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)/g);
       for (const osc9 of osc9Matches) {
         const payload = osc9[1];
         // OSC 9;4 progress: 4;0; = clear/done, 4;1;N = running at N%, 4;2;N = error, 4;3; = indeterminate
         if (payload.startsWith('4;')) {
           const level = payload.split(';')[1];
           if (level === '0') continue; // 4;0 is also used for clearing, making it unreliable as an idle signal
-          log.debug(`[OSC 9;4] session=${currentId} level=${level} payload="${payload}" wasBusy=${!!session._cliBusy}`);
-          if ((level === '1' || level === '2' || level === '3') && !session._cliBusy) {
-            session._cliBusy = true;
-            session._oscIdle = false;
-            log.debug(`[OSC 9;4] session=${currentId} → BUSY`);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('cli-busy-state', currentId, true);
-            }
-          }
+          // Logged, not acted on. This branch can only ever *set* busy — 4;0
+          // is documented as unreliable for the clear, so it is skipped above,
+          // leaving no path back to idle. A session that emitted one of these
+          // and then never took a turn stayed "In progress" forever, because
+          // hooks are turn-scoped and had nothing to correct it with.
+          // OSC 0 is the only symmetric fallback signal, so it is the only one.
+          log.debug(`[OSC 9;4] session=${currentId} level=${level} payload="${payload}" (not used for status)`);
         } else {
           // Regular notification (attention, permission, etc.)
           log.info(`[OSC 9] session=${currentId} message="${payload}"`);
@@ -2382,6 +3054,13 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
     session.mcpServer = null;
 
     const realId = session.realSessionId || sessionId;
+    // The old pipeline never cleared busy on exit — it left that to the
+    // renderer's 3s poll, which only reaches sessions the sidebar has currently
+    // rendered. A session that exited while its row was scrolled out kept its
+    // spinner indefinitely.
+    sessionStatus.remove(realId);
+    if (realId !== sessionId) sessionStatus.remove(sessionId);
+    try { fs.unlinkSync(path.join(os.tmpdir(), `switchboard-hooks-${sessionId}.json`)); } catch {}
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('process-exited', realId, exitCode);
       // If a fork/plan-accept transition re-keyed this session under realId
@@ -2405,11 +3084,36 @@ ipcMain.handle('open-terminal', async (_event, sessionId, projectPath, isNew, se
 
 // --- IPC: terminal-input (fire-and-forget) ---
 ipcMain.on('terminal-input', (_event, sessionId, data) => {
+  // An SDK session takes whole prompts, not keystrokes: there is no terminal
+  // to echo into and no line discipline to run. The renderer's composer sends
+  // one message per submit.
+  if (sdkSession.isSdkSession(sessionId)) {
+    sdkSession.sendSdkInput(sessionId, data);
+    return;
+  }
   const session = activeSessions.get(sessionId);
   if (session && !session.exited) {
     session.pty.write(data);
   }
 });
+
+// --- IPC: sdk-interrupt ---
+// The Escape key of an SDK session: stops the turn, keeps the session.
+ipcMain.handle('sdk-interrupt', async (_event, sessionId) => {
+  return sdkSession.interruptSdkSession(sessionId);
+});
+
+// --- IPC: sdk-set-permission-mode ---
+ipcMain.handle('sdk-set-permission-mode', async (_event, sessionId, mode) => {
+  return sdkSession.setSdkPermissionMode(sessionId, mode);
+});
+
+// --- IPC: sdk session controls (model / effort / context) ---
+ipcMain.handle('sdk-commands', (_event, sessionId) => sdkSession.listSdkCommands(sessionId));
+ipcMain.handle('sdk-models', (_event, sessionId) => sdkSession.listSdkModels(sessionId));
+ipcMain.handle('sdk-set-model', (_event, sessionId, model) => sdkSession.setSdkModel(sessionId, model));
+ipcMain.handle('sdk-set-effort', (_event, sessionId, effort) => sdkSession.setSdkEffort(sessionId, effort));
+ipcMain.handle('sdk-context-usage', (_event, sessionId) => sdkSession.getSdkContextUsage(sessionId));
 
 // --- IPC: terminal-resize (fire-and-forget) ---
 ipcMain.on('terminal-resize', (_event, sessionId, cols, rows) => {
@@ -2442,6 +3146,9 @@ ipcMain.on('terminal-resize', (_event, sessionId, cols, rows) => {
 
 // --- IPC: close-terminal ---
 ipcMain.on('close-terminal', (_event, sessionId) => {
+  // Closing the view does not end an SDK session, exactly as it does not kill
+  // a PTY: stop-session is what ends either of them.
+  if (sdkSession.isSdkSession(sessionId)) return;
   const session = activeSessions.get(sessionId);
   if (session) {
     session.rendererAttached = false;
@@ -2453,7 +3160,16 @@ ipcMain.on('close-terminal', (_event, sessionId) => {
 
 // Session transitions → session-transitions.js
 const sessionTransitions = require('./session-transitions');
-sessionTransitions.init({ PROJECTS_DIR: activeProjectsDir(), activeSessions, getMainWindow: () => mainWindow, log, rekeyMcpServer });
+sessionTransitions.init({
+  PROJECTS_DIR: activeProjectsDir(), activeSessions, getMainWindow: () => mainWindow, log,
+  // A fork or a plan-accept gives the session a new UUID. The tracker has to
+  // follow it, or it keeps reporting under an id the renderer has retired —
+  // and the hooks arriving from the forked CLI would open a second entry.
+  rekeyMcpServer: (oldId, newId) => {
+    rekeyMcpServer(oldId, newId);
+    sessionStatus.rekey(oldId, newId);
+  },
+});
 const { detectSessionTransitions } = sessionTransitions;
 
 // --- fs.watch on projects directory ---
@@ -2691,6 +3407,8 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   // Shut down all MCP servers
   shutdownAllMcp();
+  stopHookServer();
+  sdkSession.stopAllSdkSessions();
 
   // Close filesystem watcher
   if (projectsWatcher) {

@@ -7,7 +7,7 @@ const path = require('path');
 const { getFolderIndexMtimeMs } = require('../folder-index-state');
 
 test('folder index timestamp advances when an existing session file is appended', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'switchboard-folder-index-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wootonpad-folder-index-'));
 
   try {
     const sessionPath = path.join(tmpDir, 'session.jsonl');

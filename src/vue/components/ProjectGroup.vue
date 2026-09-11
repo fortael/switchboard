@@ -47,13 +47,6 @@
           :attention-sessions="attentionSessions"
           :response-ready-sessions="responseReadySessions"
           @open="(s) => $emit('open', s)"
-          @stop="(id) => $emit('stop', id)"
-          @star="(id) => $emit('star', id)"
-          @archive="(id) => $emit('archive', id)"
-          @fork="(id) => $emit('fork', id)"
-          @jsonl="(id) => $emit('jsonl', id)"
-          @launch-config="(id) => $emit('launch-config', id)"
-          @rename="(id, name) => $emit('rename', id, name)"
           @archive-all="(sessions) => $emit('archive-sessions', sessions)"
         />
         <SessionItem
@@ -65,13 +58,6 @@
           :is-attention="attentionSessions.has(item.session.sessionId)"
           :is-response-ready="responseReadySessions.has(item.session.sessionId)"
           @open="$emit('open', item.session)"
-          @stop="$emit('stop', item.session.sessionId)"
-          @star="$emit('star', item.session.sessionId)"
-          @archive="$emit('archive', item.session.sessionId)"
-          @fork="$emit('fork', item.session.sessionId)"
-          @jsonl="$emit('jsonl', item.session.sessionId)"
-          @launch-config="$emit('launch-config', item.session.sessionId)"
-          @rename="(id, name) => $emit('rename', id, name)"
         />
       </template>
 
@@ -96,13 +82,6 @@
             :attention-sessions="attentionSessions"
             :response-ready-sessions="responseReadySessions"
             @open="(s) => $emit('open', s)"
-            @stop="(id) => $emit('stop', id)"
-            @star="(id) => $emit('star', id)"
-            @archive="(id) => $emit('archive', id)"
-            @fork="(id) => $emit('fork', id)"
-            @jsonl="(id) => $emit('jsonl', id)"
-            @launch-config="(id) => $emit('launch-config', id)"
-            @rename="(id, name) => $emit('rename', id, name)"
             @archive-all="(sessions) => $emit('archive-sessions', sessions)"
           />
           <SessionItem
@@ -114,13 +93,6 @@
             :is-attention="attentionSessions.has(item.session.sessionId)"
             :is-response-ready="responseReadySessions.has(item.session.sessionId)"
             @open="$emit('open', item.session)"
-            @stop="$emit('stop', item.session.sessionId)"
-            @star="$emit('star', item.session.sessionId)"
-            @archive="$emit('archive', item.session.sessionId)"
-            @fork="$emit('fork', item.session.sessionId)"
-            @jsonl="$emit('jsonl', item.session.sessionId)"
-            @launch-config="$emit('launch-config', item.session.sessionId)"
-            @rename="(id, name) => $emit('rename', id, name)"
           />
         </template>
       </template>
@@ -144,13 +116,6 @@
         :visible-session-count="visibleSessionCount"
         :session-max-age-days="sessionMaxAgeDays"
         @open="(s) => $emit('open', s)"
-        @stop="(id) => $emit('stop', id)"
-        @star="(id) => $emit('star', id)"
-        @archive="(id) => $emit('archive', id)"
-        @fork="(id) => $emit('fork', id)"
-        @jsonl="(id) => $emit('jsonl', id)"
-        @launch-config="(id) => $emit('launch-config', id)"
-        @rename="(id, name) => $emit('rename', id, name)"
         @new-session="(p, btn) => $emit('new-session', p, btn)"
         @settings="(path) => $emit('settings', path)"
         @archive-sessions="(sessions) => $emit('archive-sessions', sessions)"
@@ -166,6 +131,7 @@ import SessionItem from './SessionItem.vue';
 import SlugGroup from './SlugGroup.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
 import SbIcon from './SbIcon.vue';
+import { filterSessions } from '../session-filter.js';
 
 const props = defineProps({
   project: { type: Object, required: true },
@@ -186,8 +152,7 @@ const props = defineProps({
 });
 
 const emit = defineEmits([
-  'open', 'stop', 'star', 'archive', 'fork', 'jsonl', 'launch-config', 'rename',
-  'new-session', 'settings', 'archive-sessions', 'remove-project',
+  'open', 'new-session', 'settings', 'archive-sessions', 'remove-project',
 ]);
 
 const folderId = computed(() => 'project-' + props.project.projectPath.replace(/[^a-zA-Z0-9_-]/g, '_'));
@@ -229,25 +194,15 @@ const showOlder = ref(false);
 
 // Build mixed items list: individual sessions + slug groups
 const allItems = computed(() => {
-  let sessions = props.project.sessions || [];
-
-  if (!props.showArchived && !props.searchMatchIds) {
-    sessions = sessions.filter(s => !s.archived);
-  }
-  if (props.showStarredOnly) sessions = sessions.filter(s => s.starred);
-  if (props.showRunningOnly) sessions = sessions.filter(s => props.activePtyIds.has(s.sessionId));
-  if (props.showTodayOnly) {
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    sessions = sessions.filter(s => {
-      if (!s.modified) return false;
-      const d = new Date(s.modified);
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` === todayStr;
-    });
-  }
-  if (props.searchMatchIds) {
-    sessions = sessions.filter(s => props.searchMatchIds.has(s.sessionId));
-  }
+  // Shared with the board — see src/vue/session-filter.js.
+  const sessions = filterSessions(props.project.sessions, {
+    showArchived: props.showArchived,
+    showStarredOnly: props.showStarredOnly,
+    showRunningOnly: props.showRunningOnly,
+    showTodayOnly: props.showTodayOnly,
+    searchMatchIds: props.searchMatchIds,
+    activePtyIds: props.activePtyIds,
+  });
 
   // Group by slug
   const slugMap = new Map();

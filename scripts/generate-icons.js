@@ -43,7 +43,7 @@ if (!fs.existsSync(pngPath)) {
 
   ctx.fillStyle = 'rgba(255,255,255,0.5)';
   ctx.font = `${SIZE * 0.07}px -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText('Switchboard', SIZE / 2, SIZE * 0.85);
+  ctx.fillText('WootonPad', SIZE / 2, SIZE * 0.85);
 
   fs.writeFileSync(pngPath, canvas.toBuffer('image/png'));
   console.log(`Generated placeholder ${pngPath}`);

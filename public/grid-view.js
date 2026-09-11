@@ -149,9 +149,7 @@ function showGridView() {
   // Hide other viewers but keep terminal-area visible
   if (window.vueStore) {
     window.vueStore.planViewerOpen = false;
-    window.vueStore.memoryViewerOpen = false;
     window.vueStore.settingsOpen = false;
-    window.vueStore.showStats = false;
     window.vueStore.showJsonl = false;
     window.vueStore.gridViewActive = true;
   }
